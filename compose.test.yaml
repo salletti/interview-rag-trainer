@@ -1,0 +1,76 @@
+# Stack d'intégration autonome (pas un override de compose.yaml).
+# Services éphémères (tmpfs, aucun volume nommé), ports distincts de la stack
+# de développement pour pouvoir tourner en parallèle. Voir Makefile :
+# `make test-integration`.
+
+name: interview-rag-trainer-test
+
+services:
+  postgres_test:
+    image: pgvector/pgvector:0.8.7-pg18
+    environment:
+      POSTGRES_USER: irt_test
+      POSTGRES_PASSWORD: irt_test
+      POSTGRES_DB: irt_test
+    ports:
+      - "5441:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U irt_test -d irt_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  qdrant_test:
+    image: qdrant/qdrant:v1.20.2
+    ports:
+      - "6343:6333"
+    tmpfs:
+      - /qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  rabbitmq_test:
+    image: rabbitmq:4.4.0-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: irt_test
+      RABBITMQ_DEFAULT_PASS: irt_test
+    ports:
+      - "5682:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # Worker réel (même image que compose.yaml) : le test d'intégration Celery
+  # valide broker → worker → result backend sans worker in-process.
+  worker_test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    command: ["celery", "-A", "runtime.worker:celery_app", "worker", "--loglevel=WARNING", "--concurrency=1"]
+    environment:
+      ENVIRONMENT: test
+      POSTGRES_HOST: postgres_test
+      POSTGRES_USER: irt_test
+      POSTGRES_PASSWORD: irt_test
+      POSTGRES_DB: irt_test
+      QDRANT_HOST: qdrant_test
+      RABBITMQ_HOST: rabbitmq_test
+      RABBITMQ_USER: irt_test
+      RABBITMQ_PASSWORD: irt_test
+    depends_on:
+      rabbitmq_test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A runtime.worker:celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      start_period: 15s
+      retries: 10

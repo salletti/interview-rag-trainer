@@ -1,0 +1,166 @@
+# Environnement de développement complet : `docker compose up --build -d`.
+# Les ports hôte et les identifiants viennent de .env (voir .env.example).
+
+name: interview-rag-trainer
+
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  EXTERNAL_TIMEOUT_SECONDS: ${EXTERNAL_TIMEOUT_SECONDS:-2.0}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: ${POSTGRES_USER:-interview_rag_trainer}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-interview_rag_trainer}
+  POSTGRES_DB: ${POSTGRES_DB:-interview_rag_trainer}
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: "6333"
+  QDRANT_GRPC_PORT: "6334"
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USER: ${RABBITMQ_USER:-interview_rag_trainer}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-interview_rag_trainer}
+  RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-rpc://}
+
+x-backend-build: &backend-build
+  context: ./backend
+  dockerfile: Dockerfile
+  target: development
+
+services:
+  # Applique les migrations Alembic avant l'API : unique mécanisme de schéma.
+  migrate:
+    build: *backend-build
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    volumes:
+      # Le code et les migrations sont montés : `make migration` écrit le
+      # nouveau fichier sur l'hôte et `make migrate` voit le code courant.
+      - ./backend/src:/app/src:ro
+      - ./backend/alembic:/app/alembic
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  api:
+    build: *backend-build
+    environment: *backend-env
+    ports:
+      - "${API_PORT:-8010}:8000"
+    volumes:
+      - ./backend/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    networks: [backend]
+
+  worker:
+    build: *backend-build
+    command: ["celery", "-A", "runtime.worker:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment: *backend-env
+    volumes:
+      - ./backend/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A runtime.worker:celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    networks: [backend]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+    ports:
+      - "${FRONTEND_PORT:-5180}:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+    depends_on:
+      api:
+        condition: service_started
+    networks: [backend]
+
+  postgres:
+    # Image officielle pgvector = PostgreSQL 18 + extension vector disponible.
+    # L'extension n'est pas activée : Qdrant est le moteur vectoriel principal
+    # (CREATE EXTENSION se fera par migration Alembic si un besoin apparaît).
+    image: pgvector/pgvector:0.8.7-pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-interview_rag_trainer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-interview_rag_trainer}
+      POSTGRES_DB: ${POSTGRES_DB:-interview_rag_trainer}
+    ports:
+      - "${POSTGRES_PORT:-5440}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-interview_rag_trainer} -d ${POSTGRES_DB:-interview_rag_trainer}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # L'image ne fournit ni curl ni wget : sonde TCP via bash.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:4.4.0-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-interview_rag_trainer}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-interview_rag_trainer}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  rabbitmq_data:
+
+networks:
+  backend:

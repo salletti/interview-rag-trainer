@@ -11,4 +11,8 @@
 - [006 — Questions ouvertes](conception/006-open-questions.md) — décisions restant à prendre.
 - [ADR](decisions/README.md) — décisions validées ou proposées.
 
+## Guides
+
+- [Environnement de développement local](guides/environnement-local.md) — démarrage Docker Compose, ports, tests, migrations.
+
 Les décisions explicitement validées sont **Accepted** ; les hypothèses techniques restent **Proposed**. Chaque décision structurante doit être historisée.

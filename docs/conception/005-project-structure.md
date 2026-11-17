@@ -8,8 +8,10 @@ Nous reprenons ces conventions, **pas le code métier trading**.
 
 ## Structure cible (à créer par vertical slices)
 
+> **Mise à jour Phase 1 (2026-11-17, ADR 0006) :** le backend vit désormais sous `backend/` ; `src/` ci-dessous se lit `backend/src/`. Le frontend React est sous `frontend/`. Les tests backend sont sous `backend/tests/{unit,integration,architecture}` ; `architecture/` vérifie par analyse statique les règles de dépendance de ce document.
+
 ```text
-src/
+backend/src/
   runtime/                       # composition root, FastAPI, worker bootstrap
   interview_training/
     README.md
@@ -60,10 +62,11 @@ src/
   knowledge_base/               # envisagé
   learning_progress/            # envisagé
   question_bank/                # envisagé
-tests/
+backend/tests/
   unit/
-  integration/
-  contract/
+  integration/              # contre compose.test.yaml
+  architecture/             # règles de dépendance (imports)
+  contract/                 # à venir avec les Integration Events
 ```
 
 ## Dépendances et conventions

@@ -1,0 +1,75 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --bg: #fafafa;
+  --muted: #666;
+  --ok: #2e7d32;
+  --warn: #b26a00;
+  --ko: #c62828;
+  --border: #ddd;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececec;
+    --bg: #161616;
+    --muted: #a0a0a0;
+    --border: #333;
+  }
+}
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  max-width: 40rem;
+  margin: 4rem auto;
+  padding: 0 1rem;
+}
+
+h1 {
+  margin-bottom: 0.25rem;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 2rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.status[data-state='ready'] .dot {
+  background: var(--ok);
+}
+
+.status[data-state='degraded'] .dot {
+  background: var(--warn);
+}
+
+.status[data-state='unavailable'] .dot {
+  background: var(--ko);
+}
