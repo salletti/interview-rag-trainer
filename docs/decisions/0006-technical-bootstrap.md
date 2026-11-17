@@ -84,3 +84,23 @@ seront traités avec l'outbox.
   s'appliqueront dès leur premier fichier.
 - Ce document est à mettre à jour si une exclusion (Redis, pgvector actif) est
   levée, avec le besoin qui la motive.
+
+## Références ultérieures (2026-11-17)
+
+Les choix de cet ADR ne sont pas modifiés. Les décisions suivantes s'appuient
+sur eux :
+
+- Qdrant (point 3) et Celery/RabbitMQ (point 6) sont repris par les ADR
+  [0008](0008-custom-pipeline-docling-extraction.md) et
+  [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md) pour
+  Knowledge Base.
+- La topologie des files et la work queue durable laissées ouvertes dans
+  « Rapport à l'ADR 0004 » sont tranchées par le
+  [complément de l'ADR 0004](0004-reliable-messaging.md#complément--work-queue-durable-accepted-2026-11-17).
+- Les règles d'architecture (point 11) seront étendues aux bibliothèques
+  d'extraction et d'embeddings (ADR 0008) et au troisième contexte (ADR 0007)
+  lors de la slice S0.
+- La slice S0 ajoutera deux processus de la même image (`worker_ingestion`,
+  `scheduler`) et deux volumes ; le décompte « sept services » des
+  Conséquences sera alors actualisé
+  ([knowledge-base-s0.md §11](../conception/bounded-contexts/knowledge-base-s0.md#11-configuration-docker-compose)).

@@ -30,7 +30,10 @@ Application personnelle d'entraînement à des entretiens techniques en Python, 
 | AssessmentRevision | Résultat publié immuable |
 | Feedback | Correction et justification pédagogique |
 | LearningGap | Lacune suivie à travers des séances |
-| KnowledgeSource | Document de référence du système RAG |
+| KnowledgeDocument | Document pédagogique logique de Knowledge Base, stable entre ses versions (remplace l'ancien terme `KnowledgeSource`) |
+| DocumentVersion | Contenu importé immuable d'un document |
+| KnowledgeUnit | Unité pédagogique : question + réponse + code + explications, ou section |
+| RetrievedPassage | Passage renvoyé par la recherche, avec citation vérifiable |
 | IntegrationEvent | Fait publié entre Bounded Contexts |
 
 ## Principes métier
@@ -39,4 +42,6 @@ Interview Training possède le parcours, jamais la note. Assessment possède la 
 
 ## Périmètre V1
 
-Deux contextes confirmés : Interview Training et Assessment. Knowledge Base, Question Bank et Learning Progress restent candidats à formaliser plus tard. Le routeur LLM est une capacité technique, pas nécessairement un Bounded Context.
+Trois contextes confirmés : Interview Training et Assessment ([ADR 0001](../decisions/0001-two-bounded-contexts.md)), Knowledge Base ([ADR 0007](../decisions/0007-knowledge-base-bounded-context.md)). Question Bank et Learning Progress restent candidats à formaliser plus tard. Le routeur LLM est une capacité technique, pas nécessairement un Bounded Context.
+
+Le langage complet de Knowledge Base (corpus, index, indexation, chunk, citation…) est défini dans [sa conception](../conception/bounded-contexts/knowledge-base.md#2-langage-ubiquitaire) ; ce tableau n'en reprend que les termes partagés avec les autres contextes.

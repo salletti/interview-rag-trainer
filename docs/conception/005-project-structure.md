@@ -1,6 +1,10 @@
 # 005 — Structure du projet, DDD et Clean Architecture
 
-> **Statut :** Proposed (suit l'ADR 0003, lui-même Proposed).
+> **Statut :** Accepted (2026-11-18), avec l'ADR 0003.
+>
+> **Mise à jour 2026-11-17 :** surface publique élargie à plusieurs points
+> d'entrée nommés ([section dédiée](#surface-publique-dun-contexte-et-composition-root)),
+> Knowledge Base ajouté comme troisième contexte (ADR 0007).
 >
 > Ce document fixe l'organisation du code : le niveau du monorepo (contextes,
 > `runtime`, `shared`), puis la structure **à l'intérieur** de chaque Bounded
@@ -23,7 +27,7 @@ backend/src/
   assessment/                   # Bounded Context (ADR 0001)
   shared/
     domain/                     # shared kernel minimal, si un besoin réel apparaît
-  knowledge_base/               # Bounded Context proposé — voir conception/bounded-contexts/knowledge-base.md
+  knowledge_base/               # Bounded Context (ADR 0007) — voir conception/bounded-contexts/knowledge-base.md
   learning_progress/            # envisagé
   question_bank/                # envisagé
 backend/tests/
@@ -33,19 +37,68 @@ backend/tests/
   architecture/                 # règles de dépendance (imports)
 ```
 
-- `runtime` : composition root / wiring, jamais de logique métier. Il n'appelle que `register(app)` et `contracts/` d'un contexte.
+- `runtime` : composition root / wiring, jamais de logique métier. Il n'importe d'un contexte que son package racine (points d'entrée publics) et ses `contracts/` ; voir [Surface publique d'un contexte et composition root](#surface-publique-dun-contexte-et-composition-root).
 - `shared` : primitives transverses justifiées uniquement ; jamais de modèle métier global.
 - Aucun contexte n'importe `runtime`. Aucun ORM partagé ni jointure métier inter-contextes.
 - Python packages en snake_case ; classes en PascalCase.
 
 ## Dossiers de conception propres aux Bounded Contexts
 
-Les études détaillées d'un contexte vivent sous `docs/conception/bounded-contexts/<nom-du-contexte>.md`. Elles complètent les documents transverses 001–006 sans en dupliquer toutes les conventions.
+Les études détaillées d'un contexte vivent sous `docs/conception/bounded-contexts/<nom-du-contexte>*.md`. Elles complètent les documents transverses 001–006 sans en dupliquer les conventions.
 
-- [Knowledge Base](bounded-contexts/knowledge-base.md) — conception **Proposed** : ingestion, unités pédagogiques, Qdrant, indexation, recherche et cohérence.
-- L'architecture de code cible serait `backend/src/knowledge_base/`, en suivant les mêmes couches `domain/use_cases/adapters/contracts/frameworks` que les autres contextes.
-- Les adaptations spécifiques : `adapters/controller/tasks/` pour Celery ; `adapters/gateway/{parsing,embedding,vector_store,blob}/` ; les ports techniques restent des Protocols sous `domain/providers/`.
-- Aucun dossier ou Bounded Context n'est considéré implémenté du seul fait de cette documentation ; créer les packages au premier vertical slice utile.
+- [Knowledge Base](bounded-contexts/knowledge-base.md) — conception (ADR 0007 à 0012), avec sa [feuille de route S0–S9](bounded-contexts/knowledge-base-roadmap.md) et la [conception de S0](bounded-contexts/knowledge-base-s0.md).
+- Le code cible est `backend/src/knowledge_base/`, avec les mêmes couches `domain/use_cases/adapters/contracts/frameworks` que les autres contextes. Ses adaptations : `adapters/controller/tasks/` pour Celery ; `adapters/gateway/{parsing,embedding,vector_store,blob}/` ; les ports techniques restent des Protocols sous `domain/providers/`.
+- Aucun dossier n'est considéré implémenté du seul fait de cette documentation : les packages sont créés au premier vertical slice qui les utilise.
+
+## Surface publique d'un contexte et composition root
+
+### Principe
+
+Le package racine d'un contexte (`<contexte>/__init__.py`) **réexporte** ses points d'entrée publics, définis dans `adapters/controller/dependencies.py` (ou `adapters/controller/__init__.py` pour un contexte qui n'a que des routes). C'est le précédent de `trading-agent-ai` : `strategy/__init__.py` réexporte `register` et des fabriques nommées (`create_candle_signal_generator`…) depuis `strategy/adapters/controller/dependencies`. Un contexte n'expose **que** les points d'entrée dont il a besoin ; il n'y a ni registre de plugins ni interface commune imposée.
+
+### Points d'entrée typiques
+
+Les noms ci-dessous sont des conventions recommandées, pas une interface obligatoire.
+
+| Point d'entrée | Appelé par | Moment | Rôle |
+|---|---|---|---|
+| `register(app, resources)` | `runtime.app` | construction de l'application FastAPI | monter les routeurs, brancher les dépendances FastAPI du contexte |
+| `register_worker(celery_app, resources)` | `runtime.worker` | import du module worker, dans le processus maître | déclarer les tâches Celery, leurs routes de files et les entrées du `beat_schedule` du contexte |
+| `build_<contrat>(resources)` (ex. `build_knowledge_search`) | `runtime` | composition, après création des ressources | fabriquer l'implémentation d'un Protocol publié dans `contracts/providers/` |
+| `<Contexte>Settings`, `<Contexte>Resources` | `runtime` | composition | types de configuration et de ressources définis **par le contexte** |
+
+Règles :
+
+- **Ressources explicites.** Un point d'entrée reçoit des types définis par le contexte (dataclass `KnowledgeBaseResources`, settings `KnowledgeBaseSettings` à préfixe d'environnement propre) ou des types de bibliothèque (`async_sessionmaker`, `AsyncQdrantClient`). Jamais un type de `runtime` : aucun contexte n'importe `runtime`.
+- **API et workers séparés.** `register` ne déclare aucune tâche ; `register_worker` ne monte aucune route. Les processus `api`, `worker`, `worker_ingestion` et `scheduler` partagent l'image mais pas leur composition.
+- **Ressources paresseuses côté worker.** Les tâches sont déclarées dans le processus maître Celery, alors que boucle asyncio, moteur SQLAlchemy et clients n'existent que dans les processus enfants (prefork) : `register_worker` reçoit un **fournisseur** (`Callable[[], <Contexte>WorkerResources]`), créé par `runtime` au signal `worker_process_init` ([knowledge-base-s0.md §9](bounded-contexts/knowledge-base-s0.md#9-ressources-asyncio-dans-un-worker-celery-prefork)).
+- **Un point d'entrée n'apparaît qu'avec son premier usage** : Knowledge Base n'expose que `register_worker` en S0, `register` en S2, `build_knowledge_search` en S5.
+
+### Transmission d'un contrat public à un autre contexte
+
+```python
+# runtime (composition root) — esquisse
+import knowledge_base
+import assessment
+
+search = knowledge_base.build_knowledge_search(kb_resources)   # implémente KnowledgeSearch
+assessment.register(app, assessment.AssessmentResources(knowledge_search=search, ...))
+```
+
+- Le contexte consommateur ne connaît que le type `knowledge_base.contracts.providers.KnowledgeSearch` (import autorisé de `contracts/`) ; l'implémentation (`knowledge_base/adapters/controller/contracts/`) lui est injectée.
+- `runtime` n'importe **jamais** `knowledge_base.adapters`, `knowledge_base.domain`, `knowledge_base.use_cases` ni `knowledge_base.frameworks` ; seule la racine les réexporte.
+- `alembic/env.py` est l'unique exception documentée : il importe le `MetaData` de chaque contexte depuis `<contexte>.frameworks.sqlalchemy` (il n'est pas sous `src/runtime`).
+
+### Règles d'import autorisées
+
+| Code dans… | Peut importer | Ne peut pas importer |
+|---|---|---|
+| `runtime/` | racine `<contexte>`, `<contexte>.contracts`, bibliothèques | couches internes d'un contexte |
+| `<contexte>/__init__.py` | ses propres `adapters/controller/` (réexport) | autre contexte hors `contracts` |
+| `<contexte>/domain`, `use_cases` | voir le tableau des couches ci-dessous | frameworks et bibliothèques d'infrastructure |
+| `<contexte>/adapters` | ses couches, `<autre>.contracts`, bibliothèques | `runtime`, couches internes d'un autre contexte |
+| `<autre contexte>` | `<contexte>.contracts` uniquement | tout le reste de `<contexte>` |
+| `shared/` | bibliothèque standard | tout contexte, `runtime` |
 
 ## Structure d'un Bounded Context
 
@@ -60,7 +113,7 @@ justifie.
 
 ```text
 backend/src/<contexte>/
-    __init__.py                 # surface publique : register(app), et rien d'autre
+    __init__.py                 # surface publique : réexport des points d'entrée (register, register_worker, build_…)
     README.md                   # objectif, responsabilités, use cases, événements, contrats
 
     domain/                     # cœur métier, Python pur
@@ -79,7 +132,8 @@ backend/src/<contexte>/
 
     adapters/
         controller/             # entrées : traduisent un appel externe en commande
-            __init__.py         # def register(app) : monte les routes, branche les consumers
+            dependencies.py     # points d'entrée publics : register, register_worker, fabriques de contrats
+            tasks/              # tâches Celery : exécution de travaux durables (work_items)
             rest/               # routeurs FastAPI, schémas HTTP (Pydantic)
             messaging/          # consumers d'Integration Events → commandes locales (ACL)
             contracts/          # implémentations des providers exposés dans contracts/
@@ -149,8 +203,13 @@ Les règles marquées dans la colonne de droite sont vérifiées par
 - `messaging/` : consumers d'Integration Events. Chacun valide le schéma
   versionné, traduit l'événement en **commande locale** (couche
   anti-corruption de [001](001-bounded-contexts.md)), et passe par l'inbox.
-- `__init__.py` expose `register(app)`, réexporté par le `__init__.py`
-  racine du contexte : c'est le seul point d'entrée que `runtime` appelle.
+- `dependencies.py` définit les points d'entrée publics (routes, worker,
+  fabriques de contrats), réexportés par le `__init__.py` racine : ce sont les
+  seuls points que `runtime` appelle
+  ([Surface publique](#surface-publique-dun-contexte-et-composition-root)).
+- `tasks/` : tâches Celery d'un contexte. Ce sont des *controllers* de travail
+  (entrée) qui appellent un handler ; elles ne transportent qu'un identifiant
+  de travail durable (ADR 0004, complément *work queue*).
 
 #### `adapters/gateway/`
 
@@ -159,8 +218,8 @@ Les règles marquées dans la colonne de droite sont vérifiées par
 - `messaging/` : transforme les Domain Events en Integration Events
   (`contracts/events/`) et les écrit dans l'outbox du contexte. La publication
   RabbitMQ elle-même relève du relais d'outbox, câblé par `runtime`.
-- Les tâches Celery éventuelles d'un contexte sont des *controllers* de
-  travail (entrée) qui appellent un handler. Ce ne sont pas des contrats.
+- Les tâches Celery ne sont pas des contrats ; elles vivent sous
+  `adapters/controller/tasks/`.
 
 #### `contracts/`
 
@@ -195,6 +254,30 @@ backend/tests/
     architecture/                     # règles de dépendance (transverse)
 ```
 
+### Tests d'architecture
+
+`backend/tests/architecture/test_dependency_rules.py` analyse les imports
+(`ast`) sans exécuter le code. Organisation :
+
+| Règle | Vérifie |
+|---|---|
+| `domain_and_use_cases_are_framework_free` | aucune bibliothèque de `FRAMEWORKS` dans `domain/` et `use_cases/` (liste étendue aux bibliothèques ML par l'ADR 0008 en S0) |
+| `domain_does_not_depend_on_outer_layers` | `domain/` n'importe ni `use_cases`, ni `adapters`, ni `frameworks` |
+| `use_cases_do_not_depend_on_adapters` | `use_cases/` n'importe ni `adapters` ni `frameworks` |
+| `contexts_never_import_each_other_internals` | seul `<autre>.contracts` est importable d'un autre contexte |
+| `no_context_depends_on_runtime` | aucun contexte ni `shared` n'importe `runtime` |
+| `runtime_only_sees_public_surface` | `runtime` n'importe que la racine et `contracts` d'un contexte |
+| `shared_is_a_leaf` | `shared` n'importe ni contexte ni `runtime` |
+
+- Chaque règle est exécutée sur le vrai `src/` **et** sur un faux arbre
+  contenant la violation correspondante, pour prouver qu'elle détecte bien ce
+  qu'elle interdit.
+- `test_src_contains_the_validated_contexts` fixe la liste des contextes
+  acceptés par ADR : créer un package de contexte sans ADR fait échouer la
+  suite.
+- Toute nouvelle bibliothèque d'infrastructure ajoutée au projet entre dans
+  `FRAMEWORKS` dans le même changement.
+
 ### Exemple : Interview Training au premier vertical slice
 
 ```text
@@ -225,7 +308,7 @@ interview_training/
             ...
     adapters/
         controller/
-            __init__.py                 # register(app)
+            __init__.py                 # register(app, resources) : seul point d'entrée nécessaire à ce slice
             rest/
                 training_session_router.py
                 schemas.py
@@ -284,8 +367,9 @@ assessment/
 | Vérification des règles | import-linter | `backend/tests/architecture/` (analyse `ast`) | ADR 0006 |
 
 Repris tels quels : `domain` / `use_cases` / `adapters/{controller,gateway}` /
-`contracts` / `frameworks`, ports sous `domain/providers/`, `register(app)`
-comme unique point d'entrée vu par `runtime`, tables et `MetaData` par
+`contracts` / `frameworks`, ports sous `domain/providers/`, points d'entrée
+réexportés par la racine du contexte (`register` et fabriques nommées depuis
+`adapters/controller/dependencies`) comme seule surface vue par `runtime`, tables et `MetaData` par
 contexte dans `frameworks/sqlalchemy/`, un dossier par cas d'usage, un
 README par contexte.
 
