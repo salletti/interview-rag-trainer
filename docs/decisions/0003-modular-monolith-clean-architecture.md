@@ -18,3 +18,15 @@ Integration Events JSON versionnés séparés des Domain Events internes : publi
 ## Conséquences
 
 Tests domaine indépendants, tests de contrats inter-contextes et composition explicite des adapters.
+
+## Vérification de cohérence (2026-11-17)
+
+Le contenu reste conforme aux orientations retenues pour Knowledge Base
+(ADR [0007](0007-knowledge-base-bounded-context.md)) : un seul déployable (une
+image backend, plusieurs processus : API, workers Celery, scheduler), des BC
+sous `src/<bounded_context>`, `runtime` comme composition root. La surface
+publique d'un contexte est précisée dans
+[005](../conception/005-project-structure.md#surface-publique-dun-contexte-et-composition-root) :
+plusieurs points d'entrée nommés (`register`, `register_worker`, fabriques de
+contrats) au lieu de `register(app)` seul. Cette précision ne modifie pas la
+décision. **Passage à Accepted proposé**, à valider explicitement.
