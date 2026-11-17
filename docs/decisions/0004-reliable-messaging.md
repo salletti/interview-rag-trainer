@@ -1,8 +1,11 @@
 # ADR 0004 — Messagerie fiable et idempotence
 
-- **Date :** 2026-11-16 (complété le 2026-11-17)
-- **Statut :** Proposed pour la messagerie inter-contextes (outbox, inbox) ;
-  **Accepted pour le complément « Work queue durable »** (2026-11-17).
+- **Date :** 2026-11-16 (complété le 2026-11-17, acquittement arbitré le 2026-11-18)
+- **Statut :** **Accepted pour le complément « Work queue durable »**
+  (2026-11-17, acquittement 2026-11-18), y compris la séparation entre work
+  queue et Integration Events et le principe at-least-once à effets
+  idempotents ; **Proposed** pour l'implémentation de la messagerie
+  inter-contextes (outbox, inbox, topologie des exchanges).
 
 ## Proposition
 
@@ -58,9 +61,23 @@ publication) ; ils ne sont jamais fusionnés.
    crée le besoin (même Unit of Work). Elle porte statut, leases, fencing
    tokens, tentatives, prochaine disponibilité (backoff) et dernière erreur.
    Ces mécanismes **ne sont pas dupliqués** dans les agrégats métier.
-2. **Le message Celery est un signal de réveil** qui ne transporte que
-   l'identifiant de l'item. L'état fait foi dans PostgreSQL. Un `delay()` n'est
-   jamais considéré comme une garantie de traitement.
+2. **Le message RabbitMQ est un signal de déclenchement** qui ne transporte
+   que l'identifiant de l'item ; **PostgreSQL reste la source de vérité** du
+   travail à accomplir. Plusieurs notifications peuvent concerner le même item.
+   Un `delay()` n'est jamais considéré comme une garantie de traitement.
+
+   **Acquittement anticipé (`acks_late = False`)** pour les tâches pilotées
+   par `work_items` : Celery acquitte le message juste avant l'exécution. Cet
+   acquittement **n'est pas une garantie de traitement** : la récupération ne
+   dépend jamais d'une redélivrance RabbitMQ, mais du redispatch des items
+   `PENDING`, de la reprise des leases expirés et des invariants
+   transactionnels (claim conditionnel, fencing). `acks_late = True` est écarté
+   car il ajoute un second chemin de reprise, qui peut réexécuter un item
+   pendant que sa tentative d'origine tourne encore, sans garantie
+   supplémentaire. Le délai d'acquittement du broker (`consumer_timeout`,
+   configurable et dépendant du type de file) n'est qu'un cas de ce risque.
+   Détail et scénarios de panne :
+   [S0 §8.1 et §8.6](../conception/bounded-contexts/knowledge-base-s0.md#81-messages-et-acquittement-accepted).
 3. **Dispatch après commit** par une tâche périodique (scheduler Celery beat),
    avec redispatch des items réveillés mais jamais pris en charge, et plafond
    d'items en vol par file.
@@ -99,9 +116,11 @@ Le schéma, les transitions, les paramètres et les tests sont décrits dans
 - **`delay()` direct** : non durable.
 - **Worker PostgreSQL sans Celery** (`SKIP LOCKED` en boucle) : viable, mais
   Celery et RabbitMQ sont déjà installés et retenus (ADR 0006).
-- **Acquittement tardif Celery comme seule garantie** : soumis au
-  `consumer_timeout` de RabbitMQ sur les tâches longues et sans visibilité des
-  échecs côté métier.
+- **Acquittement tardif Celery (`acks_late = True`)** : la redélivrance
+  deviendrait un second mécanisme de reprise, concurrent du scheduler, qui
+  peut relancer un item encore en cours (fermeture de canal, redémarrage du
+  broker, délai d'acquittement dépassé) ; il ne rend visible aucun échec côté
+  métier.
 - **DLQ RabbitMQ** : un second endroit à surveiller, invisible du domaine.
 
 ### Conséquences

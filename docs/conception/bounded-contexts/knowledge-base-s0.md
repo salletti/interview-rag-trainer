@@ -1,11 +1,15 @@
 # Knowledge Base — S0 : infrastructure de traitement durable
 
-> **Statut : Proposed — prêt à implémenter.** Ce document précise la slice S0
-> de la [feuille de route](knowledge-base-roadmap.md). Il applique le complément
-> « work queue durable » de l'[ADR 0004](../../decisions/0004-reliable-messaging.md)
-> (Accepted) et les points d'entrée de
-> [005](../005-project-structure.md#surface-publique-dun-contexte-et-composition-root).
-> Les valeurs numériques sont des **défauts Proposed**, configurables et à
+> **Statut : Accepted — prêt à implémenter** (clôture de conception du
+> 2026-11-18). Ce document précise la slice S0 de la
+> [feuille de route](knowledge-base-roadmap.md). Il applique le complément
+> « work queue durable » de l'[ADR 0004](../../decisions/0004-reliable-messaging.md),
+> l'[ADR 0003](../../decisions/0003-modular-monolith-clean-architecture.md) et
+> les points d'entrée de
+> [005](../005-project-structure.md#surface-publique-dun-contexte-et-composition-root),
+> tous Accepted. Le mécanisme (schéma, transitions, fencing, acquittement,
+> récupération) est **Accepted** ; les valeurs numériques (délais, tailles de
+> lot, nombre de tentatives) sont des **défauts Proposed**, configurables et à
 > ajuster sur mesure.
 >
 > Références : [conception Knowledge Base](knowledge-base.md) §6–§7,
@@ -22,6 +26,7 @@
 6. [Conditions exactes d'idempotence](#6-conditions-exactes-didempotence)
 7. [Retry et backoff](#7-retry-et-backoff)
 8. [Dispatch, messages Celery et scheduler](#8-dispatch-messages-celery-et-scheduler)
+   — dont [cycle complet et scénarios de panne](#86-cycle-complet-et-scénarios-de-panne)
 9. [Ressources asyncio dans un worker Celery prefork](#9-ressources-asyncio-dans-un-worker-celery-prefork)
 10. [Points d'entrée et emplacement du code](#10-points-dentrée-et-emplacement-du-code)
 11. [Configuration Docker Compose](#11-configuration-docker-compose)
@@ -29,6 +34,7 @@
 13. [Critères d'acceptation](#13-critères-dacceptation)
 14. [Risques](#14-risques)
 15. [Mises à jour documentaires attendues](#15-mises-à-jour-documentaires-attendues)
+16. [Commandes de validation](#16-commandes-de-validation)
 
 ---
 
@@ -56,9 +62,9 @@ explicite.
 Docling, SentenceTransformers, torch, collections Qdrant, Integration Events,
 outbox d'événements, `RetryIngestion` (S8).
 
-**Prérequis documentaires :** ADR 0007 et complément de l'ADR 0004 Accepted
-(fait). ADR 0003 et document 005 restent Proposed : leur acceptation est
-recommandée avant S0, sans être bloquante, car S0 applique leur contenu actuel.
+**Prérequis documentaires :** ADR 0003, 0007, complément de l'ADR 0004 et
+document 005 Accepted (fait). Aucun prérequis de décision ne reste ouvert pour
+S0.
 
 ## 2. Schéma de `knowledge_base.work_items`
 
@@ -150,6 +156,46 @@ journalise et s'arrête.
 Seuls `EnqueueWork` et `CancelWork` sont exposés au domaine, par le port
 `domain/providers/work_queue.py` (Protocol). Les autres sont des opérations
 d'adapter, utilisées par les tâches Celery.
+
+API cible (signatures indicatives, à affiner pendant l'implémentation sans
+changer la sémantique) :
+
+```python
+# domain/providers/work_queue.py — port utilisé dans une Unit of Work métier
+class WorkQueue(Protocol):
+    async def enqueue(self, kind: str, dedup_key: str,
+                      payload: Mapping[str, str] | None = None,
+                      correlation_id: UUID | None = None) -> UUID: ...
+    async def cancel(self, dedup_key: str) -> bool: ...
+
+# adapters/gateway/persistence/sqlalchemy_work_queue.py — cycle de vie
+@dataclass(frozen=True)
+class ClaimedWorkItem:
+    id: UUID
+    kind: str
+    payload: Mapping[str, str]
+    attempts: int
+    max_attempts: int
+    fencing_token: int
+    correlation_id: UUID | None
+
+class SqlAlchemyWorkLifecycle:
+    async def select_dispatchable(self, kinds: Collection[str], batch: int,
+                                  redispatch_after: timedelta,
+                                  max_in_flight: Mapping[str, int]) -> list[tuple[UUID, str]]: ...
+    async def claim(self, item_id: UUID, owner: str, lease_ttl: timedelta) -> ClaimedWorkItem | None: ...
+    async def heartbeat(self, item_id: UUID, token: int, lease_ttl: timedelta) -> bool: ...
+    async def complete(self, session: AsyncSession, item_id: UUID, token: int) -> bool: ...
+    async def retry_later(self, item_id: UUID, token: int, error: FailureInfo,
+                          delay: timedelta) -> bool: ...
+    async def fail(self, session: AsyncSession, item_id: UUID, token: int,
+                   error: FailureInfo) -> bool: ...
+    async def recover_expired(self, batch: int) -> int: ...
+```
+
+`complete` et `fail` reçoivent la session de la transaction de finalisation,
+pour s'exécuter atomiquement avec les écritures métier. Un retour `False`
+signifie « 0 ligne modifiée ».
 
 ## 5. Fencing et transactions
 
@@ -253,18 +299,56 @@ ce type n'existe dans Knowledge Base V1.
 
 ## 8. Dispatch, messages Celery et scheduler
 
-### 8.1 Messages
+### 8.1 Messages et acquittement **[Accepted]**
 
 - Une seule tâche d'exécution : `knowledge_base.work.execute(work_item_id)`.
   Le message ne contient **que** l'identifiant ; il est routé vers la file du
   `kind` (`knowledge_base.ingestion` pour les traitements CPU).
-- **Acquittement à la réception** (`acks_late = False`) **[Proposed]** : le
-  message n'est qu'un signal de réveil, la durabilité est portée par la table.
-  Ce choix évite le `consumer_timeout` de RabbitMQ (30 minutes par défaut) sur
-  les tâches longues et les redélivrances massives. Un message perdu, ou un
-  worker mort après l'acquittement, est rattrapé par `redispatch_after` ou par
-  `recover`.
-- `worker_prefetch_multiplier = 1` ; sérialisation JSON (inchangée, ADR 0006).
+- **Le message RabbitMQ est un signal de déclenchement ; PostgreSQL reste la
+  source de vérité du travail à accomplir.** Plusieurs notifications peuvent
+  concerner le même item.
+- **Acquittement anticipé : `acks_late = False`** (valeur par défaut de
+  Celery, posée explicitement sur la tâche `execute`). Sémantique exacte dans
+  Celery 5.7 : le message est acquitté **juste avant l'exécution de la tâche**
+  par le processus enfant, et **non à la réception**. Un message préchargé
+  (prefetch) reste non acquitté tant qu'il attend dans le worker.
+- **`acks_late = False` n'est pas une garantie de traitement.** Après
+  l'acquittement, RabbitMQ oublie le message : si le worker meurt, aucune
+  redélivrance n'aura lieu. La récupération repose **exclusivement** sur la
+  table `work_items`, le scheduler (`dispatch`, `recover`) et les invariants
+  transactionnels (claim conditionnel, fencing). Elle ne dépend jamais d'une
+  redélivrance RabbitMQ.
+- `task_reject_on_worker_lost` est sans effet avec un acquittement anticipé et
+  n'est pas utilisé. `worker_prefetch_multiplier = 1` ; sérialisation JSON
+  (inchangée, ADR 0006).
+
+Pourquoi pas `acks_late = True` pour ces tâches :
+
+1. **La durabilité est déjà portée par la table.** Une redélivrance n'apporte
+   rien que `dispatch` et `recover` ne fassent déjà, avec une politique
+   explicite (backoff, nombre de tentatives, état `FAILED` visible).
+2. **Un acquittement tardif crée des exécutions concurrentes du même item.**
+   Si le canal se ferme pendant une tâche longue (perte de connexion,
+   redémarrage du broker, délai d'acquittement dépassé), RabbitMQ redélivre le
+   message alors que la tentative d'origine tourne encore. Le claim
+   conditionnel absorberait le doublon, mais ce chemin de reprise s'ajouterait
+   à celui du scheduler sans rien garantir de plus.
+3. **Délai d'acquittement du broker.** La stack utilise RabbitMQ 4.4.0 avec
+   les valeurs par défaut, constatées le 2026-11-18 : `consumer_timeout =
+   1800000` ms et `consumer_timeout_response = notify_consumer`, files
+   `classic` durables (`interview_rag_trainer.default`). Ce délai est
+   configurable et sa mise en œuvre dépend du type de file ; il ne fonde pas
+   la décision, il illustre le point 2. Avec `acks_late = True`, toute tâche
+   plus longue que ce délai serait exposée à une redélivrance pendant son
+   exécution.
+
+Implication résiduelle de l'acquittement anticipé : pendant qu'une tâche
+longue s'exécute (son message déjà acquitté), le worker peut précharger **un**
+message suivant (`concurrency=1 × prefetch_multiplier=1`) qui reste non
+acquitté. S'il attend plus longtemps que le délai du broker, RabbitMQ peut le
+reprendre et le redélivrer. Il s'agit d'une notification en double,
+inoffensive grâce au claim conditionnel. Un test d'intégration de S0 vérifie ce
+comportement avec un délai court (scénario 14).
 
 ### 8.2 Dispatch
 
@@ -320,6 +404,37 @@ Tâche périodique `knowledge_base.work.recover` : applique la transition
   `intervalle de dispatch + attente en file`. Avec perte d'un message :
   `+ redispatch_after`. Après crash d'un worker : `+ lease_ttl + intervalle de
   reprise`.
+
+### 8.6 Cycle complet et scénarios de panne
+
+| # | Étape | Transaction / processus | Règle |
+|---|---|---|---|
+| 1 | **Création transactionnelle** du `work_item` | transaction du handler métier (même Unit of Work) | `INSERT … ON CONFLICT (dedup_key) DO NOTHING` ; le travail n'existe que si la transaction métier est commitée |
+| 2 | **Publication de la notification** vers RabbitMQ | tâche `dispatch` : transaction courte qui pose `dispatched_at`, commit, **puis** publication | jamais avant le commit ; une publication perdue est rattrapée (7 et 8 ci-dessous) |
+| 3 | **Acquisition atomique du lease** | tâche `execute`, transaction T1 | `UPDATE … WHERE id = :id AND status = 'PENDING' AND available_at <= now()` ; 0 ligne → notification en double ou travail déjà traité : fin silencieuse |
+| 4 | **Incrémentation du fencing token** | même UPDATE que 3 | `fencing_token = fencing_token + 1`, renvoyé au worker ; c'est l'identité de la tentative |
+| 5 | **Durée et renouvellement du lease** | `lease_ttl` = 300 s ; heartbeat toutes les `lease_ttl / 3` pour un handler long | heartbeat conditionnel au token ; un heartbeat à 0 ligne signale une tentative périmée, qui s'arrête au plus tôt |
+| 6 | **Finalisation conditionnelle** | transaction T2 : écritures métier + `complete(id, token)` | 0 ligne → rollback complet de T2 ; aucun effet métier de la tentative périmée |
+| 7 | **Worker mort avant le lease** (message acquitté, ou non encore acquitté) | — | l'item reste `PENDING` avec `dispatched_at` : redispatch après `redispatch_after` ; si le message n'était pas acquitté, RabbitMQ peut aussi le redélivrer (doublon inoffensif) |
+| 7b | **Worker mort après le lease** | — | l'item reste `RUNNING` sans heartbeat ; `recover` le remet `PENDING` (avec backoff) après `lease_expires_at`, ou `FAILED` si `attempts >= max_attempts` ; le claim suivant incrémente le token |
+| 8 | **Message acquitté, traitement jamais démarré** (exception avant le claim, processus tué juste après l'acquittement) | — | identique à 7 : `PENDING` avec `dispatched_at` ancien → redispatch après `redispatch_after` |
+| 9 | **Récupération par le scheduler** | `dispatch` toutes les 2 s, `recover` toutes les 30 s | `dispatch` : items `PENDING` disponibles, jamais notifiés ou notifiés il y a plus de `redispatch_after` ; `recover` : items `RUNNING` dont le lease a expiré |
+| 10 | **Retries, backoff, `FAILED`** | transaction de `retry_later` ou `fail` | transitoire → `PENDING` avec `available_at = now() + backoff(attempts)` ; terminal ou `attempts >= max_attempts` → `FAILED` avec `last_error_*` ; relance seulement par commande explicite (S8) |
+
+Garanties qui en résultent :
+
+| Garantie | Assurée par |
+|---|---|
+| Un travail commité n'est pas perdu si sa notification se perd | `dispatch` et `redispatch_after` (2, 7, 8) |
+| Plusieurs notifications d'un même travail sont sans danger | claim conditionnel (3) |
+| Une seule tentative valide finalise la transition PostgreSQL | fencing token dans T2 (4, 6) |
+| Une ancienne tentative ne valide rien après expiration et réattribution du lease | token incrémenté par le nouveau claim (4, 7b) |
+| Un lease est récupérable après un crash | `recover` (7b, 9) |
+| Les effets externes peuvent être exécutés plusieurs fois | non garanti unique : idempotence ou réconciliation obligatoire (§6) |
+
+Délai maximal entre deux notifications d'un item `PENDING` : `redispatch_after`
+(600 s). Un message en attente derrière une tâche longue peut donc être notifié
+deux fois ; le plafond `max_in_flight` borne le nombre de doublons.
 
 ## 9. Ressources asyncio dans un worker Celery prefork
 
@@ -389,6 +504,7 @@ Changements à apporter dans S0 (rien n'est modifié par ce document) :
 | Volume `models_cache` | monté dans `api` et `worker_ingestion` sur `/var/cache/interview-rag-trainer/models` (utilisé à partir de S3/S4) | — |
 | Image (`backend/Dockerfile`) | création des répertoires de montage avec propriétaire `app` (un volume nommé neuf copie les droits du répertoire de l'image) | idem |
 | `.env.example` | variables `KB_*` documentées avec leurs défauts | — |
+| `rabbitmq_test` | — | délai d'acquittement court (`consumer_timeout`) via un fichier de configuration monté, **uniquement** pour le scénario 14 ; la stack de dev garde les défauts |
 
 Aucun nouveau service d'infrastructure (pas de Redis, pas de MinIO). Celery
 beat est un processus de la même image, pas une infrastructure.
@@ -420,7 +536,9 @@ code de production.
 | 4 | cycle complet : enqueue → dispatch → execute → finalisation | `SUCCEEDED` ; effet métier de test écrit une fois |
 | 5 | même message livré deux fois | un seul claim ; un seul effet métier |
 | 6 | lease expiré pendant que la tentative A s'exécute ; recover puis claim B ; A tente de finaliser | finalisation de A rejetée (0 ligne, rollback) ; B finalise ; un seul effet métier |
+| 6b | claim puis arrêt du traitement sans heartbeat ni finalisation (worker tué) | `recover` remet l'item `PENDING` après expiration ; nouveau claim avec token incrémenté ; un seul effet métier |
 | 7 | item dispatché, message jamais consommé | redispatché après `redispatch_after` (horloge accélérée par paramètre) |
+| 7b | message consommé et acquitté, puis abandonné avant le claim | item `PENDING`, redispatché après `redispatch_after`, puis `SUCCEEDED` |
 | 8 | handler levant une erreur transitoire | `PENDING`, `available_at` repoussé, `attempts` incrémenté ; après `max_attempts` : `FAILED`, `last_error_*` renseigné |
 | 9 | handler levant une erreur terminale avec hook métier | `FAILED` et écriture métier d'échec dans la même transaction |
 | 10 | annulation pendant l'exécution | finalisation rejetée ; état `CANCELLED` |
@@ -428,6 +546,7 @@ code de production.
 | 11b | item d'un `kind` non enregistré | jamais dispatché, reste `PENDING`, `attempts = 0` |
 | 12 | migration : `upgrade head`, `downgrade -1`, `upgrade head` | sans erreur ; schéma conforme au §2 |
 | 13 | ressources prefork | une tâche exécutée par un vrai processus enfant réutilise la même boucle et le même moteur sur deux tâches successives (pas d'erreur « attached to a different loop ») |
+| 14 | message préchargé non acquitté au-delà d'un `consumer_timeout` court (RabbitMQ de test configuré pour ce scénario) | notification redélivrée ou redispatchée ; claim conditionnel : un seul effet métier ; comportement observé consigné dans ce document |
 
 ### 12.3 Architecture
 
@@ -453,8 +572,8 @@ code de production.
 ## 13. Critères d'acceptation
 
 1. `make ci` et `make test-integration` passent.
-2. Les scénarios d'intégration 1 à 13 passent contre PostgreSQL et RabbitMQ
-   réels.
+2. Les scénarios d'intégration 1 à 14 (y compris 6b, 7b, 11b) passent contre
+   PostgreSQL et RabbitMQ réels.
 3. **Aucun travail commité n'est perdu** : il atteint `SUCCEEDED`, `FAILED` ou
    `CANCELLED` malgré la perte d'un message (7) ou la mort d'un worker (6).
 4. **Aucun effet métier PostgreSQL n'est appliqué deux fois** malgré une
@@ -488,3 +607,21 @@ code de production.
 - ADR 0006 : aucune modification de ses choix ; ajout éventuel d'une référence
   vers les nouveaux services dans « Conséquences » si le nombre de services
   annoncé change.
+
+## 16. Commandes de validation
+
+À exécuter avant d'ouvrir la Pull Request de S0 :
+
+```bash
+make lint typecheck test          # Ruff, mypy strict, unitaires + architecture
+make test-integration             # stack compose.test.yaml éphémère, pytest -m integration
+make ci                           # équivalent local complet (backend + frontend)
+docker compose up --build -d      # stack de développement
+make ps                           # worker_ingestion et scheduler démarrés, healthchecks
+curl -s localhost:8010/health/ready
+docker compose exec worker_ingestion celery -A runtime.worker:celery_app inspect active_queues
+make migrate                      # upgrade head sur la stack de dev
+```
+
+Un test non exécuté ou une vérification impossible doit être signalé
+explicitement dans la Pull Request.

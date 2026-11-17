@@ -278,9 +278,12 @@ schéma et paramètres : [knowledge-base-s0.md](knowledge-base-s0.md#3-transitio
 ## 6. Workflow de traitement avec `work_items`
 
 **[Accepted — ADR 0004, complément work queue]** Toutes les étapes longues
-passent par `knowledge_base.work_items`. Le message Celery n'est qu'un signal
-de réveil portant l'identifiant de l'item ; **l'état fait foi dans
-PostgreSQL**. Un simple `celery.delay()` n'est jamais considéré comme durable.
+passent par `knowledge_base.work_items`. Le message RabbitMQ n'est qu'un
+signal de déclenchement portant l'identifiant de l'item ; **l'état fait foi
+dans PostgreSQL**. Un simple `celery.delay()` n'est jamais considéré comme
+durable. Le message est acquitté avant l'exécution (`acks_late = False`) ; la
+récupération repose sur la table et le scheduler, jamais sur une redélivrance
+([S0 §8.6](knowledge-base-s0.md#86-cycle-complet-et-scénarios-de-panne)).
 
 | Étape | Transaction d'entrée | Hors transaction | Transaction de finalisation | Item suivant |
 |---|---|---|---|---|
