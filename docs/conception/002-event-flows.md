@@ -62,7 +62,7 @@ sequenceDiagram
 - **T6** : valider lease, Rubric et correction ; persister AssessmentRevision et outbox AssessmentPublished ; commit.
 - **T8** : inbox AssessmentPublished + rattachement submission_id + projection du résultat ; commit, puis ACK.
 
-Ne jamais garder de transaction DB ouverte pendant l'appel réseau LLM. L'exécution durable peut utiliser une work queue DB ou une outbox de tâches, pas un simple `delay()` non récupérable après commit.
+Ne jamais garder de transaction DB ouverte pendant l'appel réseau LLM. L'exécution durable peut utiliser une work queue DB ou une outbox de tâches, pas un simple `delay()` non récupérable après commit. Le mécanisme de work queue retenu (table `work_items`, lease, fencing) est décrit dans le [complément de l'ADR 0004](../decisions/0004-reliable-messaging.md#complément--work-queue-durable-accepted-2026-11-17) ; Knowledge Base l'utilise en premier ([cycle d'ingestion](bounded-contexts/knowledge-base.md#6-workflow-de-traitement-avec-work_items)).
 
 ## Erreurs et idempotence
 

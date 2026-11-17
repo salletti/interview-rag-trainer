@@ -77,6 +77,10 @@ Le consumer vérifie submission_id et traite les numéros de révision idempotem
 
 DTO public `AssessmentSummary` pour consulter l'état/résultat via interface applicative ; ne pas exposer les entités Assessment. En V1, une projection locale côté Interview Training peut suffire.
 
+## Knowledge Base
+
+Aucun Integration Event publié en V1 (ADR 0007). Les noms `knowledge.document_version_published.v1` et `knowledge.document_withdrawn.v1` sont réservés et suivront l'enveloppe commune ci-dessus quand un consommateur réel existera. La recherche passe par le contrat public synchrone `KnowledgeSearch` ([knowledge-base.md §14](bounded-contexts/knowledge-base.md#14-contrat-public-knowledgesearch)).
+
 ## Compatibilité
 
 Évolution de schéma versionnée ; tests de contrats producteurs/consommateurs. Les exemples ci-dessus sont des propositions jusqu'à validation définitive des champs.

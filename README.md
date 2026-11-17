@@ -21,7 +21,8 @@ Guide complet : [docs/guides/environnement-local.md](docs/guides/environnement-l
 ```text
 backend/            FastAPI, Celery, Alembic — Python 3.13, uv
   src/runtime/      composition root (settings, app, worker, santé)
-  src/<contexte>/   interview_training, assessment (READMEs ; code à venir par vertical slices)
+  src/<contexte>/   interview_training, assessment (READMEs ; code à venir par vertical slices) ;
+                    knowledge_base conçu (ADR 0007), créé à la slice S0
   src/shared/       primitives transverses justifiées uniquement
   tests/            unit, integration, architecture
 frontend/           React 19, TypeScript strict, Vite, Vitest
@@ -39,9 +40,10 @@ compose.yaml        stack de développement ; compose.test.yaml : stack d'intég
 - [Contrats d'intégration](docs/conception/004-integration-contracts.md)
 - [Structure Clean Architecture](docs/conception/005-project-structure.md)
 - [Questions ouvertes](docs/conception/006-open-questions.md)
-- [ADR](docs/decisions/README.md) — dont [ADR 0006 — Socle technique](docs/decisions/0006-technical-bootstrap.md)
+- [Knowledge Base](docs/conception/bounded-contexts/knowledge-base.md) — conception, [feuille de route S0–S9](docs/conception/bounded-contexts/knowledge-base-roadmap.md), [S0](docs/conception/bounded-contexts/knowledge-base-s0.md)
+- [ADR](docs/decisions/README.md) — dont [ADR 0006 — Socle technique](docs/decisions/0006-technical-bootstrap.md) et [ADR 0007–0012 — Knowledge Base](docs/decisions/0007-knowledge-base-bounded-context.md)
 - [Guide environnement local](docs/guides/environnement-local.md)
 
-Architecture : monolithe modulaire DDD / Clean Architecture, FastAPI, PostgreSQL (Alembic), Qdrant (vecteurs), RabbitMQ/Celery, routage multi-LLM envisagé (Groq, Cerebras, Gemini, OpenRouter).
+Architecture : monolithe modulaire DDD / Clean Architecture, FastAPI, PostgreSQL (Alembic), Qdrant (vecteurs), RabbitMQ/Celery, routage multi-LLM envisagé (Groq, Cerebras, Gemini, OpenRouter). Pipeline RAG de Knowledge Base : Docling, SentenceTransformers (`multilingual-e5-base` initial, révisable), Qdrant, sans framework RAG (ADR 0008).
 
 Conventions inspirées de `salletti/trading-agent-ai` (`domain`, `use_cases`, `adapters`, `contracts`, `frameworks`, `runtime`).

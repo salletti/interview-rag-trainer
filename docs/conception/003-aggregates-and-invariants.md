@@ -52,3 +52,7 @@ Une session très longue pourrait justifier InterviewTurn comme Aggregate Root i
 - Réponse libre : le LLM propose des niveaux par critère ; l'application valide et calcule la note finale.
 
 Le modèle Assessment est réutilisable hors Interview Training.
+
+## Knowledge Base
+
+Les agrégats (`KnowledgeDocument`, `KnowledgeCorpus`, `Indexation`), leurs états et leurs invariants sont décrits dans [knowledge-base.md §3–§5](bounded-contexts/knowledge-base.md#3-agrégats-entités-et-value-objects), pour ne pas dupliquer ce document.

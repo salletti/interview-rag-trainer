@@ -14,4 +14,4 @@ Composition root technique du monolithe. Aucune règle métier.
 | `system.py` | `/api/v1/system/info` (données non sensibles) |
 | `logging_config.py` | logging standard, format unique |
 
-Les Bounded Contexts seront enregistrés ici par leur surface publique uniquement (`backend/tests/architecture/`).
+Les Bounded Contexts seront enregistrés ici par leur surface publique uniquement (`backend/tests/architecture/`) : points d'entrée réexportés par leur package racine (`register`, `register_worker`, fabriques de contrats), voir [005 — Surface publique](../../../docs/conception/005-project-structure.md#surface-publique-dun-contexte-et-composition-root).
