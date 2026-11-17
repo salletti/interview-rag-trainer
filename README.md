@@ -32,6 +32,9 @@ compose.yaml        stack de développement ; compose.test.yaml : stack d'intég
 
 ## Documentation
 
+Règles de travail : [CLAUDE.md](CLAUDE.md) (Documentation First, respect des ADR, vertical slices, tests).
+
+
 - [Index](docs/README.md)
 - [Contexte métier](docs/context/domain.md)
 - [Bounded Contexts](docs/conception/001-bounded-contexts.md)

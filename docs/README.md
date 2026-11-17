@@ -1,5 +1,7 @@
 # Documentation — Index
 
+Règles de travail permanentes (Documentation First, ADR, frontières, tests) : [CLAUDE.md](../CLAUDE.md).
+
 ## Référentiel de conception
 
 - [Contexte métier](context/domain.md) — objectif produit, cas d'usage, langage ubiquitaire.

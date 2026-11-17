@@ -1,6 +1,6 @@
 # 005 — Structure du projet, DDD et Clean Architecture
 
-> **Statut :** Proposed (suit l'ADR 0003, lui-même Proposed).
+> **Statut :** Accepted (2026-11-18), avec l'ADR 0003.
 >
 > **Mise à jour 2026-11-17 :** surface publique élargie à plusieurs points
 > d'entrée nommés ([section dédiée](#surface-publique-dun-contexte-et-composition-root)),

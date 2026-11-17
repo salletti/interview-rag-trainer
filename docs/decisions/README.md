@@ -4,8 +4,8 @@
 |---|---|---|
 | [0001](0001-two-bounded-contexts.md) | Interview Training / Assessment séparés | Accepted |
 | [0002](0002-event-choreography-v1.md) | Chorégraphie événementielle V1 | Accepted |
-| [0003](0003-modular-monolith-clean-architecture.md) | Monolithe modulaire / CA | Proposed (passage à Accepted proposé) |
-| [0004](0004-reliable-messaging.md) | Outbox, inbox, leases, reconciliation ; complément work queue durable | Proposed ; complément *work queue* Accepted |
+| [0003](0003-modular-monolith-clean-architecture.md) | Monolithe modulaire / CA, conventions de [005](../conception/005-project-structure.md) | Accepted |
+| [0004](0004-reliable-messaging.md) | Outbox, inbox, leases, reconciliation ; complément work queue durable et acquittement | Complément *work queue* Accepted ; outbox/inbox Proposed |
 | [0005](0005-multi-llm-fallback.md) | Routage multi-LLM | Proposed |
 | [0006](0006-technical-bootstrap.md) | Socle technique Phase 1 (stack, Qdrant, RabbitMQ sans Redis, readiness, Alembic) | Proposed |
 | [0007](0007-knowledge-base-bounded-context.md) | Bounded Context Knowledge Base, contrat `KnowledgeSearch` | Accepted |
