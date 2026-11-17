@@ -19,12 +19,39 @@ docker compose up --build -d
 | PostgreSQL 18 | `localhost:5440` | image pgvector, extension non activée |
 | Qdrant | http://localhost:6333 (REST), 6334 (gRPC) | moteur vectoriel principal |
 | RabbitMQ | `localhost:5672`, management http://localhost:15672 | broker Celery |
-| Worker Celery | — | file `interview_rag_trainer.default` |
+| Worker Celery (`worker`) | — | file `interview_rag_trainer.default` : `runtime.ping`, tâches `dispatch` et `recover` de Knowledge Base |
+| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` (traitements CPU de Knowledge Base ; aucun en S0) |
+| Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` |
 | migrate | — | `alembic upgrade head`, s'arrête une fois terminé |
 
 Les ports hôte sont décalés (8010, 5180, 5440) pour cohabiter avec d'autres projets ; ils se changent dans `.env`.
 
-Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé → `api` et `worker` ; `frontend` après `api`.
+Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé → `api`, `worker` et `worker_ingestion` ; `scheduler` dès que RabbitMQ est sain ; `frontend` après `api`.
+
+### Volumes
+
+| Volume | Monté dans | Chemin | Usage |
+|---|---|---|---|
+| `postgres_data`, `qdrant_data`, `rabbitmq_data` | services d'infrastructure | — | données |
+| `kb_blobs` | `api`, `worker`, `worker_ingestion` | `/var/lib/interview-rag-trainer/blobs` | originaux des documents de Knowledge Base (à partir de S1/S2) |
+| `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` | cache des modèles (à partir de S3/S4) |
+
+Les répertoires de montage sont créés dans l'image avec le propriétaire `app` : un volume nommé neuf en hérite les droits.
+
+### Variables Knowledge Base (`KB_*`)
+
+Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowledge-base-s0.md#7-retry-et-backoff), transmis aux conteneurs par `compose.yaml` et documentés dans `.env.example`. Durées en secondes, valeurs strictement positives.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `KB_WORK_BACKOFF_BASE_SECONDS` / `KB_WORK_BACKOFF_MAX_SECONDS` | 10 / 900 | backoff exponentiel plafonné, *equal jitter* |
+| `KB_WORK_LEASE_TTL_SECONDS` | 300 | durée d'un lease |
+| `KB_WORK_HEARTBEAT_INTERVAL_SECONDS` | lease / 3 | intervalle de heartbeat conseillé (strictement inférieur au lease) ; hors Compose seulement |
+| `KB_WORK_TIME_LIMIT_SECONDS` | 3600 | limite dure Celery de la tâche `execute` |
+| `KB_WORK_DISPATCH_INTERVAL_SECONDS` / `KB_WORK_RECOVER_INTERVAL_SECONDS` | 2 / 30 | planification de beat |
+| `KB_WORK_DISPATCH_BATCH` | 50 | taille de lot de `dispatch` et de `recover` |
+| `KB_WORK_REDISPATCH_AFTER_SECONDS` | 600 | délai avant une nouvelle notification d'un item `PENDING` |
+| `KB_WORK_MAX_IN_FLIGHT` | 2 | plafond d'items en vol **par file** (en S0 : `knowledge_base.ingestion`) |
 
 ## Vérifications
 
@@ -32,6 +59,8 @@ Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé
 make ps                                  # état et healthchecks
 curl -s localhost:8010/health/ready      # {"status":"ready", "checks": {...}}
 make worker-ping                         # pong : broker → worker → result backend
+docker compose exec worker_ingestion celery -A runtime.worker:celery_app inspect active_queues
+                                         # knowledge_base.ingestion : consommée par worker_ingestion seul
 ```
 
 `/health/ready` répond `ready` (200), `degraded` (200, Qdrant ou RabbitMQ indisponible) ou `not_ready` (503, PostgreSQL indisponible). Voir ADR 0006.
@@ -45,7 +74,7 @@ make ci                                  # tout ce qui précède
 make test-integration                    # stack compose.test.yaml éphémère + pytest -m integration
 ```
 
-Les tests d'intégration démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack.
+Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
 
 ## Migrations
 
@@ -54,7 +83,7 @@ make migration m="slug_de_la_migration"  # crée un fichier sous backend/alembic
 make migrate                             # applique dans la stack de dev
 ```
 
-Jamais de `metadata.create_all()` : Alembic est l'unique mécanisme de schéma. L'`--autogenerate` fonctionnera dès qu'un Bounded Context aura enregistré son `MetaData` dans `backend/alembic/env.py`.
+Jamais de `metadata.create_all()` : Alembic est l'unique mécanisme de schéma. `backend/alembic/env.py` déclare le `MetaData` de chaque contexte (Knowledge Base : schéma `knowledge_base`) avec `include_schemas=True` ; seuls ces schémas sont comparés, la table de versions reste dans `public`. `cd backend && uv run alembic check` vérifie qu'aucune migration ne manque.
 
 ## Développement hors Docker
 
@@ -68,6 +97,6 @@ Le backend lit `../.env` (racine du dépôt) puis `.env` (répertoire courant), 
 ## Arrêt
 
 ```bash
-make down                 # conserve les volumes (données PostgreSQL, Qdrant, RabbitMQ)
+make down                 # conserve les volumes (données PostgreSQL, Qdrant, RabbitMQ, kb_blobs, models_cache)
 docker compose down -v    # supprime aussi les volumes
 ```

@@ -1,45 +1,28 @@
-"""Application Celery et tâche technique de vérification.
+"""Application Celery de production et tâche technique de vérification.
 
 RabbitMQ est le broker ; le result backend ``rpc://`` réutilise RabbitMQ, ce
 qui évite d'installer Redis pour un simple aller-retour technique.
 
-Les tâches Celery définies ici sont de l'outillage technique. Elles ne sont
-**pas** les Integration Events entre Bounded Contexts
-(docs/conception/004-integration-contracts.md) : ceux-ci seront des contrats
-JSON versionnés publiés via une outbox dans une phase ultérieure.
+Les tâches Celery ne sont **pas** les Integration Events entre Bounded
+Contexts (docs/conception/004-integration-contracts.md) : ceux-ci seront des
+contrats JSON versionnés publiés via une outbox dans une phase ultérieure.
 
-Lancement : ``celery -A runtime.worker:celery_app worker``.
+La composition (tâches de Knowledge Base, ressources des processus enfants)
+est faite par ``runtime.worker_factory.create_celery_app``.
+
+Lancement : ``celery -A runtime.worker:celery_app worker`` (pool prefork) ;
+``celery -A runtime.worker:celery_app beat`` pour le scheduler.
 """
 
 from __future__ import annotations
 
-from celery import Celery
-
-from runtime.settings import Settings, get_settings
-
-
-def create_celery_app(settings: Settings | None = None) -> Celery:
-    settings = settings or get_settings()
-    app = Celery(
-        "interview_rag_trainer",
-        broker=settings.broker_url,
-        backend=settings.celery_result_backend,
-    )
-    app.conf.update(
-        task_serializer="json",
-        result_serializer="json",
-        accept_content=["json"],
-        timezone="UTC",
-        enable_utc=True,
-        broker_connection_retry_on_startup=True,
-        broker_connection_timeout=settings.external_timeout_seconds,
-        result_expires=3600,
-        task_default_queue="interview_rag_trainer.default",
-    )
-    return app
-
+from runtime.worker_factory import create_celery_app
 
 celery_app = create_celery_app()
+# Un enfant prefork démarré en spawn (défaut de billiard sous macOS) ne
+# reconstruit les tâches qu'en important les modules de ``include`` : ce module
+# de composition doit en faire partie (sous Linux, les enfants sont forkés).
+celery_app.conf.include = [__name__]
 
 
 @celery_app.task(name="runtime.ping")

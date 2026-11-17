@@ -41,6 +41,11 @@ services:
       RABBITMQ_DEFAULT_PASS: irt_test
     ports:
       - "5682:5672"
+    volumes:
+      # consumer_timeout court, pour le scénario 14 de S0 uniquement : seuls
+      # les messages livrés et non acquittés sont concernés (exposition des
+      # autres tests et comportement observé : S0 §12.2 #14).
+      - ./backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf:/etc/rabbitmq/conf.d/20-consumer-timeout.conf:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 3s

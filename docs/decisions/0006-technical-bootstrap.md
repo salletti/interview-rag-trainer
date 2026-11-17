@@ -100,7 +100,11 @@ sur eux :
 - Les règles d'architecture (point 11) seront étendues aux bibliothèques
   d'extraction et d'embeddings (ADR 0008) et au troisième contexte (ADR 0007)
   lors de la slice S0.
-- La slice S0 ajoutera deux processus de la même image (`worker_ingestion`,
-  `scheduler`) et deux volumes ; le décompte « sept services » des
-  Conséquences sera alors actualisé
+- La slice S0 ajoute deux processus de la même image (`worker_ingestion`,
+  `scheduler`) et deux volumes (`kb_blobs`, `models_cache`)
   ([knowledge-base-s0.md §11](../conception/bounded-contexts/knowledge-base-s0.md#11-configuration-docker-compose)).
+  Décompte actualisé des Conséquences : `docker compose up --build -d`
+  démarre **neuf** services (migrate, api, worker, worker_ingestion,
+  scheduler, frontend, postgres, qdrant, rabbitmq) ; aucun nouveau service
+  d'infrastructure, les exclusions de cet ADR (Redis, pgvector actif) sont
+  inchangées.

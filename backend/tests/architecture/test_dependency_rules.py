@@ -38,6 +38,13 @@ FRAMEWORKS = frozenset(
         "pydantic_settings",
         "httpx",
         "uvicorn",
+        # Pile ML de Knowledge Base (ADR 0008) : réservée aux adapters.
+        "docling",
+        "docling_core",
+        "sentence_transformers",
+        "transformers",
+        "torch",
+        "numpy",
     }
 )
 INTERNAL_LAYERS = ("domain", "use_cases", "adapters", "frameworks")
@@ -191,7 +198,11 @@ RULES: dict[str, Rule] = {
 
 
 def test_src_contains_the_validated_contexts() -> None:
-    assert bounded_contexts(SRC) == ["assessment", "interview_training"]
+    assert bounded_contexts(SRC) == [
+        "assessment",
+        "interview_training",
+        "knowledge_base",
+    ]
 
 
 @pytest.mark.parametrize("rule", RULES.values(), ids=list(RULES))
@@ -211,7 +222,13 @@ def _write(src: Path, relative: str, content: str = "") -> None:
 @pytest.fixture
 def fake_src(tmp_path: Path) -> Path:
     src = tmp_path / "src"
-    for pkg in ("runtime", "shared", "assessment", "interview_training"):
+    for pkg in (
+        "runtime",
+        "shared",
+        "assessment",
+        "interview_training",
+        "knowledge_base",
+    ):
         _write(src, f"{pkg}/__init__.py")
     return src
 
@@ -229,6 +246,48 @@ VIOLATIONS = [
         "assessment/use_cases/publish.py",
         "import fastapi\n",
         "fastapi",
+    ),
+    (
+        "domain_and_use_cases_are_framework_free",
+        "knowledge_base/domain/extraction.py",
+        "from docling.document_converter import DocumentConverter\n",
+        "docling",
+    ),
+    (
+        "domain_and_use_cases_are_framework_free",
+        "knowledge_base/use_cases/index_version/handler.py",
+        "import sentence_transformers\n",
+        "sentence_transformers",
+    ),
+    (
+        "domain_and_use_cases_are_framework_free",
+        "knowledge_base/domain/vectors.py",
+        "import torch\n",
+        "torch",
+    ),
+    (
+        "domain_and_use_cases_are_framework_free",
+        "knowledge_base/domain/scoring.py",
+        "import numpy as np\n",
+        "numpy",
+    ),
+    (
+        "domain_and_use_cases_are_framework_free",
+        "knowledge_base/use_cases/enqueue.py",
+        "from celery import Celery\n",
+        "celery",
+    ),
+    (
+        "runtime_only_sees_public_surface",
+        "runtime/worker.py",
+        "from knowledge_base.adapters.controller.tasks import registry\n",
+        "knowledge_base.adapters.controller.tasks",
+    ),
+    (
+        "contexts_never_import_each_other_internals",
+        "knowledge_base/adapters/controller/tasks/execution.py",
+        "from assessment.domain.entities import Assessment\n",
+        "assessment.domain.entities",
     ),
     (
         "domain_does_not_depend_on_outer_layers",
@@ -312,3 +371,36 @@ def test_relative_imports_are_resolved_against_the_file_package(fake_src: Path) 
         "assessment.contracts",
         "assessment.contracts.dto",
     } <= modules
+
+
+def test_ml_stack_is_listed_among_the_forbidden_frameworks() -> None:
+    assert {
+        "docling",
+        "docling_core",
+        "sentence_transformers",
+        "transformers",
+        "torch",
+        "numpy",
+    } <= FRAMEWORKS
+
+
+def test_ml_stack_is_allowed_in_adapters(fake_src: Path) -> None:
+    _write(
+        fake_src,
+        "knowledge_base/adapters/gateway/parsing/docling_parser.py",
+        "import docling\nimport numpy\n",
+    )
+    assert domain_and_use_cases_are_framework_free(fake_src) == []
+
+
+def test_runtime_may_import_the_knowledge_base_root_and_contracts(
+    fake_src: Path,
+) -> None:
+    _write(
+        fake_src,
+        "runtime/worker.py",
+        "import knowledge_base\n"
+        "from knowledge_base import register_worker\n"
+        "from knowledge_base.contracts import KnowledgeSearch\n",
+    )
+    assert runtime_only_sees_public_surface(fake_src) == []

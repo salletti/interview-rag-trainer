@@ -30,12 +30,16 @@ from runtime.settings import Settings
 SessionFactory = async_sessionmaker[AsyncSession]
 
 
-def create_engine(settings: Settings) -> AsyncEngine:
+def create_engine(settings: Settings, *, pool_size: int = 5) -> AsyncEngine:
     """Moteur asynchrone du processus (asyncpg). Ne se connecte pas tout de
-    suite : la première connexion est ouverte à la première requête."""
+    suite : la première connexion est ouverte à la première requête.
+
+    ``pool_size`` (défaut SQLAlchemy : 5) est réduit dans les processus
+    enfants des workers, qui n'exécutent qu'une tâche à la fois."""
     return create_async_engine(
         settings.database_url,
         pool_pre_ping=True,
+        pool_size=pool_size,
         connect_args={"timeout": settings.external_timeout_seconds},
     )
 

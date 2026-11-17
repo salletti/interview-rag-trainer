@@ -46,6 +46,8 @@ flowchart LR
 
 ## S0 — Infrastructure de traitement durable
 
+> **Statut : implémentée (2026-11-18)** sur `feature/knowledge-base-v1` — unitaires, architecture et 109 tests d'intégration verts ; scénario 14 : invariant prouvé, reprise par le broker non observée ([S0 §12.2](knowledge-base-s0.md#122-intégration-postgresql-et-rabbitmq-réels-composetestyaml)).
+
 - **Objectif :** tout travail enregistré dans une transaction métier est
   exécuté puis terminé explicitement, malgré pertes de messages, redélivrances
   et crashs.

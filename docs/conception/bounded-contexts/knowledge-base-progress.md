@@ -22,7 +22,7 @@ review prêt.
 
 | Slice | Objectif | Dépend de | Statut | Commit(s) | Tests exécutés |
 |---|---|---|---|---|---|
-| S0 | Infrastructure de traitement durable | — | À faire | | |
+| S0 | Infrastructure de traitement durable | — | **Terminée** | voir journal | Ruff, mypy (68 fichiers), 130 unit./archi., 109 intégration, Compose (9 services) |
 | S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | À faire | | |
 | S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | À faire | | |
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | À faire | | |
@@ -49,7 +49,14 @@ périmètre.
 - 2026-11-17 — Audit initial : `main` à `447a234` (PR #1 et #2 mergées) ;
   socle Phase 1 vert (Ruff, mypy strict sur 28 fichiers, 35 tests unitaires
   et d'architecture) ; aucun code `knowledge_base`. Branche créée.
+- 2026-11-18 — S0 terminée : tests rouges (expert-tdd) → implémentation
+  (expert-python) → revue (1 bloquant, 4 importants, 6 mineurs, tous corrigés)
+  → revalidation : 130 unitaires/architecture, 109 intégration, Compose 9 services.
 
 ## Écarts et décisions en cours de route
 
-_(aucun pour l'instant)_
+- S0 — `create_celery_app` dans `runtime/worker_factory.py` (précision d'implémentation balisée en S0 §10).
+- S0 — plafond `max_in_flight` par **file** (conforme §8.2), approximatif sous dispatch concurrent.
+- S0 — `max_attempts` du handler appliqué au claim (précision balisée S0 §2/§7).
+- S0 — hook d'échec qui lève → `retry_later` `TERMINAL_HOOK_FAILED` ; point **O14** ouvert (S8).
+- S0 — scénario 14 : redélivrance par `consumer_timeout` de RabbitMQ 4.4.0 non observée ; seul l'invariant « un seul effet » est prouvé.

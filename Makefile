@@ -9,7 +9,11 @@ FRONTEND := cd frontend && npm run
 INTEGRATION_ENV := ENVIRONMENT=test POSTGRES_HOST=localhost POSTGRES_PORT=5441 \
 	POSTGRES_USER=irt_test POSTGRES_PASSWORD=irt_test POSTGRES_DB=irt_test \
 	QDRANT_HOST=localhost QDRANT_PORT=6343 \
-	RABBITMQ_HOST=localhost RABBITMQ_PORT=5682 RABBITMQ_USER=irt_test RABBITMQ_PASSWORD=irt_test
+	RABBITMQ_HOST=localhost RABBITMQ_PORT=5682 RABBITMQ_USER=irt_test RABBITMQ_PASSWORD=irt_test \
+	KB_TEST_CONSUMER_TIMEOUT_SECONDS=5
+# KB_TEST_CONSUMER_TIMEOUT_SECONDS active le scénario 14 de S0 : il doit
+# valoir le consumer_timeout de backend/tests/integration/rabbitmq_test/
+# 20-consumer-timeout.conf (en secondes).
 
 help: ## Liste des cibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'
@@ -34,7 +38,7 @@ test: ## Tests unitaires et d'architecture (sans service externe)
 	$(BACKEND) pytest
 
 test-integration-up:
-	docker compose -f compose.test.yaml up -d --wait
+	docker compose -f compose.test.yaml up -d --wait --build
 
 test-integration-down:
 	docker compose -f compose.test.yaml down -v

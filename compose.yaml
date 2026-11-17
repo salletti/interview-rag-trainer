@@ -21,6 +21,16 @@ x-backend-env: &backend-env
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-interview_rag_trainer}
   RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
   CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-rpc://}
+  # Work queue de Knowledge Base (S0 §7, §8.4) : défauts Proposed.
+  KB_WORK_BACKOFF_BASE_SECONDS: ${KB_WORK_BACKOFF_BASE_SECONDS:-10}
+  KB_WORK_BACKOFF_MAX_SECONDS: ${KB_WORK_BACKOFF_MAX_SECONDS:-900}
+  KB_WORK_LEASE_TTL_SECONDS: ${KB_WORK_LEASE_TTL_SECONDS:-300}
+  KB_WORK_TIME_LIMIT_SECONDS: ${KB_WORK_TIME_LIMIT_SECONDS:-3600}
+  KB_WORK_DISPATCH_INTERVAL_SECONDS: ${KB_WORK_DISPATCH_INTERVAL_SECONDS:-2}
+  KB_WORK_DISPATCH_BATCH: ${KB_WORK_DISPATCH_BATCH:-50}
+  KB_WORK_REDISPATCH_AFTER_SECONDS: ${KB_WORK_REDISPATCH_AFTER_SECONDS:-600}
+  KB_WORK_MAX_IN_FLIGHT: ${KB_WORK_MAX_IN_FLIGHT:-2}
+  KB_WORK_RECOVER_INTERVAL_SECONDS: ${KB_WORK_RECOVER_INTERVAL_SECONDS:-30}
 
 x-backend-build: &backend-build
   context: ./backend
@@ -50,6 +60,8 @@ services:
       - "${API_PORT:-8010}:8000"
     volumes:
       - ./backend/src:/app/src:ro
+      - kb_blobs:/var/lib/interview-rag-trainer/blobs
+      - models_cache:/var/cache/interview-rag-trainer/models
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -67,12 +79,15 @@ services:
       retries: 5
     networks: [backend]
 
+  # File par défaut : runtime.ping et les tâches dispatch / recover de
+  # Knowledge Base, qui ne doivent jamais attendre derrière une extraction.
   worker:
     build: *backend-build
     command: ["celery", "-A", "runtime.worker:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
     environment: *backend-env
     volumes:
       - ./backend/src:/app/src:ro
+      - kb_blobs:/var/lib/interview-rag-trainer/blobs
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -84,6 +99,43 @@ services:
       timeout: 10s
       start_period: 20s
       retries: 3
+    networks: [backend]
+
+  # Traitements CPU de Knowledge Base (file knowledge_base.ingestion) : un seul
+  # enfant, un seul message préchargé (S0 §8.1, §9).
+  worker_ingestion:
+    build: *backend-build
+    command: ["celery", "-A", "runtime.worker:celery_app", "worker", "-Q", "knowledge_base.ingestion", "--loglevel=INFO", "--concurrency=1", "--prefetch-multiplier=1"]
+    environment: *backend-env
+    volumes:
+      - ./backend/src:/app/src:ro
+      - kb_blobs:/var/lib/interview-rag-trainer/blobs
+      - models_cache:/var/cache/interview-rag-trainer/models
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A runtime.worker:celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    networks: [backend]
+
+  # Celery beat : émet dispatch et recover, n'accède pas à la base.
+  # Une seule instance (S0 §8.5) ; état éphémère, les planifications sont des
+  # intervalles.
+  scheduler:
+    build: *backend-build
+    command: ["celery", "-A", "runtime.worker:celery_app", "beat", "--loglevel=INFO", "--schedule", "/tmp/celerybeat-schedule"]
+    environment: *backend-env
+    volumes:
+      - ./backend/src:/app/src:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     networks: [backend]
 
   frontend:
@@ -161,6 +213,9 @@ volumes:
   postgres_data:
   qdrant_data:
   rabbitmq_data:
+  # Knowledge Base : blobs des documents (S1) et cache des modèles (S3/S4).
+  kb_blobs:
+  models_cache:
 
 networks:
   backend:

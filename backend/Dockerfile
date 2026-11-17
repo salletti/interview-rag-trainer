@@ -20,6 +20,10 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-editable \
     && chown -R app:app /app
+# Points de montage des volumes de Knowledge Base (kb_blobs, models_cache),
+# possédés par app : un volume nommé neuf copie les droits du répertoire.
+RUN mkdir -p /var/lib/interview-rag-trainer/blobs /var/cache/interview-rag-trainer/models \
+    && chown -R app:app /var/lib/interview-rag-trainer /var/cache/interview-rag-trainer
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src"
 USER app
@@ -41,6 +45,8 @@ FROM python:3.13-slim AS production
 RUN groupadd --system app && useradd --system --gid app --no-create-home --home-dir /app app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
+RUN mkdir -p /var/lib/interview-rag-trainer/blobs /var/cache/interview-rag-trainer/models \
+    && chown -R app:app /var/lib/interview-rag-trainer /var/cache/interview-rag-trainer
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src" \
     PYTHONUNBUFFERED=1 \
