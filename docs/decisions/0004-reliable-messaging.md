@@ -1,8 +1,8 @@
 # ADR 0004 — Messagerie fiable et idempotence
 
-- **Date :** 2026-11-16 (complété le 2026-11-17, acquittement arbitré le 2026-11-18)
+- **Date :** 2026-11-16 (complété le 2026-11-17, acquittement arbitré le 2026-11-17)
 - **Statut :** **Accepted pour le complément « Work queue durable »**
-  (2026-11-17, acquittement 2026-11-18), y compris la séparation entre work
+  (2026-11-17, acquittement 2026-11-17), y compris la séparation entre work
   queue et Integration Events et le principe at-least-once à effets
   idempotents ; **Proposed** pour l'implémentation de la messagerie
   inter-contextes (outbox, inbox, topologie des exchanges).

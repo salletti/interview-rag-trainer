@@ -1,7 +1,7 @@
 # Knowledge Base — S0 : infrastructure de traitement durable
 
 > **Statut : Accepted — prêt à implémenter** (clôture de conception du
-> 2026-11-18). Ce document précise la slice S0 de la
+> 2026-11-17). Ce document précise la slice S0 de la
 > [feuille de route](knowledge-base-roadmap.md). Il applique le complément
 > « work queue durable » de l'[ADR 0004](../../decisions/0004-reliable-messaging.md),
 > l'[ADR 0003](../../decisions/0003-modular-monolith-clean-architecture.md) et
@@ -334,7 +334,7 @@ Pourquoi pas `acks_late = True` pour ces tâches :
    conditionnel absorberait le doublon, mais ce chemin de reprise s'ajouterait
    à celui du scheduler sans rien garantir de plus.
 3. **Délai d'acquittement du broker.** La stack utilise RabbitMQ 4.4.0 avec
-   les valeurs par défaut, constatées le 2026-11-18 : `consumer_timeout =
+   les valeurs par défaut, constatées le 2026-11-17 : `consumer_timeout =
    1800000` ms et `consumer_timeout_response = notify_consumer`, files
    `classic` durables (`interview_rag_trainer.default`). Ce délai est
    configurable et sa mise en œuvre dépend du type de file ; il ne fonde pas
