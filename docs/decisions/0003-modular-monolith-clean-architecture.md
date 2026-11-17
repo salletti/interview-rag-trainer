@@ -1,6 +1,6 @@
 # ADR 0003 — Monolithe modulaire, Clean Architecture
 
-- **Date :** 2026-11-16 (accepté le 2026-11-18)
+- **Date :** 2026-11-16 (accepté le 2026-11-17)
 - **Statut :** Accepted
 
 ## Décision
@@ -31,6 +31,6 @@ plusieurs points d'entrée nommés (`register`, `register_worker`, fabriques de
 contrats) au lieu de `register(app)` seul. Cette précision ne modifie pas la
 décision.
 
-**Acceptation (2026-11-18)** : décision validée explicitement lors de la
+**Acceptation (2026-11-17)** : décision validée explicitement lors de la
 clôture de la conception Knowledge Base, avec les conventions de
 [005](../conception/005-project-structure.md) (Accepted à la même date).
