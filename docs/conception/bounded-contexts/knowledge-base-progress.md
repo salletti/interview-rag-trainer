@@ -23,7 +23,7 @@ review prêt.
 | Slice | Objectif | Dépend de | Statut | Commit(s) | Tests exécutés |
 |---|---|---|---|---|---|
 | S0 | Infrastructure de traitement durable | — | **Terminée** | voir journal | Ruff, mypy (68 fichiers), 130 unit./archi., 109 intégration, Compose (9 services) |
-| S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | À faire | | |
+| S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | **Terminée** | voir journal | Ruff, mypy (86 fichiers), 233 unit./archi., 8/8 mutations détectées |
 | S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | À faire | | |
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | À faire | | |
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | À faire | | |
@@ -52,6 +52,8 @@ périmètre.
 - 2026-11-18 — S0 terminée : tests rouges (expert-tdd) → implémentation
   (expert-python) → revue (1 bloquant, 4 importants, 6 mineurs, tous corrigés)
   → revalidation : 130 unitaires/architecture, 109 intégration, Compose 9 services.
+- 2026-11-18 — S1 terminée : domaine pur (I1–I6), 96 tests, 8 mutations
+  détectées ; relecture directe (lot court) au lieu d'un agent de revue.
 
 ## Écarts et décisions en cours de route
 
@@ -60,3 +62,5 @@ périmètre.
 - S0 — `max_attempts` du handler appliqué au claim (précision balisée S0 §2/§7).
 - S0 — hook d'échec qui lève → `retry_later` `TERMINAL_HOOK_FAILED` ; point **O14** ouvert (S8).
 - S0 — scénario 14 : redélivrance par `consumer_timeout` de RabbitMQ 4.4.0 non observée ; seul l'invariant « un seul effet » est prouvé.
+- S1 — `record_extraction` n'interdit pas un document `WITHDRAWN` : la protection repose sur l'annulation des work items au retrait (fencing) ; à vérifier en S3/S7.
+- S1 — `failure` effacé lors de `FAILED → DISCARDED` (motif perdu) ; acceptable, l'historique d'erreur reste dans `work_items.last_error_*`.

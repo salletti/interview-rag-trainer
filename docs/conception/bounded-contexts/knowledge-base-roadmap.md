@@ -62,6 +62,8 @@ flowchart LR
 
 ## S1 — Domaine `KnowledgeDocument` et `DocumentVersion`
 
+> **Statut : implémentée (2026-11-18)** — 96 tests unitaires du domaine, 8 mutations sur 8 détectées, règle d'architecture « domaine pur = bibliothèque standard ».
+
 - **Objectif :** modèle pur du document et de ses versions, avec les
   invariants I1 à I6 de [knowledge-base.md §4](knowledge-base.md#4-invariants).
 - **Périmètre :** agrégat `KnowledgeDocument`, entité `DocumentVersion`, VO

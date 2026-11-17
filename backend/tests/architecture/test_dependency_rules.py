@@ -12,6 +12,7 @@ Références : docs/conception/005-project-structure.md, ADR 0003, ADR 0006.
 from __future__ import annotations
 
 import ast
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -137,6 +138,29 @@ def domain_does_not_depend_on_outer_layers(src: Path) -> list[str]:
     )
 
 
+KB_PURE_DOMAIN_PACKAGES = ("entities", "value_objects", "events", "exceptions")
+
+
+def knowledge_base_pure_domain_is_stdlib_only(src: Path) -> list[str]:
+    """Slice S1 : ``knowledge_base/domain/{entities,value_objects,events,
+    exceptions}`` n'importent que la bibliothèque standard et le domaine du
+    contexte lui-même (aucune bibliothèque tierce, même hors ``FRAMEWORKS``,
+    ex. pydantic)."""
+    own = "knowledge_base.domain"
+    roots = [
+        src / "knowledge_base" / "domain" / package
+        for package in KB_PURE_DOMAIN_PACKAGES
+        if (src / "knowledge_base" / "domain" / package).is_dir()
+    ]
+
+    def is_forbidden(_owner: str, module: str) -> bool:
+        if _top(module) in sys.stdlib_module_names:
+            return False
+        return not (module == own or module.startswith(f"{own}."))
+
+    return _violations(src, roots, is_forbidden)
+
+
 def use_cases_do_not_depend_on_adapters(src: Path) -> list[str]:
     roots = [src / ctx / "use_cases" for ctx in bounded_contexts(src)]
     return _violations(
@@ -184,6 +208,9 @@ def shared_is_a_leaf(src: Path) -> list[str]:
 RULES: dict[str, Rule] = {
     "domain_and_use_cases_are_framework_free": domain_and_use_cases_are_framework_free,
     "domain_does_not_depend_on_outer_layers": domain_does_not_depend_on_outer_layers,
+    "knowledge_base_pure_domain_is_stdlib_only": (
+        knowledge_base_pure_domain_is_stdlib_only
+    ),
     "use_cases_do_not_depend_on_adapters": use_cases_do_not_depend_on_adapters,
     "contexts_never_import_each_other_internals": (
         contexts_never_import_each_other_internals
@@ -208,6 +235,13 @@ def test_src_contains_the_validated_contexts() -> None:
 @pytest.mark.parametrize("rule", RULES.values(), ids=list(RULES))
 def test_source_tree_respects_rule(rule: Rule) -> None:
     assert rule(SRC) == []
+
+
+def test_knowledge_base_pure_domain_packages_exist_and_are_scanned() -> None:
+    """Sans cela la règle stdlib-only passerait « à vide » (critère S1)."""
+    for package in KB_PURE_DOMAIN_PACKAGES:
+        directory = SRC / "knowledge_base" / "domain" / package
+        assert any(python_files(directory)), f"{package} est absent ou vide"
 
 
 # --- preuve que chaque règle détecte une violation -----------------------------
@@ -276,6 +310,24 @@ VIOLATIONS = [
         "knowledge_base/use_cases/enqueue.py",
         "from celery import Celery\n",
         "celery",
+    ),
+    (
+        "knowledge_base_pure_domain_is_stdlib_only",
+        "knowledge_base/domain/value_objects/content_hash.py",
+        "import pydantic\n",  # absent de FRAMEWORKS : seule la règle stdlib le voit
+        "pydantic",
+    ),
+    (
+        "knowledge_base_pure_domain_is_stdlib_only",
+        "knowledge_base/domain/entities/knowledge_document.py",
+        "from dateutil import parser\n",
+        "dateutil",
+    ),
+    (
+        "knowledge_base_pure_domain_is_stdlib_only",
+        "knowledge_base/domain/events/document_events.py",
+        "from shared.domain import ids\n",
+        "shared",
     ),
     (
         "runtime_only_sees_public_surface",
@@ -404,3 +456,32 @@ def test_runtime_may_import_the_knowledge_base_root_and_contracts(
         "from knowledge_base.contracts import KnowledgeSearch\n",
     )
     assert runtime_only_sees_public_surface(fake_src) == []
+
+
+def test_knowledge_base_pure_domain_allows_stdlib_and_its_own_domain(
+    fake_src: Path,
+) -> None:
+    _write(
+        fake_src,
+        "knowledge_base/domain/entities/knowledge_document.py",
+        "from __future__ import annotations\n"
+        "import hashlib\n"
+        "from dataclasses import dataclass\n"
+        "from datetime import datetime\n"
+        "from uuid import UUID\n"
+        "from knowledge_base.domain.value_objects.content_hash import ContentHash\n"
+        "from ..events import document_events\n",
+    )
+    assert knowledge_base_pure_domain_is_stdlib_only(fake_src) == []
+
+
+def test_knowledge_base_pure_domain_rule_ignores_other_domain_packages(
+    fake_src: Path,
+) -> None:
+    """``providers/`` (ports techniques) n'est pas concerné par S1."""
+    _write(
+        fake_src,
+        "knowledge_base/domain/providers/work_queue.py",
+        "import some_third_party\n",
+    )
+    assert knowledge_base_pure_domain_is_stdlib_only(fake_src) == []
