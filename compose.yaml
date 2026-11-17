@@ -31,6 +31,10 @@ x-backend-env: &backend-env
   KB_WORK_REDISPATCH_AFTER_SECONDS: ${KB_WORK_REDISPATCH_AFTER_SECONDS:-600}
   KB_WORK_MAX_IN_FLIGHT: ${KB_WORK_MAX_IN_FLIGHT:-2}
   KB_WORK_RECOVER_INTERVAL_SECONDS: ${KB_WORK_RECOVER_INTERVAL_SECONDS:-30}
+  # Import (S2, ADR 0012). La racine des blobs n'est pas surchargeable par
+  # .env : elle doit rester le point de montage du volume kb_blobs.
+  KB_MAX_UPLOAD_BYTES: ${KB_MAX_UPLOAD_BYTES:-20971520}
+  KB_BLOB_ROOT: /var/lib/interview-rag-trainer/blobs
 
 x-backend-build: &backend-build
   context: ./backend
@@ -213,7 +217,7 @@ volumes:
   postgres_data:
   qdrant_data:
   rabbitmq_data:
-  # Knowledge Base : blobs des documents (S1) et cache des modèles (S3/S4).
+  # Knowledge Base : blobs des documents (S2) et cache des modèles (S3/S4).
   kb_blobs:
   models_cache:
 

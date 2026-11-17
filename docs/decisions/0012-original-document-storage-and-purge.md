@@ -73,3 +73,16 @@ toute infrastructure sans besoin démontré.
   [0004](0004-reliable-messaging.md) (purge par work item).
 - Conception : [knowledge-base.md §10](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge),
   [S0 §11](../conception/bounded-contexts/knowledge-base-s0.md#11-configuration-docker-compose).
+
+## Suivi (2026-11-18)
+
+Le point 7 (doublon inter-documents), **[Open]** à l'acceptation, a été
+tranché pendant la slice S2 selon la recommandation : voir
+[knowledge-base.md §16, O2](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts).
+Cette section ne modifie pas la décision ci-dessus ; elle renvoie à
+l'arbitrage. Mise en œuvre : `UNIQUE(content_hash)` global sur
+`knowledge_base.document_versions`, chemin `sha256/<aa>/<bb>/<empreinte>`
+sous `KB_BLOB_ROOT`, temporaires sous `KB_BLOB_ROOT/tmp/` (repérables par la
+réconciliation, délai de grâce toujours **[Proposed : 24 h]**), limite
+`KB_MAX_UPLOAD_BYTES` (20 Mio) appliquée pendant le flux. La limite de 300
+pages ne s'applique pas aux formats de S2 (Markdown, texte).

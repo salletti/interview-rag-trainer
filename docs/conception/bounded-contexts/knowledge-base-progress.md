@@ -24,7 +24,7 @@ review prêt.
 |---|---|---|---|---|---|
 | S0 | Infrastructure de traitement durable | — | **Terminée** | voir journal | Ruff, mypy (68 fichiers), 130 unit./archi., 109 intégration, Compose (9 services) |
 | S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | **Terminée** | voir journal | Ruff, mypy (86 fichiers), 233 unit./archi., 8/8 mutations détectées |
-| S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | À faire | | |
+| S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | **Terminée** | voir journal | Ruff, mypy (125 fichiers), 309 unit./archi., 162 intégration, import réel sur la stack de dev (202 puis 200) |
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | À faire | | |
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | À faire | | |
 | S5 | Recherche sémantique, provenance, évaluation | S4 | À faire | | |
@@ -64,3 +64,6 @@ périmètre.
 - S0 — scénario 14 : redélivrance par `consumer_timeout` de RabbitMQ 4.4.0 non observée ; seul l'invariant « un seul effet » est prouvé.
 - S1 — `record_extraction` n'interdit pas un document `WITHDRAWN` : la protection repose sur l'annulation des work items au retrait (fencing) ; à vérifier en S3/S7.
 - S1 — `failure` effacé lors de `FAILED → DISCARDED` (motif perdu) ; acceptable, l'historique d'erreur reste dans `work_items.last_error_*`.
+- S2 — O2 tranché : 409 `DUPLICATE_CONTENT` pour un import ciblé ; import sans cible d'un contenu connu → 200 ; contenu d'un document retiré → 409 `DOCUMENT_WITHDRAWN` (`UNIQUE(content_hash)` global, cohérent avec O11).
+- S2 — le corps multipart est mis en tampon par Starlette (disque au-delà de 1 Mio) avant la limite de 20 Mo : borner la taille du corps relève du serveur/proxy.
+- S2 — dépendance ajoutée : `python-multipart`.

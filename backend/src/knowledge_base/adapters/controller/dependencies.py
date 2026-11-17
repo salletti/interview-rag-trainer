@@ -9,7 +9,12 @@ from typing import Any, Final
 from uuid import UUID
 
 from celery import Celery
+from fastapi import FastAPI
 
+from knowledge_base.adapters.controller.rest.documents_router import (
+    add_document_routes,
+)
+from knowledge_base.adapters.controller.rest.resources import KnowledgeBaseResources
 from knowledge_base.adapters.controller.tasks.dispatch import (
     dispatch_pending,
     recover_expired_leases,
@@ -25,9 +30,11 @@ from knowledge_base.adapters.controller.tasks.resources import (
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 
 __all__ = [
+    "KnowledgeBaseResources",
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "register",
     "register_worker",
 ]
 
@@ -40,6 +47,13 @@ RECOVER_TASK: Final = "knowledge_base.work.recover"
 CONTROL_QUEUE: Final = "interview_rag_trainer.default"
 
 ResourcesProvider = Callable[[], KnowledgeBaseWorkerResources]
+
+
+def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> None:
+    """Monte les routes de Knowledge Base, à la construction de l'application.
+    ``resources`` n'est appelé qu'au traitement d'une requête : la fabrique de
+    sessions n'existe qu'après le démarrage (``lifespan``)."""
+    add_document_routes(app.router, resources)
 
 
 def register_worker(

@@ -88,6 +88,8 @@ flowchart LR
 
 ## S2 — Import Markdown/TXT, stockage original et dédoublonnage
 
+> **Statut : implémentée (2026-11-18)** — import multipart en streaming, blob adressé par SHA-256, `Idempotency-Key`, O2 tranché (§16) ; 309 unitaires et 162 tests d'intégration verts.
+
 - **Objectif :** importer un fichier Markdown ou TXT, conserver l'original,
   enregistrer document et version `RECEIVED`, planifier l'extraction.
 - **Périmètre :** `ImportDocument`, `ImportDocumentVersion` ; endpoint

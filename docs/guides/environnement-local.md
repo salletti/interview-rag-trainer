@@ -33,7 +33,7 @@ Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé
 | Volume | Monté dans | Chemin | Usage |
 |---|---|---|---|
 | `postgres_data`, `qdrant_data`, `rabbitmq_data` | services d'infrastructure | — | données |
-| `kb_blobs` | `api`, `worker`, `worker_ingestion` | `/var/lib/interview-rag-trainer/blobs` | originaux des documents de Knowledge Base (à partir de S1/S2) |
+| `kb_blobs` | `api`, `worker`, `worker_ingestion` | `/var/lib/interview-rag-trainer/blobs` (`KB_BLOB_ROOT`) | originaux des documents de Knowledge Base (S2) : `sha256/<aa>/<bb>/<empreinte>`, temporaires d'upload sous `tmp/` |
 | `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` | cache des modèles (à partir de S3/S4) |
 
 Les répertoires de montage sont créés dans l'image avec le propriétaire `app` : un volume nommé neuf en hérite les droits.
@@ -52,6 +52,8 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_WORK_DISPATCH_BATCH` | 50 | taille de lot de `dispatch` et de `recover` |
 | `KB_WORK_REDISPATCH_AFTER_SECONDS` | 600 | délai avant une nouvelle notification d'un item `PENDING` |
 | `KB_WORK_MAX_IN_FLIGHT` | 2 | plafond d'items en vol **par file** (en S0 : `knowledge_base.ingestion`) |
+| `KB_MAX_UPLOAD_BYTES` | 20971520 (20 Mio) | taille maximale d'un original importé (ADR 0012) ; au-delà, 413 sans blob ni ligne |
+| `KB_BLOB_ROOT` | `/var/lib/interview-rag-trainer/blobs` | racine du volume des blobs ; fixée par `compose.yaml` au point de montage de `kb_blobs` (non surchargeable par `.env`) ; hors Docker, à pointer vers un répertoire inscriptible |
 
 ## Vérifications
 
@@ -64,6 +66,31 @@ docker compose exec worker_ingestion celery -A runtime.worker:celery_app inspect
 ```
 
 `/health/ready` répond `ready` (200), `degraded` (200, Qdrant ou RabbitMQ indisponible) ou `not_ready` (503, PostgreSQL indisponible). Voir ADR 0006.
+
+### Importer un document (Knowledge Base, S2)
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST localhost:8010/api/v1/knowledge-base/documents \
+  -F 'file=@cours.md;type=text/markdown' \
+  -F title='Asyncio' -F kind=COURSE -F language=fr -F topics=python -F topics=asyncio \
+  -H 'Idempotency-Key: import-asyncio-1'          # facultatif
+# 202 {"document_id": "...", "version_id": "...", "number": 1}
+# même fichier une seconde fois : 200, même corps
+
+curl -s -X POST localhost:8010/api/v1/knowledge-base/documents/<document_id>/versions \
+  -F 'file=@cours-v2.md;type=text/markdown'      # 202, number = 2
+```
+
+`;type=text/markdown` est nécessaire : sans lui, curl envoie `application/octet-stream` pour un `.md` et l'API répond 415 (`UNSUPPORTED_MEDIA_TYPE`). Types acceptés : `text/markdown` (`.md`, `.markdown`) et `text/plain` (`.txt`). Codes d'erreur et contrat complet : [README de Knowledge Base](../../backend/src/knowledge_base/README.md). Vérifications :
+
+```bash
+docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer \
+  -c "select number, status, content_hash from knowledge_base.document_versions" \
+  -c "select kind, status from knowledge_base.work_items where kind = 'extract_version'"
+docker compose exec api find /var/lib/interview-rag-trainer/blobs -type f
+```
+
+Jusqu'à S3, l'item `extract_version` reste `PENDING` : aucun handler n'est enregistré pour ce `kind`, le dispatcher l'ignore.
 
 ## Qualité et tests
 

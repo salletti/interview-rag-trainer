@@ -1,7 +1,7 @@
 """Fabrique de l'application FastAPI (composition root).
 
 Charge la configuration, ouvre et ferme les ressources techniques dans le
-``lifespan`` et monte les routeurs techniques. Les Bounded Contexts seront
+``lifespan`` et monte les routeurs techniques. Les Bounded Contexts sont
 enregistrés ici, par leur surface publique uniquement.
 
 Lancement : ``uvicorn runtime.app:create_app --factory``.
@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+import knowledge_base
 from runtime import health, system
 from runtime.database import create_engine, create_session_factory
 from runtime.logging_config import configure_logging
@@ -34,6 +35,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db_engine = create_engine(settings)
     app.state.session_factory = create_session_factory(app.state.db_engine)
     app.state.qdrant_client = create_qdrant_client(settings)
+    app.state.knowledge_base = knowledge_base.KnowledgeBaseResources(
+        session_factory=app.state.session_factory,
+        settings=app.state.knowledge_base_settings,
+    )
     logger.info("startup environment=%s", settings.environment)
     try:
         yield
@@ -56,6 +61,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if docs_enabled else None,
     )
     app.state.settings = settings
+    # Relus à chaque construction, sans cache : KB_* peut changer d'une
+    # application à l'autre dans un même processus (tests d'intégration).
+    app.state.knowledge_base_settings = knowledge_base.KnowledgeBaseSettings()
     app.include_router(health.router)
     app.include_router(system.router)
+
+    def knowledge_base_resources() -> knowledge_base.KnowledgeBaseResources:
+        resources: knowledge_base.KnowledgeBaseResources = app.state.knowledge_base
+        return resources
+
+    knowledge_base.register(app, knowledge_base_resources)
     return app

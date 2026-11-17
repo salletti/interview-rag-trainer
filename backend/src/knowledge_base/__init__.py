@@ -6,15 +6,19 @@ contexte.
 """
 
 from knowledge_base.adapters.controller.dependencies import (
+    KnowledgeBaseResources,
     KnowledgeBaseSettings,
     KnowledgeBaseWorkerResources,
     WorkHandler,
+    register,
     register_worker,
 )
 
 __all__ = [
+    "KnowledgeBaseResources",
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "register",
     "register_worker",
 ]

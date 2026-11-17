@@ -1,4 +1,5 @@
-"""Réglages techniques de la work queue Knowledge Base (S0 §7, §8.4).
+"""Réglages techniques de Knowledge Base : work queue (S0 §7, §8.4), import et
+stockage des originaux (S2, ADR 0012).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -7,6 +8,7 @@ Les valeurs sont des défauts **Proposed** : configurables par variables
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from typing import Self
 
 from pydantic import Field, model_validator
@@ -34,6 +36,11 @@ class KnowledgeBaseSettings(BaseSettings):
     # en S0, la seule file est celle de l'ingestion.
     work_max_in_flight: int = Field(default=2, gt=0)
     work_recover_interval_seconds: float = Field(default=30, gt=0)
+
+    # Import (ADR 0012) : taille maximale d'un original et racine du volume
+    # des blobs, montée dans l'API et les workers (compose.yaml, kb_blobs).
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    blob_root: Path = Path("/var/lib/interview-rag-trainer/blobs")
 
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:

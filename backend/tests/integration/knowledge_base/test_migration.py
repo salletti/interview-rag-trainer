@@ -2,8 +2,10 @@
 head`` et conformité du schéma ``knowledge_base.work_items`` au §2.
 
 Alembic est lancé comme sous-processus (environnement POSTGRES_* hérité), comme
-``make test-integration``. La migration est celle de S0 : ``downgrade -1``
-depuis ``head`` doit supprimer ``knowledge_base.work_items``.
+``make test-integration``. L'aller-retour est ancré sur la révision de S0
+(``S0_REVISION``) et non sur ``head`` : redescendre sous S0 supprime
+``knowledge_base.work_items``, quel que soit le nombre de migrations
+postérieures.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from runtime.database import SessionFactory
 pytestmark = pytest.mark.integration
 
 BACKEND = Path(__file__).resolve().parents[3]
+S0_REVISION = "f35542284e25"
+BEFORE_S0_REVISION = "7c1a0e2b9d41"
 
 # colonne -> (type PostgreSQL, nullable)
 EXPECTED_COLUMNS = {
@@ -85,8 +89,13 @@ async def test_upgrade_downgrade_upgrade_round_trip(
     alembic_ok("upgrade", "head")
     assert await table_exists(session_factory)
 
-    alembic_ok("downgrade", "-1")
+    alembic_ok("downgrade", BEFORE_S0_REVISION)
     assert not await table_exists(session_factory)
+    assert BEFORE_S0_REVISION in alembic_ok("current")
+
+    alembic_ok("upgrade", S0_REVISION)
+    assert await table_exists(session_factory)
+    assert S0_REVISION in alembic_ok("current")
 
     alembic_ok("upgrade", "head")
     assert await table_exists(session_factory)
