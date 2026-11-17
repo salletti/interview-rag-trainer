@@ -67,3 +67,14 @@ périmètre.
 - S2 — O2 tranché : 409 `DUPLICATE_CONTENT` pour un import ciblé ; import sans cible d'un contenu connu → 200 ; contenu d'un document retiré → 409 `DOCUMENT_WITHDRAWN` (`UNIQUE(content_hash)` global, cohérent avec O11).
 - S2 — le corps multipart est mis en tampon par Starlette (disque au-delà de 1 Mio) avant la limite de 20 Mo : borner la taille du corps relève du serveur/proxy.
 - S2 — dépendance ajoutée : `python-multipart`.
+
+## Corrections en attente
+
+Revue tech lead du commit S2 (`2fc83da`) : aucun bloquant. À appliquer juste
+après S3 (fichiers partagés avec l'implémentation S3 en cours) :
+
+- I-1 — verrou optimiste : la première lecture d'un document dans une UoW doit faire foi (`find_by_content_hash` ne doit pas écraser `lock_version`) ; test d'intégration avec commit concurrent entre les deux lectures.
+- I-2 — même `Idempotency-Key` concurrente sur `/versions` : inclure `ConcurrentModificationError` dans le rejeu unique.
+- I-3 — `knowledge-base.md` §4.1 I3 : aligner sur `UNIQUE(content_hash)` global (renvoi O2).
+- M-2 fabriques des handlers injectables ; M-3 basename + longueur bornée du nom de fichier ; M-4 I1 en base (trigger ou texte ajusté) ; M-5 `ImportDocumentResult` commun ; M-6 expiration des clés d'idempotence → point ouvert §16 ; M-7 test HTTP `DOCUMENT_WITHDRAWN`.
+- M-1 — libellé « streaming » de la feuille de route corrigé (fait) ; refus précoce sur `Content-Length` à évaluer.
