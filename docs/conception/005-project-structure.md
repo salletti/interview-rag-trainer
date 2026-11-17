@@ -23,7 +23,7 @@ backend/src/
   assessment/                   # Bounded Context (ADR 0001)
   shared/
     domain/                     # shared kernel minimal, si un besoin réel apparaît
-  knowledge_base/               # envisagé
+  knowledge_base/               # Bounded Context proposé — voir conception/bounded-contexts/knowledge-base.md
   learning_progress/            # envisagé
   question_bank/                # envisagé
 backend/tests/
@@ -37,6 +37,15 @@ backend/tests/
 - `shared` : primitives transverses justifiées uniquement ; jamais de modèle métier global.
 - Aucun contexte n'importe `runtime`. Aucun ORM partagé ni jointure métier inter-contextes.
 - Python packages en snake_case ; classes en PascalCase.
+
+## Dossiers de conception propres aux Bounded Contexts
+
+Les études détaillées d'un contexte vivent sous `docs/conception/bounded-contexts/<nom-du-contexte>.md`. Elles complètent les documents transverses 001–006 sans en dupliquer toutes les conventions.
+
+- [Knowledge Base](bounded-contexts/knowledge-base.md) — conception **Proposed** : ingestion, unités pédagogiques, Qdrant, indexation, recherche et cohérence.
+- L'architecture de code cible serait `backend/src/knowledge_base/`, en suivant les mêmes couches `domain/use_cases/adapters/contracts/frameworks` que les autres contextes.
+- Les adaptations spécifiques : `adapters/controller/tasks/` pour Celery ; `adapters/gateway/{parsing,embedding,vector_store,blob}/` ; les ports techniques restent des Protocols sous `domain/providers/`.
+- Aucun dossier ou Bounded Context n'est considéré implémenté du seul fait de cette documentation ; créer les packages au premier vertical slice utile.
 
 ## Structure d'un Bounded Context
 
