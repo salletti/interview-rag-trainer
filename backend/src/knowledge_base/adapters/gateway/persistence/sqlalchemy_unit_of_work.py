@@ -1,7 +1,7 @@
 """Unit of Work SQLAlchemy de Knowledge Base : une session, donc une
 transaction, partagée par le dépôt des documents, la work queue (S0), les
 clés d'idempotence (S2), le corpus, les indexations et la lecture des chunks
-(S4)."""
+(S4), les items ``FAILED`` (S8 : rejeu, réconciliation)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_chunk_reader import (
     SqlAlchemyChunkReader,
+)
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_failed_work_repository import (  # noqa: E501
+    SqlAlchemyFailedWorkRepository,
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_idempotency_key_repository import (  # noqa: E501
     SqlAlchemyIdempotencyKeyRepository,
@@ -24,7 +27,7 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexing_transaction
 class SqlAlchemyUnitOfWork(SqlAlchemyIndexingTransaction):
     """Les dépôts de ``SqlAlchemyIndexingTransaction`` (documents, work queue,
     corpus, indexations) sur une session qu'elle ouvre et valide elle-même,
-    plus les clés d'idempotence et la lecture des chunks.
+    plus les clés d'idempotence, la lecture des chunks et les items ``FAILED``.
 
     À usage unique : un ``async with`` par instance. La session ne prend
     une connexion qu'à la première requête."""
@@ -34,6 +37,11 @@ class SqlAlchemyUnitOfWork(SqlAlchemyIndexingTransaction):
         super().__init__(self._session)
         self._idempotency_keys = SqlAlchemyIdempotencyKeyRepository(self._session)
         self._chunks = SqlAlchemyChunkReader(self._session)
+        self._failed_work = SqlAlchemyFailedWorkRepository(self._session)
+
+    @property
+    def failed_work(self) -> SqlAlchemyFailedWorkRepository:
+        return self._failed_work
 
     @property
     def idempotency_keys(self) -> SqlAlchemyIdempotencyKeyRepository:

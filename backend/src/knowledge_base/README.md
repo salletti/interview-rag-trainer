@@ -2,7 +2,7 @@
 
 Bounded Context ([ADR 0007](../../../docs/decisions/0007-knowledge-base-bounded-context.md)) chargé des documents de connaissances, de leur ingestion (extraction, chunking, embeddings) et de la recherche sémantique publiée vers les autres contextes. Conception : [knowledge-base.md](../../../docs/conception/bounded-contexts/knowledge-base.md) ; feuille de route : [S0–S9](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md).
 
-## État : slices S0 à S7
+## État : slices S0 à S8
 
 ### S0 — infrastructure de traitement durable
 
@@ -164,6 +164,8 @@ Puis, pour tous, les mots, et en dernier recours les caractères : le budget est
 | `BLOB_MISSING` | original absent du volume : incohérence durable du stockage | non (terminal) | vrai (après restauration du blob) |
 | `INVALID_PAYLOAD` | payload de l'item illisible | non (terminal) | — (aucune version désignée, rien n'est écrit) |
 | autre (`TRANSIENT`, `UNEXPECTED_ERROR`…) | panne passagère | oui, avec backoff ; `FAILED` à la dernière tentative | vrai |
+
+Depuis S8, la classification de tous les codes vient du catalogue unique (`domain/value_objects/error_catalog.py`, [§15.5](../../../docs/conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8)) ; `failure_retryable` = « rejouable » du catalogue.
 
 Tables (migration `22df253e1e05`, schéma `knowledge_base`) :
 
@@ -447,7 +449,59 @@ Ordre de l'ADR 0012 point 6 (points, puis chunks, puis blobs), rétabli par la r
 
 **Schéma** : migration `9e4b7d2a6c13` (sur `c43c7e850745`) : `knowledge_base.documents.purged_at timestamptz NULL`, sans index ni réécriture de table.
 
-**Tentative zombie après la purge** : une indexation dont l'item a été annulé par le retrait peut encore écrire ses points après la purge ; ils sont `visible=false` (jamais renvoyés, et écartés par le contrôle SQL). Une nouvelle exécution de `purge_document` les supprime ; rien ne la déclenche en S7 : la réconciliation S8 la replanifiera pour un document `WITHDRAWN` qui a encore des points.
+**Tentative zombie après la purge** : une indexation dont l'item a été annulé par le retrait peut encore écrire ses points après la purge ; ils sont `visible=false` (jamais renvoyés, et écartés par le contrôle SQL). Une nouvelle exécution de `purge_document` les supprime ; depuis S8, la réconciliation la replanifie (`purge_document:<id>:<n>`).
+
+### S8 — réconciliation et gestion des erreurs
+
+Aucun état bloqué ni écart durable entre PostgreSQL, Qdrant et le volume ([roadmap S8](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md#s8--durcissement-de-la-réconciliation-et-gestion-des-erreurs), [knowledge-base.md, précisions S8 et §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
+
+```text
+beat knowledge_base.work.reconcile (file par défaut) ──► item reconcile_knowledge_base:<créneau> (enqueue)
+worker_ingestion, entre deux traitements             ──► ReconcileKnowledgeBase : un cycle, puis SUCCEEDED
+  1. points des index vivants (Qdrant, scroll)  PUIS  état SQL de leurs documents
+  2. publications perdues ; EXTRACTED sans indexation ; manifests échantillonnés
+  3. items FAILED sans état métier (O14) ; purges FAILED (réouverture bornée)
+  4. quarantaine ; blobs orphelins ; temporaires tmp/ ; clés d'idempotence > 24 h (O15)
+GET  /api/v1/knowledge-base/failures            ──► items FAILED, du plus récent au plus ancien
+POST /api/v1/knowledge-base/failures/{id}/retry ──► item rouvert + version / indexation remise en attente (202)
+```
+
+**Catalogue des codes** (`domain/value_objects/error_catalog.py`) : `ErrorSpec(code, automatic_retry, replayable)`, `ERROR_CATALOG`, `spec_of`, `is_replayable`, `retries_automatically` (code inconnu → `UnknownErrorCodeError`), `replayable_or_not_known` (absent ou inconnu → faux, pour ce qui ne doit pas lever : liste des échecs, hooks). Un code n'est défini que là (`architecture/test_reconciliation_structure.py`) ; `work_queue`, `extract_version_handler`, `complete_indexation.errors`, `ParseErrorCode` le réexportent ; `NOT_RETRYABLE_CODES` est une vue dérivée. Les hooks d'échec d'`extract_version` **et** d'`index_version` écrivent `retryable` d'après le catalogue (`NOT_FINALIZED`, `INVALID_PAYLOAD` ne sortent plus « rejouables »).
+
+**Réconciliation** (`use_cases/reconcile_knowledge_base/`) : `ReconcileKnowledgeBaseHandler` orchestre `PointReconciliation`, `IndexationReconciliation`, `FailedWorkReconciliation` et `StorageHousekeeping` ; chaque jugement est une règle pure de `domain/services/reconciliation.py` (`judge_point`, `plan_point_corrections`, `compare_manifest`, `points_beyond_manifest`, `indexes_missing_indexation`, `is_publishable_completed`, `decide_failed_item`) ; chaque correction a sa transaction et relit l'état avant d'écrire ; le travail long (réindexation, synchronisation, purge) est planifié, pas exécuté. `ReconciliationReport(counts)` : décompte par `DiscrepancyKind` de ce qui a été **trouvé** (`clean` au cycle suivant) ; une ligne de journal par cycle. Composition : `composition.build_reconcile_knowledge_base_handler(session_factory, vector_index, settings, *, clock=None, sampler=None)`.
+
+| Écart (`DiscrepancyKind`) | Correction |
+|---|---|
+| `ORPHAN_POINTS` (points) | document ou version inconnus, version `SUPERSEDED`/`DISCARDED` : `delete_points` par filtre ; hors manifest d'une version échantillonnée : `delete_point_ids` |
+| `HIDDEN_PUBLISHED_POINTS` (points) | version `PUBLISHED` de document `ACTIVE`, `visible=false`, aucune synchronisation en attente : `sync_visibility` replanifiée (génération suivante) |
+| `WITHDRAWN_DOCUMENT_POINTS` (points) | document retiré **et purgé** : `purge_document:<id>:<n>` ; retiré non purgé = purge en attente, pas un écart |
+| `COMPLETED_NOT_PUBLISHED` | `PublishDocumentVersion` (I5, I9 revérifiés) |
+| `EXTRACTED_WITHOUT_INDEXATION` | indexation `PENDING` + `index_version` dans chaque index vivant de la politique du lot (corpus `FOR SHARE`) |
+| `MANIFEST_DRIFT` | `Indexation.reopen()` (`COMPLETED` → `PENDING`) + `index_version` (génération suivante) ; la finalisation d'une version déjà publiée replanifie `sync_visibility` |
+| `FAILED_WORK_WITHOUT_STATE` (O14) | version `FAILED` / indexation `FAILED` avec code, message, `retryable` du catalogue ; item jamais rouvert |
+| `FAILED_PURGE` | item rouvert (≤ `KB_RECONCILE_MAX_PURGE_REOPENINGS`, `reopen_count`), sinon laissé au rejeu explicite et compté à chaque cycle |
+| `QUARANTINED_BLOB` | détenu et chemin libre : remis en place ; sinon supprimé après le délai de grâce (`ctime`) |
+| `ORPHAN_BLOB`, `STALE_UPLOAD` | `CleanBlobOrphans` (S7), `CleanStaleUploads` (`tmp/`), délai `KB_BLOB_ORPHAN_GRACE_SECONDS` |
+| `EXPIRED_IDEMPOTENCY_KEY` | clés de plus de `KB_IDEMPOTENCY_KEY_TTL_SECONDS` supprimées |
+
+**Ordre de lecture** : Qdrant d'abord (`PointInventory.scan_points`, `QdrantVectorIndex` : `scroll` paginé de 256, payload réduit, sans vecteur ; points regroupés par document, version, visibilité : la mémoire suit le nombre de versions), puis PostgreSQL. Un point écrit après une lecture SQL antérieure serait pris pour un orphelin ; une version ne disparaît jamais de PostgreSQL. Vérifié par une publication pendant le parcours (`test_a_document_published_while_the_cycle_runs_is_never_taken_for_an_orphan`).
+
+**Work item** (`adapters/controller/tasks/reconcile_handler.py`) : `ReconcileWorkHandler` (`reconcile_knowledge_base`, file d'ingestion, 3 tentatives, cycle sous `keeping_lease`, un `ctx.finalize` qui n'écrit rien, pas de hook) ; `enqueue_reconciliation(session_factory, settings, *, now=None)` : clé `reconcile_knowledge_base:<floor(epoch / intervalle)>`, payload vide ; `build_reconcile_work_handler(session_factory, settings, *, vector_index)`. La tâche beat `knowledge_base.work.reconcile` (file par défaut) ne fait qu'enregistrer l'item. Le créneau est calculé avec l'horloge du worker : ce n'est qu'une clé de dédoublonnage. Si `worker_ingestion` est occupé plus d'un intervalle (un PDF de 300 pages : ~15 min), les créneaux manqués s'exécutent ensuite à la suite : chaque cycle est court (0,02 à 0,08 s mesurés sur la base de dev, 3 à 5 documents, un index) et idempotent.
+
+**Générations** (`WorkQueue.enqueue_again`, `SqlAlchemyWorkQueue`) : un travail à refaire après un item terminé prend `<clé>:<n>` (n = plus haute génération + 1), sauf si un membre de la famille est `PENDING`/`RUNNING` (rendu, sans doublon) ; `cancel(clé)` annule la famille (`dedup_key = clé OR dedup_key LIKE 'clé:%'`, motifs échappés). `test_rescheduling_a_completed_purge_under_its_key_creates_no_work` reste vrai.
+
+**Rejeu et consultation** (`use_cases/retry_ingestion/`, `use_cases/list_failures/`, `adapters/controller/rest/failures_router.py`, fabriques `build_retry_ingestion_handler(session_factory)` et `build_list_failures_handler(session_factory)`, port `FailedWorkRepository` — `SqlAlchemyFailedWorkRepository` sur la session de `SqlAlchemyUnitOfWork.failed_work`) :
+
+- `GET /api/v1/knowledge-base/failures?limit=` (1 à 500, défaut 100) → 200 `{"items": [{item_id, kind, code, message, attempts, max_attempts, failed_at, replayable, document_id, version_id, index_id}]}` ;
+- `POST /api/v1/knowledge-base/failures/{item_id}/retry` → 202 `{item_id, kind, status: "PENDING"}` ; 404 `FAILURE_NOT_FOUND` ; 409 `NOT_FAILED` (`status`), `NOT_REPLAYABLE` (`failure_code` ; code non rejouable ou inconnu), `OBSOLETE_WORK` (`reason` : version supplantée, document retiré, index retiré, indexation annulée), `CONCURRENT_MODIFICATION` ; 422 pour un identifiant invalide. Ligne de l'item verrouillée (`FOR UPDATE`) : deux rejeux simultanés → un 202, un 409 `NOT_FAILED`.
+
+**Borne de volume (O16)** : `RecordExtractionHandler(..., max_document_tokens=None)` ; après la segmentation, avant le chunking et toute écriture, somme des `token_count` des unités > borne → `DocumentTooLargeError` (`use_cases/record_extraction/errors.py`) → `TerminalWorkError("DOCUMENT_TOO_LARGE")`, version `FAILED` non rejouable. `build_extract_version_handler` passe `settings.max_document_tokens` (défaut 1 000 000, origine : [§16, O16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
+
+**Schéma** : migration `5d2f8c1a7b30` (sur `9e4b7d2a6c13`) : `work_items.reopen_count integer NOT NULL DEFAULT 0`, `CHECK >= 0` (défaut constant : pas de réécriture ; le `CHECK` parcourt la table sous ACCESS EXCLUSIVE, quelques milliers de lignes en V1).
+
+**Mémoire** : `worker_ingestion` remplace son enfant toutes les `KB_INGESTION_MAX_TASKS_PER_CHILD` tâches (50, `compose.yaml`) : décision prise sur la mesure de la revue S6 (pic de RSS croissant sur des conversions PDF successives), sans nouvelle mesure.
+
+**Hors V1** : purge des work items terminés (Open en S0) ; parcours complet des points à chaque cycle non mesuré sur un grand corpus (coût linéaire en nombre de points, 256 par requête `scroll`).
 
 ## Surface publique
 
@@ -455,14 +509,14 @@ Ordre de l'ADR 0012 point 6 (points, puis chunks, puis blobs), rétabli par la r
 
 | Nom | Rôle |
 |---|---|
-| `register(app, resources)` | monte les routes d'import, de retrait (S7) et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; réglages et modèle de la recherche viennent des ressources (une seule source depuis la revue S5) |
+| `register(app, resources)` | monte les routes d'import, de retrait (S7), de recherche et de consultation et rejeu des échecs (S8) sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; réglages et modèle de la recherche viennent des ressources (une seule source depuis la revue S5) |
 | `KnowledgeBaseResources(session_factory, settings, qdrant_client)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application, client Qdrant du processus (S5) ; portent aussi l'embedder paresseux de la recherche (`embedder`, hors constructeur, interne au contexte) |
 | `build_knowledge_search(resources)` | implémentation du contrat public `knowledge_base.contracts.providers.KnowledgeSearch` (S5) sur l'embedder des ressources, partagé avec la route ; ne se connecte à rien, ne charge pas le modèle. Variante interne pour les tests : `adapters/controller/composition.compose_knowledge_search(session_factory, qdrant_client, settings, *, embedder, token_counter)` |
-| `register_worker(celery_app, resources, settings=None)` | déclare les tâches `knowledge_base.work.{execute,dispatch,recover}`, leurs routes et le `beat_schedule`, dans le processus maître ; `resources` est un fournisseur appelé seulement à l'exécution d'une tâche |
+| `register_worker(celery_app, resources, settings=None)` | déclare les tâches `knowledge_base.work.{execute,dispatch,recover,reconcile}`, leurs routes et le `beat_schedule`, dans le processus maître ; `resources` est un fournisseur appelé seulement à l'exécution d'une tâche |
 | `KnowledgeBaseWorkerResources(session_factory, loop, handlers=())` | ressources d'un processus enfant : fabrique de sessions, boucle asyncio persistante, handlers (registre construit à la création) |
 | `KnowledgeBaseSettings` | réglages `KB_*` (pydantic-settings) |
 | `WorkHandler` | Protocol d'un handler : `kind`, `queue`, `max_attempts` (appliqué au claim), `execute(item, ctx)` ; hook facultatif `on_terminal_failure(session, item, error)` |
-| `build_work_handlers(session_factory, qdrant_client, settings=None)` | handlers de production des work items (`extract_version`, `index_version`, `sync_visibility`, `purge_document`), construits par `runtime` dans chaque processus enfant sur sa fabrique de sessions et son client Qdrant ; ne se connecte à rien et ne charge pas le modèle (chargé à la première tâche) |
+| `build_work_handlers(session_factory, qdrant_client, settings=None)` | handlers de production des work items (`extract_version`, `index_version`, `sync_visibility`, `purge_document`, `reconcile_knowledge_base`), construits par `runtime` dans chaque processus enfant sur sa fabrique de sessions et son client Qdrant ; ne se connecte à rien et ne charge pas le modèle (chargé à la première tâche) |
 | `provision_search_index(session_factory, qdrant_client)` | crée et active l'index initial s'il n'existe pas (idempotent) ; rend l'index actif ; appelé par `python -m runtime.provision` au démarrage de la stack |
 
 `runtime` n'importe que cette racine (`backend/tests/architecture/`). `alembic/env.py` importe `knowledge_base.frameworks.sqlalchemy.metadata` (exception documentée dans [005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)).
@@ -539,6 +593,18 @@ knowledge_base/
   use_cases/clean_blob_orphans/           # CleanBlobOrphans, CleanBlobOrphansHandler (S7)
   adapters/controller/tasks/purge_document_handler.py  # PurgeDocumentWorkHandler, build_purge_document_handler (S7)
   adapters/gateway/persistence/sqlalchemy_document_purger.py, sqlalchemy_blob_references.py  # S7
+  domain/value_objects/error_catalog.py   # catalogue unique des codes d'erreur (S8)
+  domain/value_objects/point_record.py    # PointRecord, DTO de PointInventory (S8)
+  domain/services/reconciliation.py       # règles pures de la réconciliation, DiscrepancyKind (S8)
+  domain/providers/                       # S8 : point_inventory, staged_upload_store, blob_quarantine, failed_work, reconciliation_store
+  use_cases/reconcile_knowledge_base/     # ReconcileKnowledgeBase, handler, étapes, ReconciliationReport (S8)
+  use_cases/retry_ingestion/              # RetryIngestion, RetryIngestionHandler, RetryIngestionResult, refus (S8)
+  use_cases/list_failures/                # ListFailures, ListFailuresHandler, FailureView (S8)
+  use_cases/clean_stale_uploads/          # CleanStaleUploads, CleanStaleUploadsHandler (S8)
+  use_cases/record_extraction/errors.py   # DocumentTooLargeError (S8, O16)
+  adapters/controller/tasks/reconcile_handler.py  # ReconcileWorkHandler, enqueue_reconciliation, build_reconcile_work_handler (S8)
+  adapters/controller/rest/failures_router.py, failures_schemas.py  # GET /failures, POST /failures/{id}/retry (S8)
+  adapters/gateway/persistence/sqlalchemy_failed_work_repository.py, sqlalchemy_reconciliation_store.py  # S8
   frameworks/sqlalchemy/tables.py         # MetaData(schema="knowledge_base"), work_items, documents, document_versions, idempotency_keys, knowledge_units, document_chunks, knowledge_corpus, search_indexes, indexations
   frameworks/configuration/chunking.py    # DEFAULT_CHUNKING_POLICY (tokenizer du profil depuis S4)
   frameworks/configuration/settings.py    # KnowledgeBaseSettings
@@ -561,7 +627,7 @@ En S0, `finalize` et `on_terminal_failure` reçoivent une `AsyncSession` ; l'Uni
 - `FailureInfo` (`domain/providers/work_queue.py`, code stable + message tronqué à 2 000 caractères) décrit l'échec d'une **tentative** de work item : colonnes `last_error_*` et argument du hook `on_terminal_failure` (S0 §5) ;
 - `FailureReason` (`domain/value_objects/failure_reason.py`, `code`, `message`, `retryable`) est l'état **durable** d'une version `FAILED` ; `retryable` dit si `RetryIngestion` a un sens.
 
-Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` faux pour tout code de `ParseErrorCode` — `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX`, `OCR_REQUIRED`, `TOO_MANY_PAGES` — et pour `CHUNKING_FAILED`) ; une fusion ne sera envisagée que si les deux formes convergent.
+Les handlers `extract_version` et `index_version` traduisent l'un en l'autre dans leur hook, `retryable` valant « rejouable » du catalogue des erreurs (S8 ; faux pour tout code de `ParseErrorCode`, `CHUNKING_FAILED`, `DOCUMENT_TOO_LARGE`, `INVALID_PAYLOAD`, `NOT_FINALIZED`, `UNKNOWN_KIND` et tout code inconnu) ; la réconciliation fait la même traduction quand le hook n'a pas abouti (O14). Une fusion ne sera envisagée que si les deux formes convergent.
 
 ## Choix d'implémentation à connaître
 
@@ -584,4 +650,6 @@ Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` 
 - Intégration S6 : `test_office_extraction` (PDF et DOCX équivalents aux Markdown → mêmes unités, pages, tableaux, `OCR_REQUIRED`, chiffré/corrompu, plus de 300 pages, heartbeats pendant l'extraction), `test_office_parsers_live` (parseur vivant = sorties enregistrées, limite incluse, mesures d'extraction), `test_retrieval_evaluation_office`, `test_retrieval_long_units`.
 - Unitaires S7 : `domain/test_knowledge_document_s7_states.py`, `use_cases/test_{withdraw_document,import_version_cancels_indexing,purge_document,clean_blob_orphans}.py` (doubles `use_cases/s7_support.py`), `test_purge_document_work_handler.py`, `test_withdraw_document_routes_http.py`, `test_blob_orphan_settings.py`, `adapters/test_filesystem_blob_store_maintenance.py`, `adapters/vector_store/test_search_during_deletion.py` ; `architecture/test_withdrawal_purge_structure.py`.
 - Intégration S7 (PostgreSQL, Qdrant et volume réels, `HashEmbedder`, barrières explicites sans délai, `s7_support.py`) : `test_s7_concurrent_versions` (N finit après l'import de N+1 : jamais publiée, travail annulé, points invisibles puis supprimés ; recherches pendant une republication, fenêtre « deux versions visibles dans Qdrant » tenue ouverte), `test_s7_withdrawal_purge` (retrait immédiat, aucune recherche commencée après le commit ne rend le document, purge des points / chunks / blobs, tombstones, rejeu, Qdrant injoignable, zombie après purge, extraction finissant après le retrait, import de version et retrait concurrents dans les deux ordres), `test_s7_blob_orphans`, `test_document_purger` (date de la première purge conservée), `test_purge_migration` (aller-retour ancré sur `9e4b7d2a6c13`).
+- Unitaires S8 : `test_error_catalog.py`, `test_error_catalog_extraction_hook.py` (catalogue, deux axes, réexports, hook), `domain/test_reconciliation_rules.py` et `domain/test_reconciliation_bounds.py` (règles pures, réouverture bornée, points hors manifest), `domain/test_indexation_reopen.py`, `test_reconciliation_report.py`, `test_reconcile_work_handler.py`, `test_register_worker_reconcile.py`, `test_reconcile_settings.py`, `test_failure_routes_http.py`, `test_document_volume_limit.py`, `use_cases/test_clean_stale_uploads.py`, `use_cases/test_reindex_published_version.py`, `adapters/test_filesystem_staged_uploads.py` ; architecture : `test_reconciliation_structure.py` (forme des use cases, règles pures, aucun accès au système de fichiers, code d'erreur défini une seule fois).
+- Intégration S8 (`s8_support.py`, harnais de S7 : chaque écart est injecté, détecté, corrigé, puis un cycle propre) : `test_s8_reconciliation`, `test_s8_reconciliation_decisions` (réouverture bornée, générations de purge et de réindexation, quarantaine, points hors manifest), `test_s8_failed_work` (O14, aucune boucle), `test_s8_retry_ingestion`, `test_s8_failures_endpoint`, `test_s8_housekeeping`, `test_s8_reconcile_work_item`, `test_s8_point_scan`, `test_s8_document_volume`, `test_work_queue_generations`, `test_reopen_count_migration`.
 - Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go. Depuis S6, poids de Docling PDF dans `HF_HOME` (`backend/.cache/huggingface`, ~506 Mio au premier lancement).

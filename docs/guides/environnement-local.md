@@ -57,6 +57,13 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_BLOB_ROOT` | `/var/lib/interview-rag-trainer/blobs` | racine du volume des blobs ; fixée par `compose.yaml` au point de montage de `kb_blobs` (non surchargeable par `.env`) ; hors Docker, à pointer vers un répertoire inscriptible |
 | `KB_MODELS_CACHE_DIR` | `/var/cache/interview-rag-trainer/models` | cache des poids du modèle (S4) ; fixé par `compose.yaml` au point de montage de `models_cache` ; hors Docker, à pointer vers un répertoire inscriptible (ex. `backend/.cache/models`) |
 | `KB_EMBEDDING_BATCH_SIZE` | 32 | chunks encodés par appel au modèle, donc par upsert Qdrant |
+| `KB_BLOB_ORPHAN_GRACE_SECONDS` | 86400 | âge minimal d'un blob orphelin, d'un temporaire de dépôt ou d'un fichier en quarantaine avant sa suppression par la réconciliation (S7, S8) |
+| `KB_RECONCILE_INTERVAL_SECONDS` | 300 | période du beat qui planifie un cycle de réconciliation (S8) |
+| `KB_RECONCILE_MANIFEST_SAMPLE_SIZE` | 20 | indexations `COMPLETED` dont le manifest est revérifié dans Qdrant par cycle (0 : aucune) |
+| `KB_RECONCILE_MAX_PURGE_REOPENINGS` | 3 | réouvertures automatiques d'une purge `FAILED` ; au-delà, rejeu explicite |
+| `KB_IDEMPOTENCY_KEY_TTL_SECONDS` | 86400 | durée de vie d'une clé d'idempotence (O15) |
+| `KB_MAX_DOCUMENT_TOKENS` | 1000000 | borne du texte extrait d'un document, tous formats (O16) ; au-delà, `DOCUMENT_TOO_LARGE` |
+| `KB_INGESTION_MAX_TASKS_PER_CHILD` (Compose seulement) | 50 | tâches avant remplacement du processus enfant de `worker_ingestion` (`--max-tasks-per-child`) : borne la mémoire après des conversions PDF successives |
 | `HF_HOME` (non `KB_`) | `/var/cache/interview-rag-trainer/models/huggingface` | cache du Hub pour les poids de Docling PDF (S6) ; fixé par `compose.yaml` dans le volume `models_cache` (non surchargeable par `.env`) |
 | `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
 
@@ -171,7 +178,42 @@ docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trai
   "SELECT kind, status FROM knowledge_base.work_items WHERE dedup_key = 'purge_document:<document_id>'"
 ```
 
-Le nettoyage des blobs orphelins (fichiers sans document non purgé, plus vieux que `KB_BLOB_ORPHAN_GRACE_SECONDS`, 24 h par défaut) existe comme cas d'usage (`build_clean_blob_orphans_handler`) ; son déclenchement périodique arrive avec la réconciliation (S8).
+Les blobs orphelins (fichiers sans document non purgé, plus vieux que `KB_BLOB_ORPHAN_GRACE_SECONDS`, 24 h par défaut) sont supprimés par la réconciliation (ci-dessous).
+
+### Échecs, rejeu et réconciliation (Knowledge Base, S8)
+
+Un traitement en échec définitif reste en base, `FAILED`, avec son code et son message : il n'y a pas de file « dead-letter » dans RabbitMQ ([ADR 0004](../decisions/0004-reliable-messaging.md), point 11). Consultation, du plus récent au plus ancien :
+
+```bash
+curl -s "http://localhost:8010/api/v1/knowledge-base/failures?limit=20"
+# 200 {"items": [{"item_id": "...", "kind": "extract_version", "code": "OCR_REQUIRED",
+#      "message": "scanned.pdf : aucune couche texte ...", "attempts": 1, "max_attempts": 5,
+#      "failed_at": "2026-11-18T17:16:24.467666Z", "replayable": false,
+#      "document_id": "...", "version_id": "...", "index_id": null}]}
+```
+
+`replayable` dit si un rejeu a un sens ([catalogue des codes](../conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8)) : non pour un défaut du contenu (`EMPTY_DOCUMENT`, `OCR_REQUIRED`, `TOO_MANY_PAGES`, `DOCUMENT_TOO_LARGE`…), oui pour une panne (Qdrant, lease) ou un défaut réparable (`BLOB_MISSING` une fois le fichier restauré, `COLLECTION_MISMATCH` une fois la collection recréée). Rejeu, **après** avoir corrigé la cause :
+
+```bash
+curl -s -X POST http://localhost:8010/api/v1/knowledge-base/failures/<item_id>/retry
+# 202 {"item_id": "...", "kind": "extract_version", "status": "PENDING"}
+# 409 {"code": "NOT_REPLAYABLE", "failure_code": "OCR_REQUIRED", ...}  échec du contenu
+# 409 {"code": "NOT_FAILED", "status": "PENDING", ...}                  déjà rouvert ou jamais en échec
+# 409 {"code": "OBSOLETE_WORK", "reason": "document retiré", ...}       plus rien à refaire
+# 404 {"code": "FAILURE_NOT_FOUND", ...}
+```
+
+L'item est rouvert (tentatives à zéro, dernière erreur conservée) et la version (`FAILED` → `RECEIVED`) ou l'indexation (`FAILED` → `PENDING`) remise en attente dans la même transaction ; le worker d'ingestion le reprend au dispatch suivant. Un rejeu sans réparation échoue de nouveau, une seule fois : rien ne boucle. Exemple vérifié le 2026-11-18 : original retiré du volume → `BLOB_MISSING` ; réimport du même fichier (200, il redépose l'original) ; rejeu → 202, version `PUBLISHED`.
+
+La **réconciliation** tourne seule : la tâche beat `knowledge_base.work.reconcile` enregistre toutes les `KB_RECONCILE_INTERVAL_SECONDS` un item `reconcile_knowledge_base`, exécuté par `worker_ingestion` entre deux traitements. Elle corrige ce que le cycle normal ne corrige pas : points Qdrant sans propriétaire ou restés invisibles, documents purgés qui ont encore des points, publications perdues, versions extraites sans indexation, manifests (échantillon), échecs dont le hook n'a pas abouti, purges en échec (au plus `KB_RECONCILE_MAX_PURGE_REOPENINGS` fois), originaux en quarantaine, blobs orphelins, temporaires de dépôt abandonnés, clés d'idempotence de plus de 24 h. Chaque cycle laisse une ligne :
+
+```bash
+docker compose logs worker_ingestion | grep "réconciliation :"
+# ... INFO ... réconciliation : aucun écart (1 index, 0.08 s)
+# ... WARNING ... réconciliation : HIDDEN_PUBLISHED_POINTS=5 (1 index, 0.02 s)
+```
+
+Pour l'observer sans attendre 5 min : `KB_RECONCILE_INTERVAL_SECONDS=60 docker compose up -d`, puis `docker compose up -d` pour revenir au défaut. Un cycle en échec (Qdrant injoignable) est rejoué avec backoff puis listé dans `/failures` ; le créneau suivant en planifie un nouveau de toute façon.
 
 ## Qualité et tests
 

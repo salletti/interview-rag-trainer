@@ -48,6 +48,8 @@ EXPECTED_COLUMNS = {
     "created_at": ("timestamp with time zone", False),
     "updated_at": ("timestamp with time zone", False),
     "completed_at": ("timestamp with time zone", True),
+    # S8 (migration 5d2f8c1a7b30) : réouvertures d'un item FAILED.
+    "reopen_count": ("integer", False),
 }
 
 

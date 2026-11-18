@@ -266,3 +266,42 @@ et [README du contexte](../../backend/src/knowledge_base/README.md#s7--versions-
   s'il est détenu.
 - **Schéma** : migration `9e4b7d2a6c13`, `documents.purged_at timestamptz
   NULL` (ajout de colonne sans réécriture de table).
+
+### S8 — réconciliation du volume et mémoire du worker (2026-11-18)
+
+Cette section ne modifie pas la décision ci-dessus. Détail :
+[knowledge-base.md §10, §16 (O5, O15, O16), précisions S8](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge).
+
+- **Point 6, orphelins** : `CleanBlobOrphans` est exécuté à chaque cycle de
+  réconciliation (`KB_RECONCILE_INTERVAL_SECONDS`, défaut 300 s), délai de
+  grâce `KB_BLOB_ORPHAN_GRACE_SECONDS` toujours **[Proposed : 24 h]**, non
+  mesuré. Il reprend aussi les blobs d'une purge dont la suppression
+  post-commit a échoué.
+- **Temporaires de dépôt** (`tmp/`, suivi S2) : supprimés par
+  `CleanStaleUploads` au-delà du même délai ; un temporaire récent (import en
+  cours) est conservé.
+- **Quarantaine** (suivi S7, point (c)) : fermé. Un fichier laissé sous
+  `quarantine/` par un crash est remis à son chemin si son empreinte est
+  détenue et que ce chemin est libre ; sinon supprimé une fois sa mise en
+  quarantaine (`ctime`) plus vieille que le délai de grâce. Les points (a) et
+  (b) du suivi S7 restent tels quels, non mesurés.
+- **Purge `FAILED`** : rouverte par la réconciliation, au plus
+  `KB_RECONCILE_MAX_PURGE_REOPENINGS` fois (défaut 3), puis laissée au rejeu
+  explicite ; une purge réussie dont le document a de nouveau des points
+  (tentative zombie) est refaite sous `purge_document:<id>:<n>`.
+- **Volume de texte (point 4, O16)** : borne commune à tous les formats,
+  `KB_MAX_DOCUMENT_TOKENS` = 1 000 000 tokens d'unités (Proposed) ; au-delà,
+  `DOCUMENT_TOO_LARGE`, terminal et non rejouable. Origine du défaut : 3,74
+  caractères par token mesurés avec le tokenizer E5 sur les fixtures FR/EN
+  (15 687 caractères) ; un PDF très dense de 300 pages (~5 000 caractères par
+  page) fait ~400 000 tokens, celui de S6 (410 unités, 682 chunks d'au plus
+  508 tokens) au plus 350 000. Les limites de 20 Mio et 300 pages restent.
+- **Mémoire sur conversions successives** (revue S6, M8) : décision sans
+  nouvelle mesure longue (orchestrateur) : `worker_ingestion` remplace son
+  processus enfant toutes les `KB_INGESTION_MAX_TASKS_PER_CHILD` tâches
+  (défaut 50, `--max-tasks-per-child`), ce qui borne la croissance du pic
+  mesurée (+103, +65, +50, +34 Mio sur cinq conversions) au prix d'un
+  rechargement des modèles par nouvel enfant (E5 ~4 s, Docling PDF ~5 s,
+  mesures S5/S6). Vérifié sur la stack de dev le 2026-11-18 : `celery inspect
+  stats` rend `"max-tasks-per-child": 50`. Aucun redémarrage d'enfant n'a été
+  observé ni mesuré (moins de 50 tâches pendant la vérification).

@@ -1,8 +1,9 @@
 """Items de la work queue de l'indexation, de la visibilité et de la purge
 (knowledge-base.md §6, §10, §11) : ``kind``, clé de dédoublonnage et payload,
 au même endroit pour le producteur (use case) et le consommateur (handler) ;
-et l'annulation du travail d'indexation d'une version abandonnée ou d'un
-document retiré (S7 ; I6, §5.3, §8 point 1).
+leur replanification sous une génération suivante (S8, ``reschedule_*``) ; et
+l'annulation du travail d'indexation d'une version abandonnée ou d'un
+document retiré (S7 ; I6, §5.3, §8 point 1), générations comprises.
 """
 
 from __future__ import annotations
@@ -33,17 +34,42 @@ def sync_visibility_key(document_id: UUID, visibility_revision: int) -> str:
     return f"{SYNC_VISIBILITY}:{document_id}:{visibility_revision}"
 
 
+def _indexation_payload(
+    document_id: UUID, version_id: UUID, index_id: UUID
+) -> dict[str, str]:
+    return {
+        "document_id": str(document_id),
+        "version_id": str(version_id),
+        "index_id": str(index_id),
+    }
+
+
+def _sync_payload(document_id: UUID, visibility_revision: int) -> dict[str, str]:
+    return {
+        "document_id": str(document_id),
+        "visibility_revision": str(visibility_revision),
+    }
+
+
 async def schedule_indexation(
     work_queue: WorkQueue, document_id: UUID, version_id: UUID, index_id: UUID
 ) -> None:
     await work_queue.enqueue(
         INDEX_VERSION,
         index_version_key(version_id, index_id),
-        {
-            "document_id": str(document_id),
-            "version_id": str(version_id),
-            "index_id": str(index_id),
-        },
+        _indexation_payload(document_id, version_id, index_id),
+    )
+
+
+async def reschedule_indexation(
+    work_queue: WorkQueue, document_id: UUID, version_id: UUID, index_id: UUID
+) -> None:
+    """Indexation à refaire (S8 : manifest qui ne se vérifie plus, indexation
+    manquante) : génération suivante de la clé, sauf item déjà en attente."""
+    await work_queue.enqueue_again(
+        INDEX_VERSION,
+        index_version_key(version_id, index_id),
+        _indexation_payload(document_id, version_id, index_id),
     )
 
 
@@ -53,10 +79,20 @@ async def schedule_visibility_sync(
     await work_queue.enqueue(
         SYNC_VISIBILITY,
         sync_visibility_key(document_id, visibility_revision),
-        {
-            "document_id": str(document_id),
-            "visibility_revision": str(visibility_revision),
-        },
+        _sync_payload(document_id, visibility_revision),
+    )
+
+
+async def reschedule_visibility_sync(
+    work_queue: WorkQueue, document_id: UUID, visibility_revision: int
+) -> None:
+    """Synchronisation à refaire sans nouvelle révision (S8 : points d'une
+    version publiée réécrits invisibles par une réindexation ou une tentative
+    zombie) : génération suivante de la clé de la révision courante."""
+    await work_queue.enqueue_again(
+        SYNC_VISIBILITY,
+        sync_visibility_key(document_id, visibility_revision),
+        _sync_payload(document_id, visibility_revision),
     )
 
 
@@ -66,6 +102,17 @@ def purge_document_key(document_id: UUID) -> str:
 
 async def schedule_purge(work_queue: WorkQueue, document_id: UUID) -> None:
     await work_queue.enqueue(
+        PURGE_DOCUMENT,
+        purge_document_key(document_id),
+        {"document_id": str(document_id)},
+    )
+
+
+async def reschedule_purge(work_queue: WorkQueue, document_id: UUID) -> None:
+    """Purge à refaire après une purge réussie (S8 : points écrits par une
+    tentative zombie après la purge) : ``purge_document:<id>:<n>``, la clé de
+    base restant celle de la purge d'origine, terminée."""
+    await work_queue.enqueue_again(
         PURGE_DOCUMENT,
         purge_document_key(document_id),
         {"document_id": str(document_id)},

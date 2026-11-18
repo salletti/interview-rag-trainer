@@ -87,6 +87,7 @@ S0.
 | `correlation_id` | `uuid` | NULL | traçabilité (enveloppe de 004) |
 | `created_at` / `updated_at` | `timestamptz` | NOT NULL | horodatage |
 | `completed_at` | `timestamptz` | NULL | date d'entrée dans un état terminal |
+| `reopen_count` | `integer` | NOT NULL, défaut 0, `>= 0` | *S8 :* réouvertures de l'item `FAILED` (rejeu, réconciliation bornée d'une purge) |
 
 > **Précision d'implémentation (2026-11-17)** — `max_attempts` : la colonne a
 > un défaut serveur de 5, appliqué par `enqueue` (qui accepte aussi une valeur
@@ -142,6 +143,18 @@ stateDiagram-v2
 | recover | `status = 'RUNNING' AND lease_expires_at < now()` | `attempts < max` → `PENDING` (+ backoff, `LEASE_EXPIRED`) ; sinon `FAILED` (`LEASE_EXPIRED_MAX_ATTEMPTS`) |
 | cancel | `id = :id AND status IN ('PENDING','RUNNING')` | `CANCELLED`, `fencing_token+1`, `completed_at` |
 | reopen (S8) | `id = :id AND status = 'FAILED'` | `PENDING`, `attempts = 0`, `available_at = now()` ; erreur conservée |
+
+> **Précision d'implémentation S8 (2026-11-18)** — `reopen` efface aussi
+> `dispatched_at` et `completed_at`, laisse le jeton de fencing inchangé
+> (jamais reculé : le claim suivant l'incrémente) et incrémente
+> `reopen_count` (migration `5d2f8c1a7b30`). Il est exécuté par
+> `RetryIngestion` sous verrou de la ligne (`SELECT … FOR UPDATE`), dans la
+> transaction qui remet l'état métier en attente, et par la réconciliation
+> pour une purge `FAILED` (au plus `KB_RECONCILE_MAX_PURGE_REOPENINGS` fois).
+> Un travail à refaire après un item **terminé** ne rouvre pas l'item : il
+> prend la génération suivante de sa clé, `<clé>:<n>`
+> (`WorkQueue.enqueue_again`), et `cancel` annule la clé et ses générations
+> ([knowledge-base.md §6, précisions S8](knowledge-base.md#6-workflow-de-traitement-avec-work_items)).
 
 Une transition dont l'UPDATE touche zéro ligne n'est **jamais** une erreur
 technique : elle signifie « déjà traité, annulé ou périmé ». L'appelant

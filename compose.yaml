@@ -35,6 +35,9 @@ x-backend-env: &backend-env
   # .env : elle doit rester le point de montage du volume kb_blobs.
   KB_MAX_UPLOAD_BYTES: ${KB_MAX_UPLOAD_BYTES:-20971520}
   KB_BLOB_ROOT: /var/lib/interview-rag-trainer/blobs
+  # Délai de grâce des blobs orphelins (S7), des temporaires de dépôt et de
+  # la quarantaine (S8) : 24 h Proposed (ADR 0012).
+  KB_BLOB_ORPHAN_GRACE_SECONDS: ${KB_BLOB_ORPHAN_GRACE_SECONDS:-86400}
   # Embeddings (S4, ADR 0008 §6). Le cache n'est pas surchargeable par .env :
   # il doit rester le point de montage du volume models_cache.
   KB_MODELS_CACHE_DIR: /var/cache/interview-rag-trainer/models
@@ -44,6 +47,15 @@ x-backend-env: &backend-env
   KB_SEARCH_OVERSAMPLING_FACTOR: ${KB_SEARCH_OVERSAMPLING_FACTOR:-2}
   KB_SEARCH_COMPLEMENT_PASSES: ${KB_SEARCH_COMPLEMENT_PASSES:-1}
   KB_MAX_PASSAGE_TOKENS: ${KB_MAX_PASSAGE_TOKENS:-1024}
+  # Réconciliation (S8) : le beat (scheduler) planifie un cycle par créneau,
+  # exécuté par worker_ingestion ; manifests revérifiés par cycle ; réouvertures
+  # automatiques d'une purge FAILED. Clés d'idempotence purgées après 24 h
+  # (O15). Borne du texte extrait d'un document, tous formats (O16).
+  KB_RECONCILE_INTERVAL_SECONDS: ${KB_RECONCILE_INTERVAL_SECONDS:-300}
+  KB_RECONCILE_MANIFEST_SAMPLE_SIZE: ${KB_RECONCILE_MANIFEST_SAMPLE_SIZE:-20}
+  KB_RECONCILE_MAX_PURGE_REOPENINGS: ${KB_RECONCILE_MAX_PURGE_REOPENINGS:-3}
+  KB_IDEMPOTENCY_KEY_TTL_SECONDS: ${KB_IDEMPOTENCY_KEY_TTL_SECONDS:-86400}
+  KB_MAX_DOCUMENT_TOKENS: ${KB_MAX_DOCUMENT_TOKENS:-1000000}
   # Poids de Docling PDF (S6 : layout et TableFormer, ~530 Mio) : cache du Hub
   # dans un sous-dossier du volume models_cache, téléchargés à la première
   # extraction d'un PDF par worker_ingestion. Non surchargeable par .env, comme
@@ -146,10 +158,13 @@ services:
   # Traitements CPU de Knowledge Base (file knowledge_base.ingestion) : un seul
   # enfant, un seul message préchargé (S0 §8.1, §9). Seul service à charger
   # Docling PDF et ses modèles (S6), dans le processus enfant, à la première
-  # extraction d'un PDF.
+  # extraction d'un PDF. L'enfant est remplacé toutes les
+  # KB_INGESTION_MAX_TASKS_PER_CHILD tâches (S8) : le pic de RSS d'un même
+  # processus croît sur des conversions PDF successives (ADR 0012, suivi S6 ;
+  # O5) ; le nouvel enfant recharge ses modèles à sa première tâche.
   worker_ingestion:
     build: *backend-build
-    command: ["celery", "-A", "runtime.worker:celery_app", "worker", "-Q", "knowledge_base.ingestion", "--loglevel=INFO", "--concurrency=1", "--prefetch-multiplier=1"]
+    command: ["celery", "-A", "runtime.worker:celery_app", "worker", "-Q", "knowledge_base.ingestion", "--loglevel=INFO", "--concurrency=1", "--prefetch-multiplier=1", "--max-tasks-per-child=${KB_INGESTION_MAX_TASKS_PER_CHILD:-50}"]
     environment: *backend-env
     volumes:
       - ./backend/src:/app/src:ro
@@ -170,7 +185,9 @@ services:
       retries: 3
     networks: [backend]
 
-  # Celery beat : émet dispatch et recover, n'accède pas à la base.
+  # Celery beat : émet dispatch, recover et reconcile (S8), n'accède pas à la
+  # base ; reconcile est exécutée par le worker de la file par défaut, qui
+  # enregistre le work item du cycle.
   # Une seule instance (S0 §8.5) ; état éphémère, les planifications sont des
   # intervalles.
   scheduler:

@@ -1,4 +1,4 @@
-"""Traduction des refus d'import et de retrait en réponses HTTP
+"""Traduction des refus d'import, de retrait et de rejeu en réponses HTTP
 ``{code, message, ...}``."""
 
 from __future__ import annotations
@@ -27,6 +27,12 @@ from knowledge_base.use_cases.errors import (
     InvalidFilenameError,
     UnsupportedDocumentTypeError,
 )
+from knowledge_base.use_cases.retry_ingestion.errors import (
+    FailureNotFoundError,
+    ItemNotFailedError,
+    NotReplayableError,
+    ObsoleteWorkError,
+)
 
 IMPORT_REFUSALS = (
     InvalidFilenameError,
@@ -45,6 +51,14 @@ IMPORT_REFUSALS = (
 WITHDRAW_REFUSALS = (
     DocumentNotFoundError,
     DocumentWithdrawnError,
+    ConcurrentModificationError,
+)
+
+RETRY_REFUSALS = (
+    FailureNotFoundError,
+    ItemNotFailedError,
+    NotReplayableError,
+    ObsoleteWorkError,
     ConcurrentModificationError,
 )
 
@@ -94,6 +108,30 @@ def _describe(error: Exception) -> tuple[int, str, dict[str, Any]]:
                 status.HTTP_409_CONFLICT,
                 "DOCUMENT_WITHDRAWN",
                 {"document_id": str(error.document_id)},
+            )
+        case FailureNotFoundError():
+            return (
+                status.HTTP_404_NOT_FOUND,
+                "FAILURE_NOT_FOUND",
+                {"item_id": str(error.item_id)},
+            )
+        case ItemNotFailedError():
+            return (
+                status.HTTP_409_CONFLICT,
+                "NOT_FAILED",
+                {"item_id": str(error.item_id), "status": error.status},
+            )
+        case NotReplayableError():
+            return (
+                status.HTTP_409_CONFLICT,
+                "NOT_REPLAYABLE",
+                {"item_id": str(error.item_id), "failure_code": error.code},
+            )
+        case ObsoleteWorkError():
+            return (
+                status.HTTP_409_CONFLICT,
+                "OBSOLETE_WORK",
+                {"item_id": str(error.item_id), "reason": error.reason},
             )
         # Une course perdue deux fois de suite (rarissime) : le client rejoue,
         # comme pour un verrou optimiste perdu.

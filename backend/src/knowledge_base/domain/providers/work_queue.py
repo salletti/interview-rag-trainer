@@ -1,8 +1,16 @@
 """Port de la work queue durable vu par le domaine (S0 §4).
 
-Seuls ``enqueue`` et ``cancel`` sont exposés : ils s'exécutent dans la
-transaction du handler métier (même Unit of Work). Les autres transitions
-(claim, heartbeat, finalisation, reprise) sont des opérations d'adapter.
+Seuls ``enqueue``, ``enqueue_again`` et ``cancel`` sont exposés : ils
+s'exécutent dans la transaction du handler métier (même Unit of Work). Les
+autres transitions (claim, heartbeat, finalisation, reprise) sont des
+opérations d'adapter ; la réouverture d'un item ``FAILED`` (S8) passe par le
+port ``FailedWorkRepository``.
+
+Générations (S8) : ``dedup_key`` est unique pour toujours (S0 §2), un item
+terminé ne se relance donc pas sous sa clé. Quand le même travail logique doit
+être refait (points réécrits par une tentative zombie, manifest à revérifier),
+``enqueue_again`` crée la génération suivante, ``<clé>:<n>`` ; la clé de base
+et ses générations forment une **famille**, que ``cancel`` annule en entier.
 """
 
 from __future__ import annotations
@@ -12,15 +20,30 @@ from dataclasses import dataclass, field
 from typing import Final, Protocol
 from uuid import UUID
 
-# Codes d'erreur stables écrits dans ``work_items.last_error_code`` (S0 §2).
-# Les codes métier (``EMPTY_DOCUMENT``…) sont définis par les handlers.
-TRANSIENT: Final = "TRANSIENT"
-UNEXPECTED_ERROR: Final = "UNEXPECTED_ERROR"
-UNKNOWN_KIND: Final = "UNKNOWN_KIND"
-NOT_FINALIZED: Final = "NOT_FINALIZED"
-TERMINAL_HOOK_FAILED: Final = "TERMINAL_HOOK_FAILED"
-LEASE_EXPIRED: Final = "LEASE_EXPIRED"
-LEASE_EXPIRED_MAX_ATTEMPTS: Final = "LEASE_EXPIRED_MAX_ATTEMPTS"
+# Codes d'erreur stables écrits dans ``work_items.last_error_code`` (S0 §2) :
+# définis par le catalogue unique (S8), réexportés ici pour la work queue.
+from knowledge_base.domain.value_objects.error_catalog import (
+    LEASE_EXPIRED,
+    LEASE_EXPIRED_MAX_ATTEMPTS,
+    NOT_FINALIZED,
+    TERMINAL_HOOK_FAILED,
+    TRANSIENT,
+    UNEXPECTED_ERROR,
+    UNKNOWN_KIND,
+)
+
+__all__ = [
+    "LEASE_EXPIRED",
+    "LEASE_EXPIRED_MAX_ATTEMPTS",
+    "MAX_ERROR_MESSAGE_LENGTH",
+    "NOT_FINALIZED",
+    "TERMINAL_HOOK_FAILED",
+    "TRANSIENT",
+    "UNEXPECTED_ERROR",
+    "UNKNOWN_KIND",
+    "FailureInfo",
+    "WorkQueue",
+]
 
 MAX_ERROR_MESSAGE_LENGTH: Final = 2000
 
@@ -58,6 +81,21 @@ class WorkQueue(Protocol):
         est déjà connue (y compris pour un item terminé)."""
         ...
 
+    async def enqueue_again(
+        self,
+        kind: str,
+        dedup_key: str,
+        payload: Mapping[str, str] | None = None,
+        correlation_id: UUID | None = None,
+    ) -> UUID:
+        """Travail à (re)faire sous la famille de ``dedup_key`` : l'item de la
+        famille encore ``PENDING`` ou ``RUNNING`` s'il y en a un (aucun
+        doublon) ; sinon un nouvel item, sous ``dedup_key`` si la famille est
+        vide, sous ``<dedup_key>:<n>`` (génération suivante) sinon."""
+        ...
+
     async def cancel(self, dedup_key: str) -> bool:
-        """Vrai si un item ``PENDING`` ou ``RUNNING`` a été annulé."""
+        """Annule les items ``PENDING`` ou ``RUNNING`` de la famille de
+        ``dedup_key`` (la clé et ses générations ``<clé>:<n>``). Vrai si au
+        moins un item a été annulé."""
         ...

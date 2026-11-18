@@ -151,13 +151,35 @@ class FakeWorkQueue:
         )
         return uuid4()
 
+    async def enqueue_again(
+        self,
+        kind: str,
+        dedup_key: str,
+        payload: Mapping[str, str] | None = None,
+        correlation_id: UUID | None = None,
+    ) -> UUID:
+        family = self._family(dedup_key)
+        if not any(item.status in {"PENDING", "RUNNING"} for item in family):
+            key = f"{dedup_key}:{len(family) + 1}" if family else dedup_key
+            await self.enqueue(kind, key, payload, correlation_id)
+        return uuid4()
+
     async def cancel(self, dedup_key: str) -> bool:
         self._w.cancel_calls.append(dedup_key)
-        item = self._w.items.get(dedup_key)
-        if item is None or item.status not in {"PENDING", "RUNNING"}:
-            return False
-        item.status = "CANCELLED"
-        return True
+        cancelled = False
+        for item in self._family(dedup_key):
+            if item.status in {"PENDING", "RUNNING"}:
+                item.status = "CANCELLED"
+                cancelled = True
+        return cancelled
+
+    def _family(self, dedup_key: str) -> list[FakeWorkItem]:
+        """La clé et ses générations ``<clé>:<n>`` (port ``WorkQueue``, S8)."""
+        return [
+            item
+            for key, item in self._w.items.items()
+            if key == dedup_key or key.startswith(f"{dedup_key}:")
+        ]
 
 
 class FakeIdempotencyKeys:

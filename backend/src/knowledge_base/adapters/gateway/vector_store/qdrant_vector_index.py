@@ -11,6 +11,10 @@ ADR 0010, ADR 0011 §2).
 - Toutes les écritures attendent leur application (``wait=True``) et exigent
   le statut ``completed`` : une écriture non confirmée lève, la tentative est
   rejouée (les écritures sont idempotentes, §7.3).
+- Réconciliation (S8, port ``PointInventory``) : parcours paginé (``scroll``)
+  de toute la collection ou des points d'une version, payload réduit au
+  propriétaire, à l'empreinte et à la visibilité, sans vecteur ; suppression
+  par identifiants des points hors manifest.
 - Recherche (S5, port ``ChunkSearcher``) : ``query_points_groups`` groupé par
   ``unit_id``, ``CHUNKS_PER_UNIT`` chunks au plus par unité ; le filtre
   ``visible=true`` est toujours ajouté ici (§12 étape 3). Un hit sans
@@ -20,20 +24,23 @@ ADR 0010, ADR 0011 §2).
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from typing import Any, Final
 from uuid import UUID
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance as QdrantDistance
 from qdrant_client.models import (
+    ExtendedPointId,
     FieldCondition,
     Filter,
     FilterSelector,
     MatchAny,
     MatchValue,
     PayloadSchemaType,
+    PointIdsList,
     PointStruct,
+    Record,
     UpdateResult,
     UpdateStatus,
     VectorParams,
@@ -48,6 +55,7 @@ from knowledge_base.domain.value_objects.indexed_point import (
     IndexedPoint,
     PointSelector,
 )
+from knowledge_base.domain.value_objects.point_record import PointRecord
 from knowledge_base.domain.value_objects.search_filters import SearchFilters
 
 COLLECTION_PREFIX: Final = "kb_index_"
@@ -56,6 +64,11 @@ COLLECTION_PREFIX: Final = "kb_index_"
 # d'une unité longue. Au-delà de trois, une unité de 512 tokens par chunk
 # dépasserait de toute façon le budget de passage par défaut.
 CHUNKS_PER_UNIT: Final = 3
+
+# Parcours de la réconciliation (S8) : champs lus par point, et taille des
+# pages de la lecture des points d'une version.
+_SCANNED_FIELDS: Final = ("document_id", "version_id", "chunk_hash", "visible")
+_SCROLL_BATCH: Final = 256
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +210,66 @@ class QdrantVectorIndex:
             ),
         )
 
+    # --- parcours pour la réconciliation (S8, port PointInventory) ------------------
+
+    async def scan_points(
+        self, index_id: UUID, *, batch_size: int = 256
+    ) -> AsyncIterator[PointRecord]:
+        name = self.collection_name(index_id)
+        offset: ExtendedPointId | None = None
+        while True:
+            records, offset = await self._client.scroll(
+                collection_name=name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=list(_SCANNED_FIELDS),
+                with_vectors=False,
+            )
+            for record in records:
+                point = _point_record(record)
+                if point is not None:
+                    yield point
+            if offset is None:
+                return
+
+    async def points_of(
+        self, index_id: UUID, selector: PointSelector
+    ) -> Mapping[UUID, str]:
+        name = self.collection_name(index_id)
+        found: dict[UUID, str] = {}
+        offset: ExtendedPointId | None = None
+        while True:
+            records, offset = await self._client.scroll(
+                collection_name=name,
+                scroll_filter=_filter(selector),
+                limit=_SCROLL_BATCH,
+                offset=offset,
+                with_payload=["chunk_hash"],
+                with_vectors=False,
+            )
+            for record in records:
+                found[UUID(str(record.id))] = str(
+                    (record.payload or {}).get("chunk_hash", "")
+                )
+            if offset is None:
+                return found
+
+    async def delete_point_ids(
+        self, index_id: UUID, point_ids: Collection[UUID]
+    ) -> None:
+        if not point_ids:
+            return
+        name = self.collection_name(index_id)
+        _require_applied(
+            "delete",
+            name,
+            await self._client.delete(
+                collection_name=name,
+                points_selector=PointIdsList(points=[str(i) for i in point_ids]),
+                wait=True,
+            ),
+        )
+
     async def search(
         self,
         index_id: UUID,
@@ -290,6 +363,25 @@ def _payload(point: IndexedPoint) -> dict[str, Any]:
         "kind": point.kind,
         "language": point.language,
     }
+
+
+def _point_record(record: Record) -> PointRecord | None:
+    """``None`` pour un point sans propriétaire lisible : il n'a pas été écrit
+    par cet adapter (payload incomplet), la réconciliation l'ignore."""
+    payload = record.payload or {}
+    try:
+        return PointRecord(
+            point_id=UUID(str(record.id)),
+            document_id=UUID(str(payload["document_id"])),
+            version_id=UUID(str(payload["version_id"])),
+            chunk_hash=str(payload.get("chunk_hash", "")),
+            visible=bool(payload.get("visible", False)),
+        )
+    except (KeyError, ValueError):
+        logger.warning(
+            "point %s sans document_id ou version_id lisible, ignoré", record.id
+        )
+        return None
 
 
 def _filter(selector: PointSelector) -> Filter:

@@ -150,6 +150,17 @@ class Indexation:
         self._status = IndexationStatus.PENDING
         self._failure = None
 
+    def reopen(self) -> None:
+        """``COMPLETED`` -> ``PENDING`` : le manifest vérifié ne correspond plus
+        à l'index (réconciliation, §9). Arête réservée à la réconciliation,
+        distincte de ``retry`` (``FAILED`` -> ``PENDING``) : le manifest, le
+        nombre de points et la date sont effacés (I8)."""
+        self._ensure_status("reopen", IndexationStatus.COMPLETED)
+        self._status = IndexationStatus.PENDING
+        self._manifest_digest = None
+        self._point_count = None
+        self._completed_at = None
+
     def cancel(self) -> None:
         self._ensure_status("cancel", IndexationStatus.PENDING, IndexationStatus.FAILED)
         self._status = IndexationStatus.CANCELLED

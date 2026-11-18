@@ -55,6 +55,7 @@ from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
 from knowledge_base.domain.value_objects.section_path import SectionPath
 from knowledge_base.use_cases.indexing_steps import schedule_indexation
+from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -87,17 +88,26 @@ class RecordExtractionHandler:
         parser: DocumentParser,
         token_counter: TokenCounter,
         policy: ChunkingPolicy,
+        max_document_tokens: int | None = None,
     ) -> None:
+        """``max_document_tokens`` : borne du volume de texte extrait (O16),
+        ``None`` pour n'en appliquer aucune."""
+        if max_document_tokens is not None and max_document_tokens <= 0:
+            raise ValueError(
+                f"max_document_tokens doit être positif : {max_document_tokens}"
+            )
         self._unit_of_work = unit_of_work
         self._blob_reader = blob_reader
         self._parser = parser
         self._segmenter = KnowledgeUnitSegmenter(token_counter, policy)
         self._planner = ChunkPlanner(token_counter, policy)
         self._policy = policy
+        self._max_document_tokens = max_document_tokens
 
     async def prepare(self, command: RecordExtraction) -> PreparedExtraction | None:
         """Tout le calcul, aucune écriture. ``None`` s'il n'y a rien à
-        extraire ; une ``DocumentParseError`` du parseur remonte telle quelle."""
+        extraire ; une ``DocumentParseError`` du parseur remonte telle quelle,
+        ``DocumentTooLargeError`` si le texte dépasse la borne de volume."""
         async with self._unit_of_work() as uow:
             document = await uow.documents.get(command.document_id)
         version = _extractable_version(document, command.version_id)
@@ -220,6 +230,7 @@ class RecordExtractionHandler:
                 structured, kind=document.kind, version_id=version.version_id
             )
         )
+        self._ensure_within_volume(version.version_id, units)
         citation = Citation(
             document_id=document.document_id,
             document_title=document.title,
@@ -232,6 +243,17 @@ class RecordExtractionHandler:
         )
         chunks = tuple(c for unit in units for c in self._planner.plan(unit, citation))
         return units, chunks
+
+    def _ensure_within_volume(
+        self, version_id: UUID, units: tuple[KnowledgeUnit, ...]
+    ) -> None:
+        """O16 : avant le chunking et toute écriture. La mesure est le texte
+        des unités, sans les en-têtes contextuels que chaque chunk répète."""
+        if self._max_document_tokens is None:
+            return
+        tokens = sum(unit.token_count for unit in units)
+        if tokens > self._max_document_tokens:
+            raise DocumentTooLargeError(version_id, tokens, self._max_document_tokens)
 
 
 def _version(

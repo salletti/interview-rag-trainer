@@ -9,16 +9,18 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
+from knowledge_base.domain.value_objects import error_catalog
+
 
 class ParseErrorCode(StrEnum):
-    """Liste fermée : le handler d'extraction tient chacun de ces codes pour non
-    rejouable ; un code hors liste ne doit pas pouvoir y échapper."""
+    """Liste fermée des échecs du parseur ; leurs valeurs sont celles du
+    catalogue des erreurs (S8), qui les dit toutes non rejouables."""
 
-    EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
-    INVALID_DOCUMENT = "INVALID_DOCUMENT"
-    DOCUMENT_TOO_COMPLEX = "DOCUMENT_TOO_COMPLEX"
-    OCR_REQUIRED = "OCR_REQUIRED"
-    TOO_MANY_PAGES = "TOO_MANY_PAGES"
+    EMPTY_DOCUMENT = error_catalog.EMPTY_DOCUMENT
+    INVALID_DOCUMENT = error_catalog.INVALID_DOCUMENT
+    DOCUMENT_TOO_COMPLEX = error_catalog.DOCUMENT_TOO_COMPLEX
+    OCR_REQUIRED = error_catalog.OCR_REQUIRED
+    TOO_MANY_PAGES = error_catalog.TOO_MANY_PAGES
 
 
 EMPTY_DOCUMENT: Final = ParseErrorCode.EMPTY_DOCUMENT

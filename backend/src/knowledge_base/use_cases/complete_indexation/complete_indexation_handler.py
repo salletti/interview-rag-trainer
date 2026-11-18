@@ -11,6 +11,8 @@ Coupé en deux pour la work queue (S0 §5) :
 - ``apply`` : dans la transaction de finalisation, revérification métier puis
   ``COMPLETED`` (I8) et tentative de publication ; une publication refusée
   (indexation d'un index ``BUILDING``, I5…) laisse l'indexation ``COMPLETED``.
+  Une version déjà publiée (réindexation après un écart de manifest, S8) n'est
+  pas republiée : sa synchronisation de visibilité est replanifiée.
 
 Effets externes rejouables : points ``uuid5(index_id, chunk_id)`` écrasés à
 l'identique, jamais ajoutés (§7.3).
@@ -61,6 +63,7 @@ from knowledge_base.use_cases.complete_indexation.errors import (
     CollectionMismatchError,
     IndexManifestMismatchError,
 )
+from knowledge_base.use_cases.indexing_steps import reschedule_visibility_sync
 from knowledge_base.use_cases.publish_document_version.errors import (
     PublicationRefusedError,
 )
@@ -258,8 +261,35 @@ class CompleteIndexationHandler:
             prepared.point_count,
             prepared.manifest.digest,
         )
-        await self._try_publish(transaction, command)
+        document = await transaction.documents.get(command.document_id)
+        version = _version(document, command.version_id)
+        if (
+            document is not None
+            and version is not None
+            and version.status is VersionStatus.PUBLISHED
+        ):
+            await self._resynchronize(transaction, document, command.version_id)
+        else:
+            await self._try_publish(transaction, command)
         return True
+
+    @staticmethod
+    async def _resynchronize(
+        transaction: IndexingTransaction, document: KnowledgeDocument, version_id: UUID
+    ) -> None:
+        """Réindexation d'une version déjà publiée (S8 : manifest rouvert par la
+        réconciliation) : ``prepare`` vient de réécrire ses points invisibles
+        (§11) et la publication, déjà faite, ne planifiera aucune
+        synchronisation."""
+        await reschedule_visibility_sync(
+            transaction.work_queue, document.document_id, document.visibility_revision
+        )
+        logger.info(
+            "version %s déjà publiée, réindexée : synchronisation de la "
+            "visibilité replanifiée (révision %d)",
+            version_id,
+            document.visibility_revision,
+        )
 
     async def cancel_if_obsolete(
         self, transaction: IndexingTransaction, command: CompleteIndexation

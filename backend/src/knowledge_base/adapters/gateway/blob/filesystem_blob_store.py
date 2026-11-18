@@ -11,7 +11,10 @@ n'attend jamais le disque.
 
 Suppression et inventaire (S7) : seul cet adapter supprime un fichier (test
 d'architecture ``test_withdrawal_purge_structure``) ; l'inventaire ne voit que
-les chemins adressés par contenu, jamais ``tmp/``.
+les chemins adressés par contenu, jamais ``tmp/``. Réconciliation (S8) : les
+temporaires de ``tmp/`` (``StagedUploadStore``) et les fichiers laissés sous
+``quarantine/`` par un crash (``BlobQuarantine``) sont listés, supprimés ou
+remis à leur chemin par les mêmes moyens.
 
 Suppression d'un orphelin (revue S7) : ``put`` remplace un fichier existant
 par ``os.replace`` (nouvel inode, date fraîche). Un ``unlink`` sans condition
@@ -55,6 +58,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class StagedUploadFile:
+    """Temporaire de dépôt sous ``tmp/`` (port ``StagedUploadStore``)."""
+
+    name: str
+    modified_at: datetime
+
+
+@dataclass(frozen=True)
+class QuarantinedBlobFile:
+    """Original sous ``quarantine/`` (port ``BlobQuarantine``) ; sa mise en
+    quarantaine est datée par le changement d'état du fichier (``ctime`` :
+    le renommage le met à jour, vérifié sur le volume du conteneur et sous
+    macOS), sa date de modification restant celle du dépôt de l'orphelin."""
+
+    name: str
+    content_hash: ContentHash
+    quarantined_at: datetime
+
+
+@dataclass(frozen=True)
 class StoredBlobFile:
     """Élément de l'inventaire : empreinte, date de modification (UTC) du
     fichier, qui date le dépôt, et révision (inode, date en ns) qui
@@ -67,13 +90,14 @@ class StoredBlobFile:
 
 class FileSystemBlobStore:
     """``DocumentBlobStore`` (import), ``DocumentBlobReader`` (extraction),
-    ``DocumentBlobEraser`` et ``DocumentBlobInventory`` (purge, orphelins)."""
+    ``DocumentBlobEraser`` et ``DocumentBlobInventory`` (purge, orphelins),
+    ``StagedUploadStore`` et ``BlobQuarantine`` (réconciliation, S8)."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
         self._addressed = root / "sha256"
         # Les temporaires orphelins (crash pendant un upload) restent
-        # repérables ici pour la réconciliation (S8).
+        # repérables ici pour la réconciliation (S8, ``CleanStaleUploads``).
         self._staging = root / "tmp"
         self._quarantine_dir = root / "quarantine"
 
@@ -144,6 +168,82 @@ class FileSystemBlobStore:
 
     async def list_blobs(self) -> list[StoredBlobFile]:
         return await asyncio.to_thread(self._list_blobs)
+
+    # --- temporaires de dépôt (S8) -------------------------------------------------
+
+    async def list_staged(self) -> list[StagedUploadFile]:
+        return await asyncio.to_thread(self._list_staged)
+
+    async def delete_staged(self, name: str) -> bool:
+        return await asyncio.to_thread(self._delete, self._staged_path(name))
+
+    def _list_staged(self) -> list[StagedUploadFile]:
+        found: list[StagedUploadFile] = []
+        for path in sorted(_files_of(self._staging)):
+            try:
+                modified = path.stat().st_mtime
+            except FileNotFoundError:
+                continue  # renommé par l'import qui l'écrivait
+            found.append(
+                StagedUploadFile(
+                    name=path.name, modified_at=datetime.fromtimestamp(modified, UTC)
+                )
+            )
+        return found
+
+    def _staged_path(self, name: str) -> Path:
+        """Le temporaire ``name`` ; refuse tout nom qui sortirait de ``tmp/``."""
+        if name in {"", ".", ".."} or "/" in name or "\\" in name:
+            raise ValueError(f"nom de temporaire de dépôt invalide : {name!r}")
+        return self._staging / name
+
+    # --- quarantaine (S8) ----------------------------------------------------------
+
+    async def list_quarantined(self) -> list[QuarantinedBlobFile]:
+        return await asyncio.to_thread(self._list_quarantined)
+
+    async def restore_quarantined(self, name: str) -> bool:
+        return await asyncio.to_thread(self._restore_quarantined, name)
+
+    async def discard_quarantined(self, name: str) -> bool:
+        return await asyncio.to_thread(self._delete, self._quarantined_path(name)[0])
+
+    def _list_quarantined(self) -> list[QuarantinedBlobFile]:
+        found: list[QuarantinedBlobFile] = []
+        for path in sorted(_files_of(self._quarantine_dir)):
+            try:
+                _, content_hash = self._quarantined_path(path.name)
+                changed = path.stat().st_ctime
+            except ValueError:
+                logger.warning("fichier inattendu en quarantaine : %s", path)
+                continue
+            except FileNotFoundError:
+                continue
+            found.append(
+                QuarantinedBlobFile(
+                    name=path.name,
+                    content_hash=content_hash,
+                    quarantined_at=datetime.fromtimestamp(changed, UTC),
+                )
+            )
+        return found
+
+    def _restore_quarantined(self, name: str) -> bool:
+        quarantined, content_hash = self._quarantined_path(name)
+        target = self._path_of(content_hash)
+        if target.exists() or not quarantined.exists():
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _restore(quarantined, target)
+        return True
+
+    def _quarantined_path(self, name: str) -> tuple[Path, ContentHash]:
+        """``<empreinte>-<uuid>`` (nom donné par ``_quarantine``) ; lève
+        ``ValueError`` pour tout autre nom."""
+        digest, separator, suffix = name.partition("-")
+        if not separator or not suffix.isalnum():
+            raise ValueError(f"nom de quarantaine invalide : {name!r}")
+        return self._quarantine_dir / name, ContentHash(digest)
 
     def _quarantine(
         self, target: Path, content_hash: ContentHash, observed: BlobRevision
@@ -229,6 +329,14 @@ async def _copy(
         hasher.update(chunk)
         await asyncio.to_thread(staged.write, chunk)
     return hasher.hexdigest(), size
+
+
+def _files_of(directory: Path) -> list[Path]:
+    """Fichiers directement sous ``directory`` ; dossier absent : aucun."""
+    try:
+        return [path for path in directory.iterdir() if path.is_file()]
+    except FileNotFoundError:
+        return []
 
 
 def _flush_to_disk(staged: IO[bytes]) -> None:

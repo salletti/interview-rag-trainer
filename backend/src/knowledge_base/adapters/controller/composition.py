@@ -4,12 +4,16 @@ de la stack (``python -m runtime.provision``), la recherche (S5), dont les
 dépendances sont explicites ici (embedder et compteur de tokens injectables
 par les tests) ; la fabrique publique, ``build_knowledge_search(resources)``,
 la compose sur les ressources du contexte ; le nettoyage des blobs orphelins
-(S7), dont le déclenchement périodique arrive avec la réconciliation (S8)."""
+(S7) ; la réconciliation, la consultation et le rejeu des échecs (S8), que
+le work item ``reconcile_knowledge_base`` et les routes ``/failures``
+appellent."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import random
+from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import Final
 from uuid import UUID, uuid4
 
 from qdrant_client import AsyncQdrantClient
@@ -30,6 +34,9 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_blob_references impo
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_published_unit_reader import (  # noqa: E501
     SqlAlchemyPublishedUnitReader,
 )
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_reconciliation_store import (  # noqa: E501
+    SqlAlchemyReconciliationStore,
+)
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
     SqlAlchemyUnitOfWork,
 )
@@ -37,19 +44,53 @@ from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
 from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.reconciliation_store import CompletedIndexation
 from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 from knowledge_base.use_cases.clean_blob_orphans.clean_blob_orphans_handler import (
     CleanBlobOrphansHandler,
 )
+from knowledge_base.use_cases.clean_stale_uploads.clean_stale_uploads_handler import (
+    CleanStaleUploadsHandler,
+)
 from knowledge_base.use_cases.import_steps import utc_now
+from knowledge_base.use_cases.list_failures.list_failures_handler import (
+    ListFailuresHandler,
+)
 from knowledge_base.use_cases.provision_search_index.provision_search_index_handler import (  # noqa: E501
     ProvisionSearchIndexHandler,
+)
+from knowledge_base.use_cases.publish_document_version.publish_document_version_handler import (  # noqa: E501
+    PublishDocumentVersionHandler,
+)
+from knowledge_base.use_cases.reconcile_knowledge_base.failed_work_reconciliation import (  # noqa: E501
+    FailedWorkReconciliation,
+)
+from knowledge_base.use_cases.reconcile_knowledge_base.indexation_reconciliation import (  # noqa: E501
+    IndexationReconciliation,
+    Sampler,
+)
+from knowledge_base.use_cases.reconcile_knowledge_base.point_reconciliation import (
+    PointReconciliation,
+    ReconcilableIndex,
+)
+from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_handler import (  # noqa: E501
+    ReconcileKnowledgeBaseHandler,
+    ReconciliationPolicy,
+)
+from knowledge_base.use_cases.reconcile_knowledge_base.storage_housekeeping import (
+    StorageHousekeeping,
+)
+from knowledge_base.use_cases.retry_ingestion.retry_ingestion_handler import (
+    RetryIngestionHandler,
 )
 from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
+
+# Points lus par page lors du parcours d'un index (Qdrant ``scroll``).
+SCAN_BATCH_SIZE: Final = 256
 
 
 def build_provision_search_index_handler(
@@ -107,4 +148,87 @@ def build_clean_blob_orphans_handler(
         references=SqlAlchemyBlobReferences(session_factory),
         eraser=blobs,
         clock=clock or utc_now,
+    )
+
+
+def build_reconcile_knowledge_base_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+    vector_index: ReconcilableIndex,
+    settings: KnowledgeBaseSettings,
+    *,
+    clock: Callable[[], datetime] | None = None,
+    sampler: Sampler | None = None,
+) -> ReconcileKnowledgeBaseHandler:
+    """Un cycle sur PostgreSQL, ``vector_index`` (``QdrantVectorIndex`` en
+    production : ``VectorIndex`` et ``PointInventory``) et le volume
+    ``settings.blob_root`` ; ne se connecte à rien. ``sampler`` choisit les
+    manifests revérifiés (défaut : tirage aléatoire)."""
+    clock = clock or utc_now
+
+    def unit_of_work() -> SqlAlchemyUnitOfWork:
+        return SqlAlchemyUnitOfWork(session_factory)
+
+    store = SqlAlchemyReconciliationStore(session_factory)
+    blobs = FileSystemBlobStore(settings.blob_root)
+    references = SqlAlchemyBlobReferences(session_factory)
+    return ReconcileKnowledgeBaseHandler(
+        unit_of_work=unit_of_work,
+        points=PointReconciliation(
+            unit_of_work=unit_of_work,
+            store=store,
+            vector_index=vector_index,
+            scan_batch_size=SCAN_BATCH_SIZE,
+        ),
+        indexations=IndexationReconciliation(
+            unit_of_work=unit_of_work,
+            store=store,
+            vector_index=vector_index,
+            publisher=PublishDocumentVersionHandler(clock=clock),
+            sampler=sampler or random_sample,
+        ),
+        failed_work=FailedWorkReconciliation(
+            unit_of_work=unit_of_work,
+            store=store,
+            max_purge_reopenings=settings.reconcile_max_purge_reopenings,
+        ),
+        storage=StorageHousekeeping(
+            quarantine=blobs,
+            blob_references=references,
+            blob_orphans=CleanBlobOrphansHandler(
+                inventory=blobs, references=references, eraser=blobs, clock=clock
+            ),
+            stale_uploads=CleanStaleUploadsHandler(staging=blobs, clock=clock),
+            store=store,
+            clock=clock,
+        ),
+        policy=ReconciliationPolicy(
+            manifest_sample_size=settings.reconcile_manifest_sample_size,
+            blob_grace=settings.blob_orphan_grace,
+            idempotency_key_ttl=settings.idempotency_key_ttl,
+        ),
+        clock=clock,
+    )
+
+
+def random_sample(
+    candidates: Sequence[CompletedIndexation], k: int
+) -> Sequence[CompletedIndexation]:
+    """Échantillon uniforme sans remise : sur des cycles successifs, chaque
+    indexation finit revérifiée sans parcourir tout le corpus à chaque fois."""
+    return random.sample(list(candidates), min(k, len(candidates)))
+
+
+def build_retry_ingestion_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> RetryIngestionHandler:
+    return RetryIngestionHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory)
+    )
+
+
+def build_list_failures_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ListFailuresHandler:
+    return ListFailuresHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory)
     )

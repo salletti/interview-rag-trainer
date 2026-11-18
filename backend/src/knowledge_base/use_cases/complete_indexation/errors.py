@@ -14,7 +14,13 @@ from __future__ import annotations
 from typing import Final
 from uuid import UUID
 
-COLLECTION_MISMATCH: Final = "COLLECTION_MISMATCH"
+from knowledge_base.domain.value_objects.error_catalog import COLLECTION_MISMATCH
+
+__all__ = [
+    "COLLECTION_MISMATCH",
+    "CollectionMismatchError",
+    "IndexManifestMismatchError",
+]
 
 
 class IndexManifestMismatchError(Exception):

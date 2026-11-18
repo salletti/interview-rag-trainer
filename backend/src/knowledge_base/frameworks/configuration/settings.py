@@ -1,7 +1,8 @@
 """Réglages techniques de Knowledge Base : work queue (S0 §7, §8.4), import et
 stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6),
 recherche (S5, knowledge-base.md §12, O12), nettoyage des blobs orphelins
-(S7, ADR 0012 point 6).
+(S7, ADR 0012 point 6), réconciliation, expiration des clés d'idempotence et
+borne de volume de texte (S8, O15, O16).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -67,6 +68,29 @@ class KnowledgeBaseSettings(BaseSettings):
     search_complement_passes: int = Field(default=1, ge=0)
     max_passage_tokens: int = Field(default=1024, ge=DEFAULT_CHUNKING_POLICY.max_tokens)
 
+    # Réconciliation (S8, ADR 0004 point 9) : période du beat qui planifie un
+    # cycle (un work item par créneau, file d'ingestion) ; indexations
+    # COMPLETED dont le manifest est revérifié par cycle (échantillon) ;
+    # réouvertures automatiques d'une purge FAILED au-delà desquelles elle
+    # attend un rejeu explicite (Qdrant durablement en panne : pas de boucle
+    # au rythme du cycle).
+    reconcile_interval_seconds: float = Field(default=300, gt=0)
+    reconcile_manifest_sample_size: int = Field(default=20, ge=0)
+    reconcile_max_purge_reopenings: int = Field(default=3, ge=0)
+    # Âge au-delà duquel une clé d'idempotence est purgée par la
+    # réconciliation (O15, 24 h) : un rejeu plus tardif de la même requête
+    # n'est plus reconnu, la contrainte UNIQUE(content_hash) évite tout doublon.
+    idempotency_key_ttl_seconds: float = Field(default=24 * 3600, gt=0)
+    # Borne du volume de texte extrait, tous formats (O16) : somme des
+    # token_count des unités. Origine du défaut (knowledge-base.md §16, O16) :
+    # 3,74 caractères par token mesurés (tokenizer E5, fixtures FR/EN) ; une
+    # page A4 très dense (~5 000 caractères) fait ~1 340 tokens, 300 pages
+    # ~400 000 ; le PDF de 300 pages de S6 (410 unités, 682 chunks d'au plus
+    # 508 tokens) reste sous 350 000. 1 000 000 garde plus de 2x de marge sur
+    # un PDF légitime et borne l'indexation (~2 200 chunks à 0,46 s, ~17 min)
+    # sous la limite de 3 600 s d'une tâche.
+    max_document_tokens: int = Field(default=1_000_000, gt=0)
+
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:
         heartbeat = self.work_heartbeat_interval_seconds
@@ -108,3 +132,11 @@ class KnowledgeBaseSettings(BaseSettings):
     @property
     def backoff_cap(self) -> timedelta:
         return timedelta(seconds=self.work_backoff_max_seconds)
+
+    @property
+    def reconcile_interval(self) -> timedelta:
+        return timedelta(seconds=self.reconcile_interval_seconds)
+
+    @property
+    def idempotency_key_ttl(self) -> timedelta:
+        return timedelta(seconds=self.idempotency_key_ttl_seconds)

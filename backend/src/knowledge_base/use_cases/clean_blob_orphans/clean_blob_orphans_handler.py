@@ -19,8 +19,9 @@ référencé le blob sans le redéposer). La première lecture des détenteurs
 reste : elle évite de déplacer les blobs référencés, qui sont la règle.
 
 Répétable sans effet. Les temporaires d'un dépôt en cours (``tmp/``) ne sont
-pas des blobs : non traités ici. Le déclenchement périodique est celui de la
-réconciliation (S8).
+pas des blobs : ``CleanStaleUploads`` s'en charge. Le déclenchement
+périodique est celui de la réconciliation (S8), qui reprend d'abord les
+fichiers laissés en quarantaine par un crash.
 """
 
 from __future__ import annotations
@@ -57,7 +58,8 @@ class CleanBlobOrphansHandler:
         self._eraser = eraser
         self._clock = clock
 
-    async def handle(self, command: CleanBlobOrphans) -> None:
+    async def handle(self, command: CleanBlobOrphans) -> int:
+        """Nombre d'originaux supprimés."""
         now = self._clock()
         examined = deleted = 0
         for blob in await self._inventory.list_blobs():
@@ -82,6 +84,7 @@ class CleanBlobOrphansHandler:
             examined,
             deleted,
         )
+        return deleted
 
     async def _unreferenced(self, content_hash: ContentHash) -> bool:
         return not await self._references.holders(content_hash)

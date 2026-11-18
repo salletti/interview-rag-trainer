@@ -113,3 +113,22 @@ deux versions d'un document, y compris quand les deux sont visibles dans
 Qdrant. Défaut corrigé : un hit au payload incomplet (point supprimé pendant
 la requête) faisait échouer la recherche ; il est ignoré. Détail :
 [knowledge-base.md §8, §10, précisions S7](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge).
+
+### S8 (2026-11-18)
+
+Le corps de l'ADR est inchangé. Point 9 (« la réconciliation corrige les
+écarts ») mis en œuvre par `ReconcileKnowledgeBase`, un cycle par créneau
+([knowledge-base.md §9, §11, précisions S8](../conception/bounded-contexts/knowledge-base.md#9-intégrité-de-lindex-qdrant)) :
+Qdrant est lu **avant** PostgreSQL (parcours complet des index vivants, sans
+vecteur), si bien qu'un point écrit pendant le cycle n'est jamais pris pour
+un orphelin. Écarts corrigés et vérifiés contre Qdrant réel : points sans
+propriétaire ou de versions `SUPERSEDED`/`DISCARDED` (supprimés), points
+invisibles d'une version publiée (`sync_visibility` replanifiée : la fenêtre
+résiduelle de la tentative zombie de S4 est refermée), points écrits après
+une purge (`purge_document` replanifiée), manifests échantillonnés (au plus
+`KB_RECONCILE_MANIFEST_SAMPLE_SIZE` par cycle ; écart → indexation rouverte et
+refaite), points hors manifest d'une version vérifiée (supprimés par
+identifiant). La condition de réévaluation « volume rendant la vérification
+exhaustive du manifest trop coûteuse » est anticipée par l'échantillonnage ;
+le parcours complet des points à chaque cycle reste à mesurer sur un grand
+corpus.

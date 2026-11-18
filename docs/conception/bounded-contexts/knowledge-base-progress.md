@@ -30,7 +30,7 @@ review prêt.
 | S5 | Recherche sémantique, provenance, évaluation | S4 | **Terminée** | voir journal | Ruff, mypy (299 fichiers), 1 115 unit./archi., 321 intégration (dont `retrieval`), 4 mutations tuées, recherche réelle sur la stack de dev (citation complète) |
 | S6 | PDF et DOCX avec Docling | S3, S5 | **Terminée** | voir journal | Ruff, mypy (316 fichiers), 1 196 unit./archi., 364 intégration, 3/3 mutations, import réel PDF et DOCX jusqu'à PUBLISHED, recherche avec pages |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | **Terminée** | voir journal | Ruff, mypy (356 fichiers), 1 305 unit./archi., 392 intégration, tests de concurrence S7 verts 13/13, 4 mutations, retrait + purge réels sur la stack de dev |
-| S8 | Réconciliation et gestion des erreurs | S7 | À faire | | |
+| S8 | Réconciliation et gestion des erreurs | S7 | **Terminée** | voir journal | Ruff, mypy (419 fichiers), 1 567 unit./archi., 484 intégration, tests S8 3/3 stables, 7 mutations, écart réel corrigé en un cycle sur la stack de dev, échec rejoué par l'API |
 | S9 | Benchmark embeddings, blue/green | S5, S8 | À faire | | |
 
 Ordre d'exécution retenu (compatible avec le graphe de dépendances) :
@@ -74,6 +74,9 @@ périmètre.
   dépôt, 18 mutations) → implémentation → revalidation : 1 305 unitaires,
   392 intégration. Défaut préexistant corrigé : recherche en 500 pendant une
   suppression de points Qdrant.
+- 2026-11-18 — S8 terminée : tests rouges (implémentation jetable, 24
+  mutations) → implémentation → revalidation : 1 567 unitaires,
+  484 intégration. O10, O14, O15, O16 tranchés ; catalogue unique des codes.
 
 ## Écarts et décisions en cours de route
 
@@ -114,6 +117,11 @@ périmètre.
 - S7 — références de blob : documents non purgés seulement.
 - S7 — course résiduelle du nettoyage d'orphelins (import concurrent entre `holders()` et `delete()`, fenêtre ~ms → `BLOB_MISSING`) : documentée, non fermée (S8).
 - S7 — renvoyés à S8 : ordonnancement du nettoyage d'orphelins, fichiers `tmp/`, replanification de la purge sur points zombies, `purge_document` FAILED sans hook.
+- S8 — O10 : tranché par ADR 0004 point 11 (pas de DLQ ; `FAILED` consultable et rejouable). O14 : la réconciliation adopte l'échec métier quand le hook n'a pas tourné. O15 : clés purgées après 24 h. O16 : `DOCUMENT_TOO_LARGE` au-delà de 1 M tokens d'unités (défaut estimé à partir d'un ratio mesuré de 3,74 caractères/token, pas mesuré sur le PDF de 300 pages).
+- S8 — générations de clés `<clé>:<n>` (`enqueue_again`) pour refaire un travail après un item terminé ; `cancel` annule toute la famille (extension du port S0).
+- S8 — réouverture d'une purge `FAILED` bornée à 3 (`work_items.reopen_count`, migration `5d2f8c1a7b30`).
+- S8 — `--max-tasks-per-child=50` sur `worker_ingestion` ; effet sur la mémoire non mesuré.
+- S8 — non traité : coût du parcours complet des points sur grand corpus ; purge des work items terminés (Open S0) ; cycles manqués rejoués en rafale après une longue tâche.
 
 ## Corrections en attente
 

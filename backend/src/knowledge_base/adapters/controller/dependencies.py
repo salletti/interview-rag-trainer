@@ -14,11 +14,16 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from knowledge_base.adapters.controller.composition import (
+    build_list_failures_handler,
     build_provision_search_index_handler,
+    build_retry_ingestion_handler,
     compose_knowledge_search,
 )
 from knowledge_base.adapters.controller.rest.documents_router import (
     add_document_routes,
+)
+from knowledge_base.adapters.controller.rest.failures_router import (
+    add_failure_routes,
 )
 from knowledge_base.adapters.controller.rest.resources import KnowledgeBaseResources
 from knowledge_base.adapters.controller.rest.search_router import add_search_routes
@@ -38,6 +43,10 @@ from knowledge_base.adapters.controller.tasks.index_version_handler import (
 )
 from knowledge_base.adapters.controller.tasks.purge_document_handler import (
     build_purge_document_handler,
+)
+from knowledge_base.adapters.controller.tasks.reconcile_handler import (
+    build_reconcile_work_handler,
+    enqueue_reconciliation,
 )
 from knowledge_base.adapters.controller.tasks.registry import WorkHandler
 from knowledge_base.adapters.controller.tasks.resources import (
@@ -90,9 +99,11 @@ __all__ = [
 EXECUTE_TASK: Final = "knowledge_base.work.execute"
 DISPATCH_TASK: Final = "knowledge_base.work.dispatch"
 RECOVER_TASK: Final = "knowledge_base.work.recover"
+RECONCILE_TASK: Final = "knowledge_base.work.reconcile"
 
-# File consommée par le worker par défaut : dispatch et recover ne doivent
-# jamais attendre derrière une extraction longue (ADR 0004, S0 §8.5).
+# File consommée par le worker par défaut : dispatch, recover et la
+# planification de la réconciliation ne doivent jamais attendre derrière une
+# extraction longue (ADR 0004, S0 §8.5).
 CONTROL_QUEUE: Final = "interview_rag_trainer.default"
 
 ResourcesProvider = Callable[[], KnowledgeBaseWorkerResources]
@@ -114,6 +125,15 @@ def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> N
     )
     add_search_routes(
         app.router, knowledge_search=lambda: build_knowledge_search(resources())
+    )
+    add_failure_routes(
+        app.router,
+        list_failures_handler=lambda: build_list_failures_handler(
+            resources().session_factory
+        ),
+        retry_ingestion_handler=lambda: build_retry_ingestion_handler(
+            resources().session_factory
+        ),
     )
 
 
@@ -167,9 +187,9 @@ def build_work_handlers(
 ) -> tuple[WorkHandler, ...]:
     """Handlers de production des work items, tous sur la file
     ``knowledge_base.ingestion`` : ``extract_version`` (S3), ``index_version``
-    et ``sync_visibility`` (S4), ``purge_document`` (S7). Appelé dans chaque
-    processus enfant, sur sa fabrique de sessions et son client Qdrant ; ne
-    se connecte à rien.
+    et ``sync_visibility`` (S4), ``purge_document`` (S7),
+    ``reconcile_knowledge_base`` (S8). Appelé dans chaque processus enfant, sur
+    sa fabrique de sessions et son client Qdrant ; ne se connecte à rien.
 
     Un seul modèle d'embeddings par processus, chargé à sa première tâche
     (jamais dans le processus maître) : l'extraction compte les tokens avec son
@@ -195,6 +215,9 @@ def build_work_handlers(
         ),
         build_sync_visibility_handler(session_factory, vector_index=vector_index),
         build_purge_document_handler(
+            session_factory, settings, vector_index=vector_index
+        ),
+        build_reconcile_work_handler(
             session_factory, settings, vector_index=vector_index
         ),
     )
@@ -266,10 +289,21 @@ def register_worker(
             recover_expired_leases(current, settings)
         )
 
+    @celery_app.task(name=RECONCILE_TASK, shared=False, ignore_result=True)
+    def reconcile() -> str:
+        """Enregistre le cycle de réconciliation du créneau courant ; la work
+        queue l'exécute sur la file d'ingestion (S8)."""
+        current = resources()
+        item_id = current.loop.run_until_complete(
+            enqueue_reconciliation(current.session_factory, settings)
+        )
+        return str(item_id)
+
     celery_app.conf.task_routes = (
         {
             DISPATCH_TASK: {"queue": CONTROL_QUEUE},
             RECOVER_TASK: {"queue": CONTROL_QUEUE},
+            RECONCILE_TASK: {"queue": CONTROL_QUEUE},
         },
         *_as_routers(celery_app.conf.task_routes),
     )
@@ -282,6 +316,10 @@ def register_worker(
         RECOVER_TASK: {
             "task": RECOVER_TASK,
             "schedule": timedelta(seconds=settings.work_recover_interval_seconds),
+        },
+        RECONCILE_TASK: {
+            "task": RECONCILE_TASK,
+            "schedule": settings.reconcile_interval,
         },
     }
 

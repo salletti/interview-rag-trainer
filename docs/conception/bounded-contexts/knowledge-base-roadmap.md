@@ -259,6 +259,8 @@ flowchart LR
 
 ## S8 — Durcissement de la réconciliation et gestion des erreurs
 
+> **Statut : implémentée (2026-11-18)** sur `feature/knowledge-base-v1` — catalogue unique des codes d'erreur, `ReconcileKnowledgeBase` (work item par créneau, Qdrant lu avant PostgreSQL), `RetryIngestion` et `GET /failures`, O10, O14, O15, O16 tranchés ([knowledge-base.md §16](knowledge-base.md#16-points-ouverts)) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s8--réconciliation-et-gestion-des-erreurs).
+
 - **Objectif :** aucun état bloqué ni écart durable entre PostgreSQL, Qdrant et
   le stockage.
 - **Périmètre :** `ReconcileKnowledgeBase` (indexations `COMPLETED` non

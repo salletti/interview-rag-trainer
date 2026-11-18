@@ -16,12 +16,15 @@ Erreurs terminales (sans retry) :
 | ``DOCUMENT_TOO_COMPLEX`` | imbrication trop profonde pour le parseur | faux |
 | ``OCR_REQUIRED`` | PDF sans couche texte (scan), OCR désactivé | faux |
 | ``TOO_MANY_PAGES`` | PDF de plus de 300 pages (ADR 0012) | faux |
+| ``DOCUMENT_TOO_LARGE`` | texte au-delà de ``KB_MAX_DOCUMENT_TOKENS`` (O16) | faux |
 | ``CHUNKING_FAILED`` | ``ChunkBudgetError`` (budget sans place) | faux |
 | ``BLOB_MISSING`` | original absent du volume | vrai (après restauration) |
 | ``INVALID_PAYLOAD`` | payload de l'item illisible | — (aucune version désignée) |
 
 Toute autre exception est transitoire pour S0 (retry avec backoff) ; à la
-dernière tentative, la version passe ``FAILED`` avec ``retryable`` vrai.
+dernière tentative, la version passe ``FAILED``. ``retryable`` est toujours
+celui du catalogue des erreurs (``is_replayable``, S8) : un code inconnu du
+catalogue n'est pas rejouable.
 """
 
 from __future__ import annotations
@@ -61,10 +64,7 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_extraction_transacti
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
     SqlAlchemyUnitOfWork,
 )
-from knowledge_base.domain.exceptions.parsing_errors import (
-    PARSE_ERROR_CODES,
-    DocumentParseError,
-)
+from knowledge_base.domain.exceptions.parsing_errors import DocumentParseError
 from knowledge_base.domain.providers.document_blob_reader import BlobMissingError
 from knowledge_base.domain.providers.document_parser import DocumentParser
 from knowledge_base.domain.providers.extraction_transaction import (
@@ -75,10 +75,19 @@ from knowledge_base.domain.providers.work_queue import FailureInfo
 from knowledge_base.domain.services.chunk_planner import ChunkBudgetError
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
+from knowledge_base.domain.value_objects.error_catalog import (
+    BLOB_MISSING,
+    CHUNKING_FAILED,
+    DOCUMENT_TOO_LARGE,
+    ERROR_CATALOG,
+    INVALID_PAYLOAD,
+    replayable_or_not_known,
+)
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 from knowledge_base.use_cases.import_steps import DOCX_MEDIA_TYPE, EXTRACT_VERSION
+from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -95,13 +104,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "BLOB_MISSING",
+    "CHUNKING_FAILED",
+    "INGESTION_QUEUE",
+    "INVALID_PAYLOAD",
+    "NOT_RETRYABLE_CODES",
+    "ExtractVersionWorkHandler",
+    "build_extract_version_handler",
+    "default_parser",
+]
+
 INGESTION_QUEUE: Final = "knowledge_base.ingestion"
-BLOB_MISSING: Final = "BLOB_MISSING"
-INVALID_PAYLOAD: Final = "INVALID_PAYLOAD"
-CHUNKING_FAILED: Final = "CHUNKING_FAILED"
-# Échecs déterministes : relancer l'extraction du même contenu n'a pas de sens.
-# Tout code d'une DocumentParseError en fait partie.
-NOT_RETRYABLE_CODES: Final = PARSE_ERROR_CODES | {CHUNKING_FAILED}
+# Vue dérivée du catalogue (S8), gardée pour ses lecteurs : les codes qu'une
+# RetryIngestion ne rouvrira jamais ; tout code d'une DocumentParseError en
+# fait partie.
+NOT_RETRYABLE_CODES: Final = frozenset(
+    code for code, spec in ERROR_CATALOG.items() if not spec.replayable
+)
 
 TransactionFactory = Callable[[AsyncSession], ExtractionTransaction]
 
@@ -134,6 +154,8 @@ class ExtractVersionWorkHandler:
             raise TerminalWorkError(
                 error.code.value, error.message or str(error)
             ) from error
+        except DocumentTooLargeError as error:
+            raise TerminalWorkError(DOCUMENT_TOO_LARGE, str(error)) from error
         except ChunkBudgetError as error:
             raise TerminalWorkError(CHUNKING_FAILED, str(error)) from error
         except BlobMissingError as error:
@@ -161,7 +183,7 @@ class ExtractVersionWorkHandler:
         reason = FailureReason(
             code=error.code,
             message=error.message,
-            retryable=error.code not in NOT_RETRYABLE_CODES,
+            retryable=replayable_or_not_known(error.code),
         )
         await self._use_case.fail(self._transaction(session), command, reason)
 
@@ -214,6 +236,7 @@ def build_extract_version_handler(
             MULTILINGUAL_E5_BASE, cache_dir=settings.models_cache_dir
         ).token_counter,
         policy=policy or DEFAULT_CHUNKING_POLICY,
+        max_document_tokens=settings.max_document_tokens,
     )
     return ExtractVersionWorkHandler(
         use_case=use_case,

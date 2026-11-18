@@ -15,7 +15,7 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Update, and_, case, func, or_, select, update
+from sqlalchemy import ColumnElement, Update, and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -103,20 +103,44 @@ class SqlAlchemyWorkQueue:
         found: UUID = existing.scalar_one()
         return found
 
-    async def cancel(self, dedup_key: str) -> bool:
-        cancelled = await self._session.scalar(
-            update(work_items)
-            .where(_c.dedup_key == dedup_key, _c.status.in_((PENDING, RUNNING)))
-            .values(
-                status=CANCELLED,
-                fencing_token=_c.fencing_token + 1,
-                completed_at=func.now(),
-                updated_at=func.now(),
-                **_RELEASE_LEASE,
+    async def enqueue_again(
+        self,
+        kind: str,
+        dedup_key: str,
+        payload: Mapping[str, str] | None = None,
+        correlation_id: UUID | None = None,
+    ) -> UUID:
+        members = (
+            await self._session.execute(
+                select(_c.id, _c.dedup_key, _c.status).where(_family(dedup_key))
             )
-            .returning(_c.id)
-        )
-        return cancelled is not None
+        ).all()
+        for member in members:
+            if member.status in (PENDING, RUNNING):
+                live: UUID = member.id
+                return live
+        key = dedup_key
+        if members:
+            generation = _next_generation(dedup_key, [m.dedup_key for m in members])
+            key = f"{dedup_key}:{generation}"
+        return await self.enqueue(kind, key, payload, correlation_id)
+
+    async def cancel(self, dedup_key: str) -> bool:
+        cancelled = (
+            await self._session.scalars(
+                update(work_items)
+                .where(_family(dedup_key), _c.status.in_((PENDING, RUNNING)))
+                .values(
+                    status=CANCELLED,
+                    fencing_token=_c.fencing_token + 1,
+                    completed_at=func.now(),
+                    updated_at=func.now(),
+                    **_RELEASE_LEASE,
+                )
+                .returning(_c.id)
+            )
+        ).all()
+        return bool(cancelled)
 
 
 class SqlAlchemyWorkLifecycle:
@@ -339,3 +363,24 @@ def _fenced(item_id: UUID, token: int) -> Update:
 
 async def _touched(session: AsyncSession, statement: Update) -> bool:
     return await session.scalar(statement.returning(_c.id)) is not None
+
+
+def _family(dedup_key: str) -> ColumnElement[bool]:
+    """La clé et ses générations ``<clé>:<n>`` ; ``autoescape`` : ``_`` et
+    ``%`` des clés ne sont pas des jokers."""
+    return or_(
+        _c.dedup_key == dedup_key,
+        _c.dedup_key.startswith(f"{dedup_key}:", autoescape=True),
+    )
+
+
+def _next_generation(dedup_key: str, keys: Sequence[str]) -> int:
+    """La clé de base est la génération 1 ; la suivante dépasse la plus haute
+    existante (un suffixe non numérique n'est pas une génération)."""
+    highest = 1
+    prefix = f"{dedup_key}:"
+    for key in keys:
+        suffix = key.removeprefix(prefix) if key.startswith(prefix) else ""
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest + 1

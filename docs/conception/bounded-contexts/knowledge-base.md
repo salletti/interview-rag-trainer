@@ -273,6 +273,13 @@ stateDiagram-v2
 - Le retrait d'un document ne change pas l'état de ses versions : la
   visibilité est portée par `KnowledgeDocument.status`.
 
+*Précision S8 (2026-11-18) : `FAILED --> RECEIVED` est fait par
+`RetryIngestion` dans la transaction qui rouvre l'item `extract_version`
+(`POST /api/v1/knowledge-base/failures/{item_id}/retry`), refusé pour une
+version `DISCARDED` ou un document retiré (409 `OBSOLETE_WORK`). Quand l'item
+a fini `FAILED` sans que son hook d'échec ait abouti (O14), la version reste
+`RECEIVED` jusqu'à ce que la réconciliation écrive l'échec à la place du hook.*
+
 ### 5.3 `Indexation`
 
 ```mermaid
@@ -281,9 +288,18 @@ stateDiagram-v2
   PENDING --> COMPLETED: CompleteIndexation (manifest vérifié)
   PENDING --> FAILED: échec terminal
   FAILED --> PENDING: RetryIngestion
+  COMPLETED --> PENDING: reopen (réconciliation, manifest non vérifié, S8)
   PENDING --> CANCELLED: version DISCARDED, document retiré ou index RETIRED
   FAILED --> CANCELLED: idem
 ```
+
+*Précision S8 (2026-11-18) : l'arête `COMPLETED --> PENDING`
+(`Indexation.reopen()`, distincte de `retry()`) est réservée à la
+réconciliation, quand le manifest échantillonné ne se vérifie plus (§9) ;
+elle efface l'empreinte du manifest, le nombre de points et la date (I8).
+L'indexation est refaite par un nouvel item `index_version` (génération
+suivante de la clé, §6) ; une version déjà publiée n'est pas republiée, sa
+synchronisation de visibilité est replanifiée (§11).*
 
 ### 5.4 `SearchIndex` (dans `KnowledgeCorpus`)
 
@@ -331,6 +347,33 @@ le commit de la finalisation, hors de toute transaction : un échec n'est que
 journalisé (l'item est déjà `SUCCEEDED`) et le fichier, plus détenu par aucun
 document non purgé, est repris par `CleanBlobOrphans`. Détail : précisions
 S7 du §10.*
+
+*Précisions S8 (2026-11-18), décisions de l'orchestrateur ([README du
+contexte](../../../backend/src/knowledge_base/README.md#s8--réconciliation-et-gestion-des-erreurs)) :*
+
+- *`reconcile_knowledge_base` : file d'ingestion, 3 tentatives, un item par
+  créneau de `KB_RECONCILE_INTERVAL_SECONDS` (dedup
+  `reconcile_knowledge_base:<floor(epoch / intervalle)>`, payload vide),
+  enregistré par la tâche beat `knowledge_base.work.reconcile` (file par
+  défaut). Exécuté par la work queue, le cycle est sérialisé avec les autres
+  traitements (`--concurrency=1`) et bénéficie du lease, du backoff et de
+  l'état `FAILED` consultable. Pas de hook d'échec. La tâche `recover` de S0
+  reste seule à reprendre les items `RUNNING` au-delà de leur lease.*
+- *Générations : `dedup_key` reste unique pour toujours (S0 §2). Un travail à
+  refaire après un item terminé (synchronisation, purge, indexation) prend la
+  génération suivante de sa clé, `<clé>:<n>` (`WorkQueue.enqueue_again`), sauf
+  si un item de la même **famille** (la clé et ses générations) est encore
+  `PENDING` ou `RUNNING` : il est alors rendu, sans doublon.
+  `WorkQueue.cancel(clé)` annule toute la famille : l'annulation d'une
+  indexation au retrait ou à l'import de N+1 atteint aussi une réindexation
+  planifiée par la réconciliation. `test_rescheduling_a_completed_purge_under_its_key_creates_no_work`
+  reste vrai : `enqueue` sous la clé d'origine d'une purge terminée ne crée
+  toujours rien.*
+- *`RetryIngestion` rouvre l'item `FAILED` (transition `reopen` de S0 §3 :
+  `PENDING`, `attempts = 0`, disponible tout de suite, `dispatched_at` et
+  `completed_at` effacés, dernière erreur conservée, jeton de fencing jamais
+  reculé, `reopen_count + 1`) et remet l'état métier en attente dans la même
+  transaction (§5.2, §5.3).*
 
 Les noms des `kind` sont **[Proposed]** et fixés au moment de la slice qui les
 introduit. S0 ne livre que le mécanisme générique, sans aucun `kind` métier.
@@ -425,6 +468,16 @@ Un effet externe est acceptable si **toutes** ces conditions tiennent :
    doit choisir une clé distincte (suffixe de génération, par exemple
    `purge_document:<document_id>:<n>`) ou une réouverture explicite de
    l'item, et changer ce test en conséquence.*
+   *Précision S8 (2026-11-18) : réparé par la réconciliation. Points d'une
+   version `PUBLISHED` de document `ACTIVE` avec `visible=false`, sans
+   synchronisation en attente pour ce document → `sync_visibility`
+   replanifiée (génération suivante de la clé de la révision courante).
+   Points d'un document `WITHDRAWN` **et purgé** → `purge_document`
+   replanifiée sous `purge_document:<document_id>:<n>` ; la clé d'origine
+   reste celle de l'item terminé, et le test cité garde sa vérité (même clé =
+   aucun travail). Un document retiré dont la purge est simplement en attente
+   n'est pas touché. Vérifié contre Qdrant réel (`test_s8_reconciliation`,
+   `test_s8_reconciliation_decisions`).*
 
 ## 8. Prévention des publications obsolètes
 
@@ -473,6 +526,41 @@ entre `set_visibility` et `delete_points`, tenue ouverte par une barrière).*
   supprimés par la réconciliation.
 - La réconciliation périodique (S8) recalcule le manifest des indexations
   `COMPLETED` par échantillonnage et ré-ouvre l'indexation en cas d'écart.
+
+*Précisions S8 (2026-11-18) :*
+
+- *Ordre de lecture : Qdrant **avant** PostgreSQL. Chaque cycle parcourt
+  tous les points des index vivants (`scroll` paginé, sans vecteur, port
+  `PointInventory`, regroupés par document, version et visibilité), puis lit
+  l'état SQL de leurs documents. Un point écrit après une lecture SQL
+  antérieure serait pris pour un orphelin ; lu avant, sa version est
+  forcément commitée, et une version ne disparaît jamais de PostgreSQL
+  (vérifié par une publication concurrente du parcours).*
+- *Points sans propriétaire (document ou version inconnus, version
+  `SUPERSEDED` ou `DISCARDED`) : supprimés par filtre (version, ou document
+  s'il est inconnu). Un point visible d'une version non publiée n'est pas
+  corrigé : aucun travail ne le ferait, et le contrôle SQL l'écarte (§11).*
+- *Manifest : au plus `KB_RECONCILE_MANIFEST_SAMPLE_SIZE` indexations
+  `COMPLETED` (version `EXTRACTED` ou `PUBLISHED` d'un document actif, index
+  vivant) par cycle, tirées au hasard (défaut 20, Proposed). Le manifest
+  attendu est recalculé depuis les chunks de PostgreSQL et comparé aux points
+  de la version lus par filtre : point manquant, `chunk_hash` différent, ou
+  empreinte enregistrée qui n'est plus celle des chunks (I8 ne tient plus) →
+  indexation rouverte (§5.3) et `index_version` replanifié.*
+- *Points en trop **à l'intérieur** d'une version vérifiée (identifiants
+  absents de son manifest) : supprimés par identifiant (décision 12 de
+  l'orchestrateur : simple et sûr, les identifiants étant déterministes et
+  les chunks d'un lot immuables), au fil de l'échantillonnage seulement.
+  Leur contenu n'est jamais rendu de toute façon : un passage est reconstruit
+  depuis les unités et chunks de PostgreSQL ; ils ne coûtent que des places
+  dans le top-k.*
+- *Coût mesuré (2026-11-18, PostgreSQL de `compose.test.yaml`, 100 000 items
+  terminés) : l'annulation d'une famille de clés (`cancel`) passe par l'index
+  `(kind, status)` en 0,036 ms (0,009 ms pour la clé exacte d'avant S8) ; la
+  recherche de la génération suivante (`enqueue_again`, appelée seulement par
+  les corrections) parcourt la table, 7,0 ms. Un cycle de la base de dev
+  (3 à 5 documents, un index) dure 0,02 à 0,08 s ; le parcours complet des
+  points n'a pas été mesuré sur un grand corpus.*
 
 ## 10. Publication, retrait et purge
 
@@ -561,6 +649,32 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   un hit au payload réduit à la clé de regroupement ; la recherche levait
   `KeyError` (500). Un hit sans `chunk_id` est désormais ignoré.*
 
+*Précisions S8 (2026-11-18), entretien par la réconciliation :*
+
+- *Item `purge_document` `FAILED` (aucun hook métier) d'un document retiré
+  non purgé : rouvert par la réconciliation, au plus
+  `KB_RECONCILE_MAX_PURGE_REOPENINGS` fois (défaut 3, compteur
+  `work_items.reopen_count`, migration `5d2f8c1a7b30`) ; au-delà, il reste
+  `FAILED`, compté `FAILED_PURGE` et journalisé à chaque cycle, rejouable par
+  l'API. Qdrant durablement en panne ne fait donc pas boucler la purge au
+  rythme du cycle (décision 6 de l'orchestrateur). Les points d'un document
+  retiré ne sont jamais renvoyés pendant ce temps (I12).*
+- *Ordonnancement : `CleanBlobOrphans` (délai `KB_BLOB_ORPHAN_GRACE_SECONDS`)
+  tourne à chaque cycle ; il reprend aussi les blobs restés après une purge
+  dont la suppression post-commit a échoué (orphelins ordinaires).*
+- *Temporaires de dépôt (`KB_BLOB_ROOT/tmp/`) abandonnés : supprimés par
+  `CleanStaleUploads` au-delà du même délai (port `StagedUploadStore`).*
+- *Quarantaine (`KB_BLOB_ROOT/quarantine/<empreinte>-<uuid>`) laissée par un
+  crash pendant la suppression conditionnelle d'un orphelin : avant
+  `CleanBlobOrphans`, le fichier est remis à son chemin si l'empreinte est
+  encore détenue et que le chemin est libre ; sinon (plus détenu, ou original
+  déjà revenu à son chemin) il est supprimé une fois sa mise en quarantaine
+  plus vieille que le délai de grâce, datée par le changement d'état du
+  fichier (`ctime` : le renommage le met à jour, vérifié le 2026-11-18 sur le
+  volume `kb_blobs` du conteneur et sous macOS). Pas de course
+  avec un nettoyage en cours : seule la réconciliation nettoie les orphelins,
+  et ses cycles sont sérialisés (décision 9).*
+
 ## 11. Visibilité et cohérence PostgreSQL / Qdrant
 
 **[Accepted — ADR 0010]**
@@ -601,6 +715,14 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   `sync_visibility`. La conséquence est la même perte de Recall (le document
   manque), jamais une apparition à tort ; l'annulation du travail au premier
   heartbeat refusé borne la fenêtre sans la fermer.*
+  *Précision S8 (2026-11-18) : la fenêtre est refermée par la réconciliation
+  (§7.3, condition 6). Une réindexation d'une version déjà publiée (manifest
+  rouvert, §9 ; backfill d'un index `BUILDING`, S9) réécrit aussi ses points
+  invisibles : la finalisation d'`index_version` replanifie alors
+  `sync_visibility` (génération suivante de la clé de la révision courante,
+  aucune si une synchronisation est déjà en attente) au lieu de tenter une
+  publication qui serait refusée (décision 8). Entre les deux, le document
+  manque des résultats, comme pendant toute synchronisation.*
 
 ## 12. Stratégie de recherche et limites de Recall
 
@@ -894,6 +1016,38 @@ Détail par slice (périmètre, dépendances, tests, critères, risques) :
 [knowledge-base-roadmap.md](knowledge-base-roadmap.md). Conception de S0 :
 [knowledge-base-s0.md](knowledge-base-s0.md).
 
+### 15.5 Catalogue des codes d'erreur (S8)
+
+*Précision S8 (2026-11-18).* Liste **unique**,
+`domain/value_objects/error_catalog.py` : un code n'est défini qu'ici, les
+autres modules l'importent ou le réexportent (règle d'architecture
+`test_reconciliation_structure`). Deux axes distincts : **réessayé
+automatiquement** (la work queue rejoue seule, avec backoff, jusqu'à la
+dernière tentative) et **rejouable** (`RetryIngestion` peut rouvrir l'item
+`FAILED` une fois la cause corrigée hors de l'item). Un code réessayé
+automatiquement est toujours rejouable ; un code inconnu du catalogue n'est
+ni l'un ni l'autre (`UnknownErrorCodeError`, liste des échecs : non
+rejouable). `failure_retryable` d'une version ou d'une indexation `FAILED`
+vaut « rejouable » (hooks d'échec et réconciliation).
+
+| Code | Origine | Réessayé seul | Rejouable |
+|---|---|---|---|
+| `TRANSIENT`, `UNEXPECTED_ERROR` | erreur passagère ou inattendue d'une tentative | oui | oui |
+| `LEASE_EXPIRED` | lease expiré, tentatives restantes (`recover`) | oui | oui |
+| `LEASE_EXPIRED_MAX_ATTEMPTS` | lease expiré à la dernière tentative | non | oui |
+| `TERMINAL_HOOK_FAILED` | hook d'échec en erreur à la dernière tentative (O14) | non | oui |
+| `BLOB_MISSING` | original absent du volume | non | oui (après restauration) |
+| `COLLECTION_MISMATCH` | collection absente ou non conforme au profil | non | oui (après réparation) |
+| `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX`, `OCR_REQUIRED`, `TOO_MANY_PAGES` | parseur (contenu) | non | non |
+| `CHUNKING_FAILED` | budget de chunk sans place | non | non |
+| `DOCUMENT_TOO_LARGE` | texte extrait au-delà de `KB_MAX_DOCUMENT_TOKENS` (O16) | non | non |
+| `INVALID_PAYLOAD`, `UNKNOWN_KIND`, `NOT_FINALIZED` | défaut de programmation ou de déploiement | non | non |
+
+`BLOB_MISSING` était, en S3, « terminal mais `retryable` vrai » : le
+catalogue lève l'ambiguïté (terminal pour la work queue, rejouable par
+`RetryIngestion`). `NOT_RETRYABLE_CODES` (`extract_version_handler`) est
+désormais une vue dérivée du catalogue.
+
 ## 16. Points ouverts
 
 Liste **unique** des questions ouvertes de Knowledge Base ;
@@ -905,15 +1059,15 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O2 | Même fichier importé pour deux documents distincts | Refuser (409 avec l'identifiant existant) | S2 — **Tranché en S2 (2026-11-18) :** un contenu (SHA-256) n'appartient qu'à un seul document, garanti par `UNIQUE(content_hash)` global sur `document_versions` (qui couvre aussi I3). Import **sans** document cible d'un contenu connu → 200 avec le document et la version existants (métadonnées de la requête ignorées) ; import d'une version **ciblée** sur un autre document → 409 `DUPLICATE_CONTENT` avec `document_id` et `version_id` existants. Course entre deux imports simultanés : le perdant bute sur la contrainte, rejoue sa transaction et obtient le même résultat (200 ou 409). **Conséquence :** le contenu d'un document retiré ne peut plus être réimporté, ni comme nouveau document (409 `DOCUMENT_WITHDRAWN`) ni comme version d'un autre (409 `DUPLICATE_CONTENT`), cohérent avec O11 |
 | O3 | Périmètre de corpus au-delà du singleton V1 | Singleton tant qu'un besoin multi-corpus n'existe pas | — |
 | O4 | Persister le `StructuredDocument` pour rechunker sans re-parser | Non en V1 : re-parser depuis le blob | S9 |
-| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Faits mesurés en S5 (2026-11-18), sans décision : l'API charge le modèle à la première recherche ; RSS de son processus serveur 146 → 1 267 Mio (stack de dev), premier appel 4,3 s ; image inchangée (aucune dépendance ajoutée). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18). Faits mesurés en S6 (2026-11-18), sans décision : Docling PDF/DOCX et les polices de rendu font passer l'image `production` de 480 à 558 Mo (contenu compressé, +16 % ; 2,27 → 2,53 Go décompressés), `/app/.venv` de 1 547 à 1 696 Mio ; poids Docling (~506 Mio) hors image, dans `models_cache`. Seul `worker_ingestion` charge Docling PDF (pic de RSS 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) ; l'API compose le handler d'extraction sans importer Docling, pypdfium2, OpenCV ni torchvision. Image unique conservée : le surcoût de S6 est faible devant torch. Détail : [ADR 0008, suivi S6](../../decisions/0008-custom-pipeline-docling-extraction.md#s6--docling-pdfdocx-2026-11-18). Revue S6 (M8), sans décision : un processus de l'image qui garde un parseur PDF et convertit cinq fois un PDF de 50 pages garde une RSS résiduelle stable (1 260 → 1 377 Mio, maximum 1 423) mais un pic encore croissant (`VmHWM` 1 786 → 2 038 Mio, incréments décroissants) ; à remesurer sur plus de conversions ([ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18)).* |
+| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Faits mesurés en S5 (2026-11-18), sans décision : l'API charge le modèle à la première recherche ; RSS de son processus serveur 146 → 1 267 Mio (stack de dev), premier appel 4,3 s ; image inchangée (aucune dépendance ajoutée). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18). Faits mesurés en S6 (2026-11-18), sans décision : Docling PDF/DOCX et les polices de rendu font passer l'image `production` de 480 à 558 Mo (contenu compressé, +16 % ; 2,27 → 2,53 Go décompressés), `/app/.venv` de 1 547 à 1 696 Mio ; poids Docling (~506 Mio) hors image, dans `models_cache`. Seul `worker_ingestion` charge Docling PDF (pic de RSS 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) ; l'API compose le handler d'extraction sans importer Docling, pypdfium2, OpenCV ni torchvision. Image unique conservée : le surcoût de S6 est faible devant torch. Détail : [ADR 0008, suivi S6](../../decisions/0008-custom-pipeline-docling-extraction.md#s6--docling-pdfdocx-2026-11-18). Revue S6 (M8), sans décision : un processus de l'image qui garde un parseur PDF et convertit cinq fois un PDF de 50 pages garde une RSS résiduelle stable (1 260 → 1 377 Mio, maximum 1 423) mais un pic encore croissant (`VmHWM` 1 786 → 2 038 Mio, incréments décroissants) ; à remesurer sur plus de conversions ([ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18)). Décision S8 (2026-11-18, orchestrateur), sans nouvelle mesure longue : le processus enfant de `worker_ingestion` est remplacé toutes les `KB_INGESTION_MAX_TASKS_PER_CHILD` tâches (défaut 50, option `--max-tasks-per-child` de Celery dans `compose.yaml`) ; le pic ne peut plus croître au-delà de ce nombre de tâches, au prix d'un rechargement des modèles (~4 s pour E5, ~5 s pour Docling PDF, mesures S5/S6) par nouvel enfant. Le choix d'images séparées reste ouvert.* |
 | O6 | Recherche hybride (sparse/BM25) pour les identifiants de code | Mesurer en S5/S9 avant de l'introduire | S9 |
 | O7 | Prise en charge de `.txt` par Docling | Adapter natif par défaut | S2/S3 — **Tranché en S3 (2026-11-18) : adapter natif.** `PlainTextParser` (`adapters/gateway/parsing/`) : UTF-8, un bloc par suite de lignes non vides, `CodeBlock` si toutes ses lignes sont indentées (4 espaces ou tabulation), `Paragraph` sinon ; ni titre, ni page, ni métadonnée. Docling ne reçoit que le Markdown (`RoutingDocumentParser`) |
 | O8 | OCR, formats supplémentaires (HTML), limites définitives | Hors V1 ; limites réévaluées après S6 | S6 — **Limites tranchées en S6 (2026-11-18) : 20 Mio et 300 pages confirmées**, la limite de pages appliquée au parsing d'un PDF (`TOO_MANY_PAGES`), aucune pour un DOCX (O16). Mesures : PDF de 300 pages en 15 min de l'import à `PUBLISHED` dans le worker de dev, pic de RSS 2,6 Gio ; détail dans l'[ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18). OCR et HTML restent hors V1 (`OCR_REQUIRED` pour un PDF sans couche texte) |
 | O9 | Accès et documents privés (multi-utilisateur) | Hors V1 ; `KnowledgeQuery` extensible sans rupture | — |
-| O10 | DLQ RabbitMQ | Non en V1 ; réexaminer avec les consommateurs d'Integration Events | ADR 0004 |
+| O10 | DLQ RabbitMQ | Non en V1 ; réexaminer avec les consommateurs d'Integration Events | ADR 0004 — **Tranché par l'[ADR 0004](../../decisions/0004-reliable-messaging.md), point 11 (constat S8, 2026-11-18) :** pas de DLQ RabbitMQ ; le message ne porte qu'un identifiant, l'item `FAILED` reste en base avec son code et son message. S8 livre la consultation (`GET /api/v1/knowledge-base/failures?limit=`, items `FAILED` du plus récent au plus ancien, `replayable` d'après le catalogue §15.5) et le rejeu (`POST /api/v1/knowledge-base/failures/{item_id}/retry` : 202 ; 404 `FAILURE_NOT_FOUND` ; 409 `NOT_FAILED`, `NOT_REPLAYABLE`, `OBSOLETE_WORK`, `CONCURRENT_MODIFICATION`). Réexamen inchangé : à l'arrivée d'une inbox d'Integration Events |
 | O11 | Réactivation d'un document retiré | Non prévue en V1 | — |
 | O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 — **Tranché en S5 (2026-11-18) pour f et les passes, budget Proposed.** Mesures sur le jeu de référence (42 requêtes, 10 documents, vrai E5) : sans rejet, f et les passes ne changent aucun résultat (le contrôle SQL n'écarte rien) et la latence de Qdrant ne dépend pas de f (médiane 2,8 à 3,2 ms pour f = 1 à 8). Rejets simulés (3 documents sur 10 retirés en SQL, points encore visibles ; 24 requêtes) : Recall@5 0,917 dès f = 2 ou une passe, `complete=false` sur 66,7 % des résultats à f = 1 sans passe, 12,5 % à **f = 2, 1 passe** (retenu : 19,5 ms médians), 0 % à f = 2 / 2 passes ou f ≥ 3. f = 2 et 1 passe sont conservés : le cas simulé (30 % du corpus en fenêtre de synchronisation à la fois) dépasse de loin une republication ordinaire, et les deux leviers sans coût mesuré (f = 3, 2 passes) restent réglables (`KB_SEARCH_OVERSAMPLING_FACTOR`, `KB_SEARCH_COMPLEMENT_PASSES`). **`max_passage_tokens` = 1024 reste Proposed** : le jeu de référence ne l'exerce pas (49 unités, toutes en un chunk, 427 tokens au plus, question comprise ; 0 passage tronqué sur 210 pour des budgets de 508 à 1 536). 1024 contient deux chunks entiers (508) et borne 5 passages à environ 5 000 tokens ; à remesurer sur des cours longs (S6, PDF/DOCX). Depuis la revue S5, une valeur inférieure à un chunk entier de la politique de production (508) est refusée au démarrage. **Intégrité d'unité 1,00 non exercée en S5** : aucune unité multi-chunks, aucune troncature ; le seuil de non-régression est conservé mais ne protège rien avant S6. **Limites du jeu** (revue S5) : 12 documents indexés (10 visés, 2 distracteurs) aux thèmes largement disjoints (hors des cinq documents Python, un document par sujet : aucun négatif proche) ; 40 requêtes sur 42 filtrées ; requêtes inter-langues pour la plupart traduites ou reformulées de requêtes de même langue ; aucune requête à identifiant de code exact. Négatifs proches et identifiants de code : S6/S9. Détail : [README du contexte](../../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation). **Remesuré en S6 (2026-11-18), `max_passage_tokens` = 1024 reste Proposed.** Jeu des unités longues (cours PDF dont une section de 1 294 tokens en 3 chunks, pages 1-2, parmi quatre documents Python voisins ; 10 requêtes dont 8 visent cette section, 4 à identifiant de code) : à 508 et 768, 8/8 passages tronqués, intégrité 0,625 ; **à 1 024, 8/8 tronqués, intégrité 0,875** (la fenêtre garde les deux chunks trouvés, une réponse est dans le troisième), 5 premiers passages de 1 661 tokens en médiane ; à 1 536 et 2 048, l'unité tient entière (intégrité 1, Recall@5 1,000 au lieu de 0,900), 5 premiers passages de 2 052 tokens en médiane (+24 %). Le gain de 1 536 tient à la taille de cette unité (1 294) : une seule unité longue ne suffit pas à fixer le budget ; à trancher avec un jeu de plusieurs cours longs (S9), en mesurant aussi la règle de fenêtre (centrée sur les chunks trouvés). L'intégrité de S5 (unité reconnue à l'extrait de réponse) ne voit pas une fenêtre qui a perdu la réponse : sur ce jeu, l'unité est reconnue à sa provenance. Les métriques de S5 ne régressent pas avec un PDF et un DOCX dans le corpus (Recall@5 0,905, MRR 0,857, intégrité 1,000). `CHUNKS_PER_UNIT` (3) reste non mesuré. Détail : [README du contexte](../../../backend/src/knowledge_base/README.md#évaluation-s6) |
 | O13 | Heuristiques Q/R sans front-matter | Couvrir les formats rencontrés, mesurés par golden tests | S3 — **Heuristiques retenues en S3 (2026-11-18), Proposed jusqu'aux mesures de S5 :** un titre est une question s'il commence par `Question` ou `Q` (casse indifférente, numéro facultatif) suivi de `:`, ou s'il se termine par `?` ; l'unité `QA` court jusqu'à la question suivante ou un titre de niveau strictement inférieur, les titres du corps (« Réponse », « Explication ») restent des blocs ; le contenu hors question forme des unités `SECTION` ; une fiche sans aucune question est découpée comme un cours. Le front-matter `kind: qa_sheet` l'emporte : tout titre de niveau 2 est alors une question. Couverture : golden files du corpus FR/EN (`backend/tests/fixtures/knowledge_base/`) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s3--docling-markdown-knowledgeunit-et-chunking) |
-| O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 |
-| O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 |
-| O16 | Borne du volume de texte d'un DOCX : sans pagination, il n'a pas de limite de pages (S6) ; seule la limite d'octets (20 Mio de XML compressé) le borne, soit des ordres de grandeur au-delà de 300 pages de texte (51 Ko pour l'équivalent de 300 pages mesuré en S6) : un DOCX textuel de 20 Mio produirait un lot d'unités et de chunks que la transaction unique (§3.4) et l'encodage n'ont pas été mesurés à tenir | **Garde-fou de taille décompressée DOCX en S6** (revue S6, 2026-11-18, arbitrage de l'orchestrateur) : avant Docling, la somme des tailles décompressées déclarées des parties `word/*.xml` est bornée à 100 Mio (`MAX_DOCX_XML_BYTES`, réglable par le constructeur du parseur) → `DOCUMENT_TOO_COMPLEX`, terminal ; ZIP illisible → `INVALID_DOCUMENT`. Ce garde-fou arrête une bombe de décompression (101 Mio de XML tiennent en ~100 Kio compressés), pas un DOCX textuel de quelques Mio de XML, déjà bien au-delà de 300 pages. **La borne de volume de texte commune à tous les formats (tokens extraits ou chunks) reste [Open] pour S8** ; recommandation inchangée : échec terminal dédié, à mesurer avant de la fixer. Détail : [ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18) | S6 / S8 |
+| O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 — **Tranché en S8 (2026-11-18), décision de l'orchestrateur :** la réconciliation **adopte** l'échec à la place du hook : item `extract_version` `FAILED` et version encore `RECEIVED` → version `FAILED` ; item `index_version` `FAILED` et indexation encore `PENDING` → indexation `FAILED` ; avec le code et le message de l'item, `retryable` d'après le catalogue (§15.5 ; `TERMINAL_HOOK_FAILED` et `LEASE_EXPIRED_MAX_ATTEMPTS` sont rejouables). L'item n'est jamais rouvert par la réconciliation (une erreur déterministe ne boucle pas) ; seul `RetryIngestion` rejoue, y compris une version restée `RECEIVED` (l'item seul est rouvert). Ignoré si un autre item du même travail est en attente ou en cours, ou si la version a changé d'état (supplantée). L'item est verrouillé pendant l'adoption : un rejeu concurrent passe avant ou après, jamais entre les deux |
+| O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 — **Tranché en S8 (2026-11-18) selon la recommandation :** chaque cycle supprime les clés enregistrées il y a strictement plus de `KB_IDEMPOTENCY_KEY_TTL_SECONDS` (défaut 86 400 s, Proposed). Un rejeu plus tardif de la même requête n'est plus reconnu comme tel ; il ne crée pas de doublon pour autant (`UNIQUE(content_hash)` global, O2 : même contenu → 200 avec le document existant). Pas d'index sur `created_at` : la table compte une ligne par import avec clé, purgée chaque jour |
+| O16 | Borne du volume de texte d'un DOCX : sans pagination, il n'a pas de limite de pages (S6) ; seule la limite d'octets (20 Mio de XML compressé) le borne, soit des ordres de grandeur au-delà de 300 pages de texte (51 Ko pour l'équivalent de 300 pages mesuré en S6) : un DOCX textuel de 20 Mio produirait un lot d'unités et de chunks que la transaction unique (§3.4) et l'encodage n'ont pas été mesurés à tenir | **Garde-fou de taille décompressée DOCX en S6** (revue S6, 2026-11-18, arbitrage de l'orchestrateur) : avant Docling, la somme des tailles décompressées déclarées des parties `word/*.xml` est bornée à 100 Mio (`MAX_DOCX_XML_BYTES`, réglable par le constructeur du parseur) → `DOCUMENT_TOO_COMPLEX`, terminal ; ZIP illisible → `INVALID_DOCUMENT`. Ce garde-fou arrête une bombe de décompression (101 Mio de XML tiennent en ~100 Kio compressés), pas un DOCX textuel de quelques Mio de XML, déjà bien au-delà de 300 pages. **La borne de volume de texte commune à tous les formats (tokens extraits ou chunks) reste [Open] pour S8** ; recommandation inchangée : échec terminal dédié, à mesurer avant de la fixer. Détail : [ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18). **Tranché en S8 (2026-11-18), décision de l'orchestrateur :** après la segmentation et avant le chunking et toute écriture, la somme des `token_count` des **unités** (le texte, sans les en-têtes contextuels que chaque chunk répète) est comparée à `KB_MAX_DOCUMENT_TOKENS`, quel que soit le format ; strictement au-dessus → `DOCUMENT_TOO_LARGE`, terminal, non rejouable, distinct de `DOCUMENT_TOO_COMPLEX`. **Défaut 1 000 000 tokens (Proposed)**, d'après : 3,74 caractères par token (tokenizer E5, 15 687 caractères des fixtures FR/EN, mesuré le 2026-11-18) ; une page A4 très dense (~5 000 caractères) ≈ 1 340 tokens, 300 pages ≈ 400 000 ; le PDF de 300 pages de S6 (410 unités, 682 chunks d'au plus 508 tokens) ≤ 350 000. Un PDF légitime de 300 pages garde donc plus de 2× de marge ; à 1 000 000, l'indexation (~2 200 chunks à 0,46 s mesurés en S6) dure ~17 min, sous la limite de 3 600 s d'une tâche | S6 / S8 |

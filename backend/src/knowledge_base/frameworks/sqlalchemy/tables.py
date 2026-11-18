@@ -1,4 +1,5 @@
-"""Tables du schéma PostgreSQL ``knowledge_base`` : ``work_items`` (S0 §2),
+"""Tables du schéma PostgreSQL ``knowledge_base`` : ``work_items`` (S0 §2,
+``reopen_count`` depuis S8),
 ``documents`` (``purged_at`` depuis S7), ``document_versions`` et
 ``idempotency_keys`` (S2), ``knowledge_units`` et ``document_chunks`` (S3),
 ``knowledge_corpus``, ``search_indexes`` et ``indexations`` (S4).
@@ -98,9 +99,13 @@ work_items = Table(
         "updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     ),
     Column("completed_at", DateTime(timezone=True)),
+    # Réouvertures d'un item FAILED (S8 : RetryIngestion, réconciliation) ;
+    # borne la reprise automatique d'une purge en échec.
+    Column("reopen_count", Integer, nullable=False, server_default=text("0")),
     UniqueConstraint("dedup_key"),
     CheckConstraint(f"status IN ({_statuses})", name="status"),
     CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+    CheckConstraint("reopen_count >= 0", name="reopen_count_non_negative"),
     CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
     CheckConstraint(
         "status <> 'RUNNING' OR lease_expires_at IS NOT NULL",
