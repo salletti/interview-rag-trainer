@@ -1,5 +1,5 @@
 """Réglages techniques de Knowledge Base : work queue (S0 §7, §8.4), import et
-stockage des originaux (S2, ADR 0012).
+stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -41,6 +41,12 @@ class KnowledgeBaseSettings(BaseSettings):
     # des blobs, montée dans l'API et les workers (compose.yaml, kb_blobs).
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
     blob_root: Path = Path("/var/lib/interview-rag-trainer/blobs")
+
+    # Embeddings (S4) : poids des modèles dans le volume models_cache, monté
+    # dans l'API et le worker d'ingestion ; téléchargés au premier chargement.
+    models_cache_dir: Path = Path("/var/cache/interview-rag-trainer/models")
+    # Chunks par appel au modèle, donc par upsert Qdrant.
+    embedding_batch_size: int = Field(default=32, gt=0)
 
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:

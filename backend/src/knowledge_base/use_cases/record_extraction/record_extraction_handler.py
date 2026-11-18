@@ -8,10 +8,16 @@ Le travail est coupé en deux pour la work queue (S0 §5) :
   pour que la boucle reste libre (heartbeats) ; n'écrit rien ;
 - ``apply`` : dans la transaction de finalisation fournie par l'appelant,
   revérification métier (version toujours ``RECEIVED``, document ``ACTIVE``)
-  puis ``EXTRACTED`` et le lot d'unités et de chunks.
+  puis ``EXTRACTED``, le lot d'unités et de chunks, et (S4) une
+  ``Indexation PENDING`` et un item ``index_version`` par index vivant.
 
 Une version supplantée ou un document retiré entre-temps est ignoré : il n'y a
-plus rien à extraire, ce n'est pas une erreur. Aucune ``Indexation`` en S3.
+plus rien à extraire, ce n'est pas une erreur.
+
+Barrière blue/green (§13, ADR 0011 §5) : les index ``ACTIVE`` et
+``BUILDING`` sont lus sous ``FOR SHARE`` de la ligne du corpus, dans la
+transaction qui passe la version ``EXTRACTED`` ; une activation ne peut donc
+pas s'intercaler entre l'extraction et la création de ses indexations.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
 
+from knowledge_base.domain.entities.indexation import Indexation
 from knowledge_base.domain.entities.knowledge_document import (
     DocumentStatus,
     DocumentVersion,
@@ -46,6 +53,7 @@ from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
 from knowledge_base.domain.value_objects.section_path import SectionPath
+from knowledge_base.use_cases.indexing_steps import schedule_indexation
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -109,9 +117,9 @@ class RecordExtractionHandler:
     async def apply(
         self, transaction: ExtractionTransaction, prepared: PreparedExtraction
     ) -> bool:
-        """Vrai si la version est passée ``EXTRACTED`` avec son lot ; faux,
-        sans aucune écriture, si elle a été supplantée ou le document retiré
-        depuis ``prepare``."""
+        """Vrai si la version est passée ``EXTRACTED`` avec son lot et ses
+        indexations ; faux, sans aucune écriture, si elle a été supplantée ou
+        le document retiré depuis ``prepare``."""
         document = await transaction.documents.get(prepared.document_id)
         if (
             document is None
@@ -131,7 +139,38 @@ class RecordExtractionHandler:
             prepared.units,
             prepared.chunks,
         )
+        await self._schedule_indexations(transaction, prepared)
         return True
+
+    async def _schedule_indexations(
+        self, transaction: ExtractionTransaction, prepared: PreparedExtraction
+    ) -> None:
+        corpus = await transaction.corpus.get_shared()
+        for index in () if corpus is None else corpus.live_indexes():
+            if index.chunking_policy.identity != prepared.policy_version:
+                # Ce lot n'est pas celui de l'index : il lui faut une
+                # ré-extraction avec sa propre politique (rechunking, S9).
+                logger.warning(
+                    "version %s non indexée dans %s : politique de l'index %s, lot %s",
+                    prepared.version_id,
+                    index.index_id,
+                    index.chunking_policy.identity,
+                    prepared.policy_version,
+                )
+                continue
+            await transaction.indexations.add(
+                Indexation.pending(
+                    version_id=prepared.version_id,
+                    index_id=index.index_id,
+                    chunking_policy_version=prepared.policy_version,
+                )
+            )
+            await schedule_indexation(
+                transaction.work_queue,
+                prepared.document_id,
+                prepared.version_id,
+                index.index_id,
+            )
 
     async def fail(
         self,

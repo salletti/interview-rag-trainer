@@ -424,6 +424,15 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
   publiée → `visible=true` dans les index non retirés ; points des autres
   versions → supprimés ; document retiré → tout supprimé). Il est idempotent
   par construction et identifié par `(document_id, visibility_revision)`.
+  *Précision S4 (2026-11-18) : « points des autres versions → supprimés » se
+  limite aux versions `SUPERSEDED` et `DISCARDED` (états terminaux). Les
+  points d'une version `EXTRACTED` ne sont pas touchés : son indexation peut
+  être en cours (points écrits `visible=false`, finalisation à venir) ; les
+  supprimer forcerait une réécriture, voire une vérification de manifest en
+  échec. Ils restent `visible=false`, donc jamais renvoyés, et sont supprimés
+  par une synchronisation ultérieure dès que la version devient `DISCARDED`.
+  Le handler lit l'état SQL courant : la révision de la commande n'est qu'une
+  identité de dédoublonnage.*
 - **Ordre des écritures** : points écrits `visible=false` → publication SQL →
   synchronisation. Entre le commit et la synchronisation, le document republié
   peut **manquer temporairement** des résultats (l'ancienne version est écartée
@@ -648,7 +657,7 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O2 | Même fichier importé pour deux documents distincts | Refuser (409 avec l'identifiant existant) | S2 — **Tranché en S2 (2026-11-18) :** un contenu (SHA-256) n'appartient qu'à un seul document, garanti par `UNIQUE(content_hash)` global sur `document_versions` (qui couvre aussi I3). Import **sans** document cible d'un contenu connu → 200 avec le document et la version existants (métadonnées de la requête ignorées) ; import d'une version **ciblée** sur un autre document → 409 `DUPLICATE_CONTENT` avec `document_id` et `version_id` existants. Course entre deux imports simultanés : le perdant bute sur la contrainte, rejoue sa transaction et obtient le même résultat (200 ou 409). **Conséquence :** le contenu d'un document retiré ne peut plus être réimporté, ni comme nouveau document (409 `DOCUMENT_WITHDRAWN`) ni comme version d'un autre (409 `DUPLICATE_CONTENT`), cohérent avec O11 |
 | O3 | Périmètre de corpus au-delà du singleton V1 | Singleton tant qu'un besoin multi-corpus n'existe pas | — |
 | O4 | Persister le `StructuredDocument` pour rechunker sans re-parser | Non en V1 : re-parser depuis le blob | S9 |
-| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6 |
+| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18).* |
 | O6 | Recherche hybride (sparse/BM25) pour les identifiants de code | Mesurer en S5/S9 avant de l'introduire | S9 |
 | O7 | Prise en charge de `.txt` par Docling | Adapter natif par défaut | S2/S3 — **Tranché en S3 (2026-11-18) : adapter natif.** `PlainTextParser` (`adapters/gateway/parsing/`) : UTF-8, un bloc par suite de lignes non vides, `CodeBlock` si toutes ses lignes sont indentées (4 espaces ou tabulation), `Paragraph` sinon ; ni titre, ni page, ni métadonnée. Docling ne reçoit que le Markdown (`RoutingDocumentParser`) |
 | O8 | OCR, formats supplémentaires (HTML), limites définitives | Hors V1 ; limites réévaluées après S6 | S6 |

@@ -13,7 +13,7 @@ docker compose up --build -d
 - API : http://localhost:8010/docs — `GET /health/live`, `GET /health/ready`, `GET /api/v1/system/info`
 - Frontend : http://localhost:5180
 - RabbitMQ management : http://localhost:15672
-- Workers Celery : `worker` (file par défaut), `worker_ingestion` (Knowledge Base), `scheduler` (Celery beat)
+- Workers Celery : `worker` (file par défaut), `worker_ingestion` (Knowledge Base : extraction, embeddings, indexation Qdrant), `scheduler` (Celery beat) ; `kb_provision` crée l'index initial au démarrage
 
 Guide complet : [docs/guides/environnement-local.md](docs/guides/environnement-local.md). Cibles utiles : `make help`.
 
@@ -22,7 +22,8 @@ Guide complet : [docs/guides/environnement-local.md](docs/guides/environnement-l
 ```text
 backend/            FastAPI, Celery, Alembic — Python 3.13, uv
   src/runtime/      composition root (settings, app, worker, santé)
-  src/<contexte>/   knowledge_base (ADR 0007) : work queue durable de la slice S0 ;
+  src/<contexte>/   knowledge_base (ADR 0007) : slices S0 à S4 (work queue, documents,
+                    import, extraction, chunking, embeddings, index Qdrant, publication) ;
                     interview_training, assessment (READMEs ; code à venir par vertical slices)
   src/shared/       primitives transverses justifiées uniquement
   tests/            unit, integration, architecture

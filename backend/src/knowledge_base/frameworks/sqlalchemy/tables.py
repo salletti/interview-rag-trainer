@@ -1,6 +1,7 @@
 """Tables du schéma PostgreSQL ``knowledge_base`` : ``work_items`` (S0 §2),
 ``documents``, ``document_versions`` et ``idempotency_keys`` (S2),
-``knowledge_units`` et ``document_chunks`` (S3).
+``knowledge_units`` et ``document_chunks`` (S3), ``knowledge_corpus``,
+``search_indexes`` et ``indexations`` (S4).
 
 Ce ``MetaData`` est importé par ``alembic/env.py`` (``target_metadata``) ;
 Alembic reste l'unique mécanisme de création du schéma.
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -37,6 +39,8 @@ WORK_STATUSES: Final = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"
 DOCUMENT_STATUSES: Final = ("ACTIVE", "WITHDRAWN")
 DOCUMENT_KINDS: Final = ("COURSE", "QA_SHEET", "REVISION_SHEET", "TECHNICAL")
 UNIT_TYPES: Final = ("QA", "SECTION", "DEFINITION")
+INDEX_STATUSES: Final = ("BUILDING", "ACTIVE", "RETIRED")
+INDEXATION_STATUSES: Final = ("PENDING", "COMPLETED", "FAILED", "CANCELLED")
 VERSION_STATUSES: Final = (
     "RECEIVED",
     "EXTRACTED",
@@ -243,6 +247,14 @@ knowledge_units = Table(
     CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
     CheckConstraint("token_count >= 0", name="token_count_non_negative"),
     CheckConstraint(_PAGES_CHECK, name="pages"),
+    # Cible de la clé étrangère composite des chunks (S4) : un chunk ne peut
+    # référencer qu'une unité du même lot.
+    UniqueConstraint(
+        "id",
+        "version_id",
+        "chunking_policy_version",
+        name="uq_knowledge_units_id_batch",
+    ),
 )
 
 document_chunks = Table(
@@ -264,6 +276,17 @@ document_chunks = Table(
     UniqueConstraint(
         "unit_id", "ordinal_in_unit", name="uq_document_chunks_unit_ordinal"
     ),
+    # S4 (correction de revue S3) : la version et la politique dénormalisées
+    # sont celles de l'unité. La clé simple sur unit_id (S3) est conservée.
+    ForeignKeyConstraint(
+        ["unit_id", "version_id", "chunking_policy_version"],
+        [
+            knowledge_units.c.id,
+            knowledge_units.c.version_id,
+            knowledge_units.c.chunking_policy_version,
+        ],
+        name="fk_document_chunks_unit_batch",
+    ),
     CheckConstraint("ordinal_in_unit >= 0", name="ordinal_in_unit_non_negative"),
     CheckConstraint("token_count >= 0", name="token_count_non_negative"),
 )
@@ -272,4 +295,85 @@ Index(
     "ix_document_chunks_version_policy",
     document_chunks.c.version_id,
     document_chunks.c.chunking_policy_version,
+)
+
+# Corpus et générations d'index (S4, knowledge-base.md §3.2, §13). Le corpus
+# est un singleton en V1 ; sa ligne est la barrière blue/green (FOR SHARE /
+# FOR UPDATE). active_index_id n'a pas de clé étrangère (référence circulaire
+# avec search_indexes) : I10 est porté par l'agrégat et par l'index unique
+# partiel ci-dessous.
+knowledge_corpus = Table(
+    "knowledge_corpus",
+    metadata,
+    Column("corpus_id", Uuid, primary_key=True),
+    Column("active_index_id", Uuid),
+    # Verrou optimiste du corpus.
+    Column("version", Integer, nullable=False),
+    CheckConstraint("version >= 0", name="version_non_negative"),
+)
+
+# Profil et politique en JSON : ce sont des Value Objects figés à la création
+# de l'index, jamais interrogés champ par champ.
+search_indexes = Table(
+    "search_indexes",
+    metadata,
+    Column("index_id", Uuid, primary_key=True),
+    Column("corpus_id", Uuid, ForeignKey(knowledge_corpus.c.corpus_id), nullable=False),
+    Column("status", Text, nullable=False),
+    Column("embedding_profile", JSONB, nullable=False),
+    Column("chunking_policy", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("activated_at", DateTime(timezone=True)),
+    Column("retired_at", DateTime(timezone=True)),
+    CheckConstraint(f"status IN ({_one_of(INDEX_STATUSES)})", name="status"),
+)
+
+# I10 : au plus un index ACTIVE par corpus.
+Index(
+    "ix_search_indexes_one_active",
+    search_indexes.c.corpus_id,
+    unique=True,
+    postgresql_where=search_indexes.c.status == "ACTIVE",
+)
+
+# Faits de couverture (S4, §3.3) : identité logique (version, index).
+indexations = Table(
+    "indexations",
+    metadata,
+    Column(
+        "version_id",
+        Uuid,
+        ForeignKey(document_versions.c.id),
+        primary_key=True,
+    ),
+    Column(
+        "index_id",
+        Uuid,
+        ForeignKey(search_indexes.c.index_id),
+        primary_key=True,
+    ),
+    Column("status", Text, nullable=False),
+    Column("chunking_policy_version", Text, nullable=False),
+    Column("manifest_digest", Text),
+    Column("point_count", Integer),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("failure_code", Text),
+    Column("failure_message", Text),
+    Column("failure_retryable", Boolean),
+    CheckConstraint(f"status IN ({_one_of(INDEXATION_STATUSES)})", name="status"),
+    # I8 : COMPLETED si et seulement si le manifest vérifié est enregistré.
+    CheckConstraint(
+        "(status = 'COMPLETED') = (manifest_digest IS NOT NULL "
+        "AND point_count IS NOT NULL AND completed_at IS NOT NULL)",
+        name="manifest_only_when_completed",
+    ),
+    # Même convention que document_versions : une cause si et seulement si FAILED.
+    CheckConstraint(
+        "(status = 'FAILED') = (failure_code IS NOT NULL "
+        "AND failure_message IS NOT NULL AND failure_retryable IS NOT NULL)",
+        name="failure_only_when_failed",
+    ),
+    CheckConstraint(
+        "point_count IS NULL OR point_count >= 0", name="point_count_non_negative"
+    ),
 )

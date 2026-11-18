@@ -1,5 +1,7 @@
-"""Compteur de tokens provisoire (S3), en attendant le tokenizer réel du
-profil d'embeddings que branchera l'``Embedder`` de S4 (ADR 0009 §3).
+"""Compteur de tokens provisoire (S3). Depuis S4, la production compte avec
+le tokenizer réel du profil (``SentenceTransformersEmbedder.token_counter``,
+ADR 0009 §3) ; ce compteur, sans dépendance ni modèle, ne sert plus qu'aux
+tests de coût du ``ChunkPlanner``.
 
 Le profil initial, ``intfloat/multilingual-e5-base``, utilise le tokenizer
 SentencePiece de XLM-R. Le tirer en S3 imposerait le téléchargement du modèle ;

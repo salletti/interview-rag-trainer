@@ -109,3 +109,36 @@ inchangé.
 - Reste à confirmer au lock de S6 : extras `format-pdf` / `format-docx`, poids
   de torch et licences des modèles de layout.
 
+
+### S4 — torch et SentenceTransformers (2026-11-18)
+
+Faits d'installation de S4 (point 6), le corps de l'ADR est inchangé.
+
+- **Index CPU de PyTorch** déclaré dans `backend/pyproject.toml` :
+  `[[tool.uv.index]]` `pytorch-cpu` (`https://download.pytorch.org/whl/cpu`,
+  `explicit = true`) et `[tool.uv.sources] torch = { index = "pytorch-cpu" }`.
+  `torch` est une dépendance directe (`>=2.15,<3`), pour que la source
+  s'applique. Le lock résout `torch 2.15.0` (macOS) et `2.15.0+cpu` (Linux),
+  tous deux depuis cet index ; **aucun paquet `nvidia-*`** dans `uv.lock`, ni
+  dans l'image (vérifié dans `site-packages`).
+- **Paquets** : `sentence-transformers 6.3.0` (`>=6.3,<7`), `transformers
+  5.23.0`, `tokenizers 0.23.3`, `huggingface-hub 2.4.0`, `safetensors 0.8.0`,
+  `scipy 1.18.1`, `scikit-learn 1.9.1` ; 24 paquets ajoutés (`uv add`).
+- **Poids** (`du -sk`) : venv de développement macOS arm64 357 768 Ko →
+  1 205 216 Ko ; dans l'image Linux arm64, `/app/.venv` 485 436 Ko →
+  1 693 940 Ko (cible `development`) et 374 564 Ko → 1 584 184 Ko (cible
+  `production`), dont `torch` 703 700 Ko. Image (`docker image inspect`,
+  taille du contenu) : `development` 341 Mo → 995 Mo, `production` 152 Mo →
+  479 Mo ; espace disque décompressé (`docker images`) : 1,54 Go → 4,67 Go et
+  699 Mo → 2,27 Go.
+- **Modèle** : `intfloat/multilingual-e5-base` à la révision épinglée
+  `d128750597153bb5987e10b1c3493a34e5a4502a` (profil `MULTILINGUAL_E5_BASE`) ;
+  `model.safetensors` 1 112 201 288 octets, cache complet 1 109 328 Ko.
+  Téléchargé au premier chargement dans `KB_MODELS_CACHE_DIR` (volume
+  `models_cache`), puis relu depuis le cache.
+- **Téléchargement** : le protocole *xet* du Hub (`hf-xet`) est resté bloqué à
+  0 octet, sur l'hôte comme dans le conteneur, alors que le téléchargement
+  HTTPS aboutit : Compose pose `HF_HUB_DISABLE_XET=1` par défaut.
+- **Coût mesuré** : voir le suivi de l'[ADR 0011](0011-embedding-profile-search-index-blue-green.md#suivi-2026-11-18)
+  (chargement, RAM, temps par chunk) et le point O5 de
+  [knowledge-base.md §16](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts).

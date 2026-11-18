@@ -20,13 +20,14 @@ docker compose up --build -d
 | Qdrant | http://localhost:6333 (REST), 6334 (gRPC) | moteur vectoriel principal |
 | RabbitMQ | `localhost:5672`, management http://localhost:15672 | broker Celery |
 | Worker Celery (`worker`) | — | file `interview_rag_trainer.default` : `runtime.ping`, tâches `dispatch` et `recover` de Knowledge Base |
-| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` (traitements CPU de Knowledge Base ; aucun en S0) |
+| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility` ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) |
 | Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` |
 | migrate | — | `alembic upgrade head`, s'arrête une fois terminé |
+| kb_provision | — | `python -m runtime.provision` : crée la collection Qdrant et active l'index initial de Knowledge Base s'il n'existe pas (idempotent), s'arrête une fois terminé |
 
 Les ports hôte sont décalés (8010, 5180, 5440) pour cohabiter avec d'autres projets ; ils se changent dans `.env`.
 
-Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé → `api`, `worker` et `worker_ingestion` ; `scheduler` dès que RabbitMQ est sain ; `frontend` après `api`.
+Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé → `kb_provision` terminé (Qdrant sain) → `api`, `worker` et `worker_ingestion` ; `scheduler` dès que RabbitMQ est sain ; `frontend` après `api`.
 
 ### Volumes
 
@@ -34,7 +35,7 @@ Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé
 |---|---|---|---|
 | `postgres_data`, `qdrant_data`, `rabbitmq_data` | services d'infrastructure | — | données |
 | `kb_blobs` | `api`, `worker`, `worker_ingestion` | `/var/lib/interview-rag-trainer/blobs` (`KB_BLOB_ROOT`) | originaux des documents de Knowledge Base (S2) : `sha256/<aa>/<bb>/<empreinte>`, temporaires d'upload sous `tmp/` |
-| `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` | cache des modèles (à partir de S3/S4) |
+| `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` (`KB_MODELS_CACHE_DIR`) | poids du modèle d'embeddings (S4, ~1,1 Go), téléchargés une fois puis relus |
 
 Les répertoires de montage sont créés dans l'image avec le propriétaire `app` : un volume nommé neuf en hérite les droits.
 
@@ -54,6 +55,13 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_WORK_MAX_IN_FLIGHT` | 2 | plafond d'items en vol **par file** (en S0 : `knowledge_base.ingestion`) |
 | `KB_MAX_UPLOAD_BYTES` | 20971520 (20 Mio) | taille maximale d'un original importé (ADR 0012) ; au-delà, 413 sans blob ni ligne |
 | `KB_BLOB_ROOT` | `/var/lib/interview-rag-trainer/blobs` | racine du volume des blobs ; fixée par `compose.yaml` au point de montage de `kb_blobs` (non surchargeable par `.env`) ; hors Docker, à pointer vers un répertoire inscriptible |
+| `KB_MODELS_CACHE_DIR` | `/var/cache/interview-rag-trainer/models` | cache des poids du modèle (S4) ; fixé par `compose.yaml` au point de montage de `models_cache` ; hors Docker, à pointer vers un répertoire inscriptible (ex. `backend/.cache/models`) |
+| `KB_EMBEDDING_BATCH_SIZE` | 32 | chunks encodés par appel au modèle, donc par upsert Qdrant |
+| `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
+
+### Premier démarrage : le modèle d'embeddings
+
+Le modèle `intfloat/multilingual-e5-base` (révision épinglée dans le profil) n'est pas dans l'image : `worker_ingestion` le télécharge dans le volume `models_cache` à sa **première tâche** (l'extraction compte les tokens avec son tokenizer), puis le relit à chaque démarrage (~4 s). Le premier import attend donc ce téléchargement (1,1 Go) ; pendant ce temps, le worker prolonge le lease de l'item. Suivi : `docker compose logs -f worker_ingestion` (message « modèle d'embeddings … chargé en … s »). `docker compose down -v` supprime aussi ce cache.
 
 ## Vérifications
 
@@ -61,6 +69,7 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 make ps                                  # état et healthchecks
 curl -s localhost:8010/health/ready      # {"status":"ready", "checks": {...}}
 make worker-ping                         # pong : broker → worker → result backend
+docker compose run --rm kb_provision     # relance le provisionnement : sans effet si l'index existe
 docker compose exec worker_ingestion celery -A runtime.worker:celery_app inspect active_queues
                                          # knowledge_base.ingestion : consommée par worker_ingestion seul
 ```
@@ -90,7 +99,18 @@ docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trai
 docker compose exec api find /var/lib/interview-rag-trainer/blobs -type f
 ```
 
-Jusqu'à S3, l'item `extract_version` reste `PENDING` : aucun handler n'est enregistré pour ce `kind`, le dispatcher l'ignore.
+Depuis S4, l'import va jusqu'à la publication : `extract_version` (version `EXTRACTED`, une `Indexation PENDING` et un item `index_version` par index actif), `index_version` (embeddings, points Qdrant `visible=false`, manifest vérifié, `Indexation COMPLETED`, version `PUBLISHED`, item `sync_visibility`), puis `sync_visibility` (points `visible=true`) :
+
+```bash
+docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer \
+  -c "select status from knowledge_base.document_versions" \
+  -c "select status, point_count, manifest_digest from knowledge_base.indexations" \
+  -c "select kind, status, attempts from knowledge_base.work_items order by created_at"
+curl -s localhost:6333/collections                         # kb_index_<index_id>
+curl -s -X POST localhost:6333/collections/kb_index_<index_id>/points/count \
+  -H 'Content-Type: application/json' \
+  -d '{"exact": true, "filter": {"must": [{"key": "visible", "match": {"value": true}}]}}'
+```
 
 ## Qualité et tests
 
@@ -101,7 +121,7 @@ make ci                                  # tout ce qui précède
 make test-integration                    # stack compose.test.yaml éphémère + pytest -m integration
 ```
 
-Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
+Les tests d'intégration incluent les tests marqués `model` (vrai `multilingual-e5-base`) : le Makefile pointe `SENTENCE_TRANSFORMERS_HOME` vers `backend/.cache/models` (ignoré par git), rempli au premier lancement (1,1 Go ; `HF_HUB_DISABLE_XET=1` si le téléchargement reste bloqué à 0 octet). Pour les exclure : `cd backend && uv run pytest -m "integration and not model"` avec l'environnement de `INTEGRATION_ENV`. Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
 
 ## Migrations
 

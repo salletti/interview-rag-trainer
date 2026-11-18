@@ -5,7 +5,9 @@ Ressources asyncio (docs/conception/bounded-contexts/knowledge-base-s0.md §9) :
 les tâches sont déclarées à la construction de l'application, dans le
 processus maître, sans aucune connexion. Chaque processus enfant prefork crée
 au signal ``worker_process_init`` **une** boucle asyncio persistante, puis le
-moteur SQLAlchemy sur cette boucle ; il les ferme à ``worker_process_shutdown``.
+moteur SQLAlchemy et le client Qdrant sur cette boucle ; il les ferme à
+``worker_process_shutdown``. Le modèle d'embeddings n'est chargé qu'à la
+première tâche de l'enfant (``knowledge_base.build_work_handlers``).
 
 Ce module ne construit aucune application : ``runtime.worker`` construit
 celle de production. Un processus ne doit en construire qu'une qui enregistre
@@ -22,13 +24,17 @@ from typing import Any
 
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import knowledge_base
 from runtime.database import SessionFactory, create_engine, create_session_factory
 from runtime.settings import Settings, get_settings
+from runtime.vector_store import create_qdrant_client
 
-HandlersFactory = Callable[[SessionFactory], tuple[knowledge_base.WorkHandler, ...]]
+HandlersFactory = Callable[
+    [SessionFactory, AsyncQdrantClient], tuple[knowledge_base.WorkHandler, ...]
+]
 
 # Un enfant n'exécute qu'une tâche à la fois : deux connexions suffisent.
 WORKER_CHILD_POOL_SIZE = 2
@@ -53,6 +59,7 @@ class _ChildProcessResources:
         self._settings = settings
         self._handlers = handlers
         self._engine: AsyncEngine | None = None
+        self._qdrant: AsyncQdrantClient | None = None
         self._resources: knowledge_base.KnowledgeBaseWorkerResources | None = None
 
     def get(self) -> knowledge_base.KnowledgeBaseWorkerResources:
@@ -73,11 +80,12 @@ class _ChildProcessResources:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._engine = create_engine(self._settings, pool_size=WORKER_CHILD_POOL_SIZE)
+        self._qdrant = create_qdrant_client(self._settings)
         session_factory = create_session_factory(self._engine)
         self._resources = knowledge_base.KnowledgeBaseWorkerResources(
             session_factory=session_factory,
             loop=loop,
-            handlers=self._handlers(session_factory),
+            handlers=self._handlers(session_factory, self._qdrant),
         )
 
     def stop(self, **_: Any) -> None:
@@ -85,11 +93,14 @@ class _ChildProcessResources:
             return
         loop = self._resources.loop
         try:
+            if self._qdrant is not None:
+                loop.run_until_complete(self._qdrant.close())
             loop.run_until_complete(self._engine.dispose())
         finally:
             loop.close()
             self._resources = None
             self._engine = None
+            self._qdrant = None
 
 
 def create_celery_app(
@@ -125,7 +136,7 @@ def create_celery_app(
         child = _ChildProcessResources(settings)
     else:
         injected = tuple(work_handlers)
-        child = _ChildProcessResources(settings, lambda _sessions: injected)
+        child = _ChildProcessResources(settings, lambda _sessions, _qdrant: injected)
     knowledge_base.register_worker(app, child.get)
     worker_process_init.connect(child.start, weak=False)
     worker_process_shutdown.connect(child.stop, weak=False)

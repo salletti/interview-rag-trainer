@@ -88,3 +88,41 @@ initial doit être choisi sans benchmark local : il doit donc rester révisable.
   [0008](0008-custom-pipeline-docling-extraction.md).
 - Conception : [knowledge-base.md §13](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings),
   [feuille de route S9](../conception/bounded-contexts/knowledge-base-roadmap.md#s9--benchmark-des-embeddings-et-migration-bluegreen).
+
+## Suivi (2026-11-18)
+
+Faits de l'implémentation de S4, le corps de l'ADR est inchangé.
+
+- **Profil initial** (`MULTILINGUAL_E5_BASE`,
+  `backend/src/knowledge_base/domain/value_objects/embedding_profile.py`) :
+  `intfloat/multilingual-e5-base`, révision épinglée
+  `d128750597153bb5987e10b1c3493a34e5a4502a` (commit relevé sur le Hub le
+  2026-11-18), 768 dimensions, cosine, vecteurs normalisés, préfixes
+  `query: ` / `passage: `, 512 tokens, tokenizer `xlmr-d1287505` (XLM-R livré
+  avec le modèle à cette révision).
+- **Politique de production** : `kb-chunking-v1` comptée avec ce tokenizer,
+  identité `kb-chunking-v1+xlmr-d1287505`, budget 508 tokens. Sur les fixtures
+  du corpus (12 chunks), le plus long chunk encodé avec préfixe et tokens
+  spéciaux fait 375 tokens : le comptage du `TokenCounter` (sans préfixe ni
+  tokens spéciaux) plus 4 est exact.
+- **Premier index** : créé et activé sur corpus vide par `python -m
+  runtime.provision` (service Compose `kb_provision`), idempotent ; collection
+  Qdrant `kb_index_<index_id>` créée avant la transaction.
+- **Barrière** (point 5) : en place pour `RecordExtraction` (`FOR SHARE`) et
+  `PublishDocumentVersion` (`FOR SHARE`) ; `ActivateSearchIndex` sous
+  `FOR UPDATE` arrive avec S9 (l'agrégat porte déjà I10 et le contrôle de
+  couverture). Le point reste Proposed jusqu'à S9.
+- **Mesures** (CPU, `SentenceTransformer` en `device="cpu"`, lot de 32 chunks
+  de 152 tokens en moyenne) :
+
+  | | Conteneur Linux arm64 (image `production`, 18 vCPU) | Hôte macOS arm64 |
+  |---|---|---|
+  | Chargement, cache chaud, import de torch compris | 3,65 s | 5,02 s |
+  | RSS après chargement | 904 Mio | 1 023 Mio (pic) |
+  | RSS après un lot de 32 | 1 667 Mio | 1 863 Mio (pic) |
+  | Encodage, médiane de 5 lots | 91 ms/chunk (2,92 s le lot) | 51 ms/chunk (1,62 s) |
+  | Deux encodages du même texte | écart maximal 0 | écart maximal 0 |
+
+  La RAM du worker d'ingestion avoisine donc 1,7 Gio dès la première
+  indexation ; l'API ne charge pas le modèle en S4 (recherche : S5). Le
+  benchmark de S9 comparera ces chiffres à ceux des autres candidats.

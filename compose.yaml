@@ -35,6 +35,14 @@ x-backend-env: &backend-env
   # .env : elle doit rester le point de montage du volume kb_blobs.
   KB_MAX_UPLOAD_BYTES: ${KB_MAX_UPLOAD_BYTES:-20971520}
   KB_BLOB_ROOT: /var/lib/interview-rag-trainer/blobs
+  # Embeddings (S4, ADR 0008 §6). Le cache n'est pas surchargeable par .env :
+  # il doit rester le point de montage du volume models_cache.
+  KB_MODELS_CACHE_DIR: /var/cache/interview-rag-trainer/models
+  KB_EMBEDDING_BATCH_SIZE: ${KB_EMBEDDING_BATCH_SIZE:-32}
+  # Premier téléchargement du modèle par HTTPS simple : le protocole xet du
+  # Hub est resté bloqué à 0 octet dans cet environnement (2026-11-18, hôte
+  # et conteneur), le téléchargement HTTP aboutit. 0 pour réactiver xet.
+  HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
 
 x-backend-build: &backend-build
   context: ./backend
@@ -57,6 +65,22 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  # Index initial de Knowledge Base (S4) : crée la collection Qdrant et active
+  # le premier SearchIndex s'il n'existe pas ; idempotent. Avant l'API et les
+  # workers : une extraction sans index actif ne créerait aucune indexation.
+  kb_provision:
+    build: *backend-build
+    command: ["python", "-m", "runtime.provision"]
+    environment: *backend-env
+    volumes:
+      - ./backend/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+    networks: [backend]
+
   api:
     build: *backend-build
     environment: *backend-env
@@ -68,6 +92,8 @@ services:
       - models_cache:/var/cache/interview-rag-trainer/models
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      kb_provision:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -95,6 +121,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      kb_provision:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -117,6 +145,8 @@ services:
       - models_cache:/var/cache/interview-rag-trainer/models
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      kb_provision:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy

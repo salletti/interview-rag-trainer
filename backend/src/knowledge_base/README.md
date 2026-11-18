@@ -2,7 +2,7 @@
 
 Bounded Context ([ADR 0007](../../../docs/decisions/0007-knowledge-base-bounded-context.md)) chargé des documents de connaissances, de leur ingestion (extraction, chunking, embeddings) et de la recherche sémantique publiée vers les autres contextes. Conception : [knowledge-base.md](../../../docs/conception/bounded-contexts/knowledge-base.md) ; feuille de route : [S0–S9](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md).
 
-## État : slices S0 à S3
+## État : slices S0 à S4
 
 ### S0 — infrastructure de traitement durable
 
@@ -151,7 +151,7 @@ Une version `RECEIVED` devient `EXTRACTED` avec ses unités et chunks, par le ha
 
 Puis, pour tous, les mots, et en dernier recours les caractères : le budget est garanti quel que soit le contenu. **Choix S3 pour les cas non figés par les tests de l'auteur** : paragraphe ou liste seuls trop grands → phrases / éléments puis mots (recollés par une espace : les retours à la ligne internes d'un paragraphe découpé sont perdus) ; **en-tête de plus de la moitié du budget → tronqué aux mots et suivi de ` …`** (la moitié du budget reste au contenu) ; `overlap_tokens > 0` → `ValueError` (mesuré en S5/S9) ; budget ne laissant pas un caractère de contenu → `ChunkBudgetError`. `chunk_hash = SHA-256(contextual_text ‖ "\x00" ‖ policy.identity)` ; `unit_id` et `chunk_id` = UUIDv5(version, `policy.identity`, rangs), où `identity = version+tokenizer` (valeur persistée dans `chunking_policy_version`). Chaque recherche du plus long préfixe qui tient procède par bonds doublés puis dichotomie : découpe linéaire (2 Mo sans blanc : 238 s → 2,5 s, mesuré le 2026-11-18) ; la citation reprend la base de l'import (document, titre, version, numéro, fichier) avec le chemin de l'unité et les pages des blocs du chunk (I13).
 
-**Politique de production** (`DEFAULT_CHUNKING_POLICY`, `frameworks/configuration/chunking.py`) : version `kb-chunking-v1`, tokenizer `approx-xlmr-v1` (brancher le tokenizer réel en S4 impose un autre nom), identité persistée `kb-chunking-v1+approx-xlmr-v1`, `max_tokens` **508** = 512 (profil `multilingual-e5-base`) − 2 tokens spéciaux (`<s>`, `</s>`) − 2 tokens du préfixe `passage: ` (mesurés sur le tokenizer réel le 2026-11-18). L'en-tête contextuel fait partie du texte compté : il n'appelle pas de marge supplémentaire. Overlap 0, fallbacks de code par défaut.
+**Politique de production en S3** (`DEFAULT_CHUNKING_POLICY`, `frameworks/configuration/chunking.py`) : version `kb-chunking-v1`, tokenizer `approx-xlmr-v1` (remplacé en S4 par le tokenizer réel, voir S4), identité persistée `kb-chunking-v1+approx-xlmr-v1`, `max_tokens` **508** = 512 (profil `multilingual-e5-base`) − 2 tokens spéciaux (`<s>`, `</s>`) − 2 tokens du préfixe `passage: ` (mesurés sur le tokenizer réel le 2026-11-18). L'en-tête contextuel fait partie du texte compté : il n'appelle pas de marge supplémentaire. Overlap 0, fallbacks de code par défaut.
 
 **Compteur de tokens provisoire** (`adapters/gateway/embedding/approximate_token_counter.py`, port `TokenCounter`) : approximation **par excès** du tokenizer XLM-R du profil, sans dépendance (un mot = `ceil(longueur / 3)` tokens, +1 s'il contient un caractère non ASCII ; ponctuation et `_` = 1, 2 après un blanc). Mesure contre le vrai tokenizer sur 937 paragraphes et lignes (fixtures, conception, code) : rapport estimation / réel 1,40 au global, jamais inférieur à 1,07 sur les échantillons de 50 tokens ou plus. Les chunks sont donc environ 30 % plus courts que ce que le modèle accepterait. S4 remplace ce compteur par celui de l'`Embedder` (nouvelle version de politique si les chunks changent).
 
@@ -176,6 +176,92 @@ Données immuables, sans `updated_at` ; écrites par `SqlAlchemyExtractionReposi
 
 Corpus de fixtures FR/EN (`backend/tests/fixtures/knowledge_base/`, un `.golden.json` par fixture, rejoué avec le double `MarkdownLiteParser` et avec Docling) : base de l'évaluation de S5. Les fixtures sont exclues de `ruff` (`extend-exclude`), qui formaterait les blocs de code du Markdown.
 
+### S4 — embeddings, Qdrant, index initial et publication
+
+Une version `EXTRACTED` est encodée, écrite dans Qdrant, vérifiée, puis publiée ; la synchronisation rend ensuite ses points visibles ([knowledge-base.md §6, §8–§11, §13](../../../docs/conception/bounded-contexts/knowledge-base.md#6-workflow-de-traitement-avec-work_items), [ADR 0010](../../../docs/decisions/0010-postgresql-source-of-truth-qdrant-derived-index.md), [ADR 0011](../../../docs/decisions/0011-embedding-profile-search-index-blue-green.md)).
+
+```text
+extract_version ──► EXTRACTED + Indexation PENDING (par index ACTIVE/BUILDING) + item index_version
+index_version   ──► embeddings, upserts visible=false, relecture du manifest  (hors transaction)
+                ──► Indexation COMPLETED (I8) + tentative de publication (I5, I9) + item sync_visibility
+sync_visibility ──► visible=true pour la version publiée ; points SUPERSEDED/DISCARDED supprimés
+```
+
+**Domaine** (Python pur) :
+
+| Élément | Rôle |
+|---|---|
+| `EmbeddingProfile`, `Distance` (`domain/value_objects/embedding_profile.py`) | modèle, révision, dimension, distance, normalisation, préfixes, `max_tokens`, tokenizer ; `MULTILINGUAL_E5_BASE` est le profil initial (révisable, ADR 0011 §6) |
+| `KnowledgeCorpus`, `SearchIndex`, `IndexStatus`, `CORPUS_ID` (`domain/entities/knowledge_corpus.py`) | singleton V1 ; `provision_index` (`BUILDING`), `activate_index` (I10 : l'ancien actif devient `RETIRED` ; `coverage_complete` = contrôle I11 calculé par le use case), `retire_index`, `live_indexes` ; refus `corpus_errors` sans effet |
+| `Indexation`, `IndexationStatus` (`domain/entities/indexation.py`) | `PENDING → COMPLETED` (digest et nombre de points), `FAILED`, `CANCELLED`, `retry` (§5.3) ; refus `InvalidIndexationTransitionError` sans effet |
+| `IndexManifest` (`domain/value_objects/index_manifest.py`) | couples `(point_id, chunk_hash)` triés par `str(point_id)`, sans doublon ; `digest` = SHA-256 des lignes `"<point_id>:<chunk_hash>\n"` |
+| `point_id(index_id, chunk_id)` (`domain/services/point_id.py`) | `uuid5(index_id, str(chunk_id))` : même chunk → même point dans un index, autre point dans un autre |
+| `IndexedPoint`, `PointSelector` | point à écrire (payload §9) ; points d'une version ou de tout un document |
+
+Ports (`domain/providers/`) : `Embedder`, `VectorIndex`, `ChunkReader`, `KnowledgeCorpusRepository` (`get_shared` = `FOR SHARE`, `get_for_update` = `FOR UPDATE`, `add` lève `CorpusAlreadyExistsError`), `IndexationRepository`, `IndexingTransaction` (documents, corpus, indexations, work queue liés à une transaction ouverte par l'appelant) et `IndexingUnitOfWork` (la même, ouverte par le handler, plus les chunks) ; `ExtractionTransaction` étend `IndexingTransaction`.
+
+**Use cases** :
+
+- `RecordExtraction.apply` (S3, étendu) : dans la transaction qui passe la version `EXTRACTED`, lit le corpus sous **`FOR SHARE`** et crée, pour chaque index `ACTIVE` ou `BUILDING` dont la politique est celle du lot, une `Indexation PENDING` et un item `index_version` (dédoublonnage `index_version:<version_id>:<index_id>`). Sans corpus : aucune indexation (la version reste `EXTRACTED`). Index d'une autre politique : ignoré avec un avertissement (rechunking, S9).
+- `CompleteIndexation` (`use_cases/complete_indexation/`) : `prepare` lit document, corpus, indexation et chunks dans une transaction brève, **la ferme**, puis vérifie la collection (une fois : modèle chargé = profil de l'index, collection présente avec la dimension et la distance du profil), encode par lots de `KB_EMBEDDING_BATCH_SIZE` chunks, écrit chaque lot (`upsert`, `wait=true`, points `visible=false`), relit les points par identifiants (lots de 256, sans vecteurs) et exige l'égalité exacte des couples `(point_id, chunk_hash)`. `apply` (transaction de finalisation) relit l'état : indexation toujours `PENDING`, version `EXTRACTED` ou `PUBLISHED`, document `ACTIVE`, index non `RETIRED` → `COMPLETED`, puis **tentative** de publication (un refus laisse l'indexation `COMPLETED`) ; sinon l'indexation passe `CANCELLED`. `fail` : `PENDING → FAILED`.
+- `PublishDocumentVersion` : l'index actif est lu sous **`FOR SHARE`** du corpus ; I9 (indexation `COMPLETED` dans **cet** index), puis l'agrégat (version `EXTRACTED`, document `ACTIVE`, I5) ; succès : item `sync_visibility` (`sync_visibility:<document_id>:<visibility_revision>`). Refus : `NoActiveIndexError`, `IndexationNotCompletedError` (`PublicationRefusedError`) ou `KnowledgeDocumentError`, toujours avant écriture.
+- `SyncDocumentVisibility` : lit l'état SQL **courant** (transaction fermée avant Qdrant) ; dans chaque index non `RETIRED` : document retiré → tous ses points supprimés ; sinon version publiée → `visible=true`, versions `SUPERSEDED`/`DISCARDED` → points supprimés. Les versions `EXTRACTED` ne sont pas touchées (précision S4 de §11). Idempotent, sans écriture SQL.
+- `ProvisionSearchIndex` : si le corpus a un index actif, le rend sans rien écrire ; sinon crée la collection **avant** la transaction, puis crée le corpus si besoin, provisionne et active l'index (`coverage_complete=True` : corpus vide), `commit`. Un corpus créé entre-temps par un autre processus (`CorpusAlreadyExistsError`) : l'index actif du gagnant est rendu.
+
+**Handlers de work items** (file `knowledge_base.ingestion`, `max_attempts` 5) :
+
+| `kind` | Exécution | Erreurs |
+|---|---|---|
+| `index_version` | `prepare` (heartbeats pendant l'encodage, qui tourne dans un thread), puis un `ctx.finalize` : `apply`, ou `cancel_if_obsolete` s'il n'y avait rien à indexer | `IndexManifestMismatchError` → transitoire (la reprise réécrit) ; `CollectionMismatchError` → terminal `COLLECTION_MISMATCH`, indexation `FAILED` (`retryable` vrai) ; payload illisible → `INVALID_PAYLOAD` ; autre → transitoire, `FAILED` à la dernière tentative |
+| `sync_visibility` | `SyncDocumentVisibility.handle`, puis un `ctx.finalize` qui n'écrit rien (fencing et `SUCCEEDED`) | payload illisible → `INVALID_PAYLOAD` ; Qdrant indisponible → transitoire |
+
+Un échec d'indexation laisse la version `EXTRACTED` : ses chunks restent valides (§5.2).
+
+**Adapters** :
+
+- `SentenceTransformersEmbedder` (`adapters/gateway/embedding/sentence_transformers_embedder.py`) : seul module qui importe `sentence_transformers` (donc torch), et seulement dans `_load` (`tests/architecture/test_embedding_confinement.py`). Préfixes et normalisation du profil, encodage dans `asyncio.to_thread`, appareil `cpu` imposé (pas de MPS implicite sous macOS). `token_counter` = tokenizer du modèle, sans préfixe ni tokens spéciaux. `load(profile, cache_dir=…)` charge tout de suite ; `lazy(…)` charge au premier encodage **ou** au premier comptage de tokens, une seule fois (verrou).
+- `QdrantVectorIndex` (`adapters/gateway/vector_store/qdrant_vector_index.py`) : collection `kb_index_<index_id hex>` par index ; création idempotente avec les index de payload `visible` (booléen), `unit_id`, `document_id`, `version_id`, `topics`, `kind`, `language` (keyword) ; toutes les écritures avec `wait=true` et statut `completed` exigé (`VectorWriteNotAppliedError` sinon, transitoire) ; `retrieve` sans vecteurs (payload `chunk_hash` seul) ; visibilité et suppressions par filtre `document_id` (+ `version_id`).
+- Persistance : `SqlAlchemyKnowledgeCorpusRepository` (`ON CONFLICT DO NOTHING` à la création, verrou optimiste sur `version`, index non actifs écrits avant l'actif), `SqlAlchemyIndexationRepository`, `SqlAlchemyChunkReader`, `SqlAlchemyIndexingTransaction` (dont hérite `SqlAlchemyExtractionTransaction`) ; `SqlAlchemyUnitOfWork` gagne `corpus`, `indexations`, `chunks`.
+
+**Profil et politique de production** :
+
+| | Valeur |
+|---|---|
+| Modèle | `intfloat/multilingual-e5-base`, révision `d128750597153bb5987e10b1c3493a34e5a4502a` (relevée sur le Hub le 2026-11-18) |
+| Vecteurs | 768 dimensions, cosine, normalisés ; préfixes `query: ` / `passage: ` ; 512 tokens |
+| Tokenizer | XLM-R livré avec le modèle, nommé `xlmr-d1287505` |
+| `DEFAULT_CHUNKING_POLICY` | `kb-chunking-v1`, tokenizer `xlmr-d1287505`, identité persistée **`kb-chunking-v1+xlmr-d1287505`**, `max_tokens` 508 (512 − 2 tokens spéciaux − 2 du préfixe) |
+
+Le compteur provisoire de S3 (`ApproximateTokenCounter`, identité `kb-chunking-v1+approx-xlmr-v1`) n'est plus utilisé en production ; il reste pour les tests de coût du `ChunkPlanner` sans modèle. Les lots extraits avec l'ancienne identité ne sont pas indexés (pas de backfill en S4).
+
+**Modèle dans le worker** : `build_work_handlers(session_factory, qdrant_client, settings)` crée **un** `Embedder` paresseux par processus enfant ; l'extraction compte les tokens avec son tokenizer, l'indexation encode avec lui. Le processus maître ne le charge jamais ; l'API ne le charge pas en S4 (la recherche arrive en S5). Premier démarrage : téléchargement dans `KB_MODELS_CACHE_DIR` (volume `models_cache`, ~1,1 Go de poids), à la première tâche du worker d'ingestion.
+
+**Provisionnement** : `knowledge_base.provision_search_index(session_factory, qdrant_client)` (surface publique), lancé par `python -m runtime.provision`, service Compose `kb_provision` : après `migrate`, Qdrant sain ; l'API et les workers attendent sa fin. Choix S4 : une commande au démarrage de la stack plutôt qu'au `worker_process_init` (exécutée une fois, avant toute extraction, en échec visible si Qdrant ou PostgreSQL manquent ; jamais dans le chemin d'une tâche). Idempotente : relancée, elle ne crée rien. Si l'index actif a un autre profil ou une autre politique que la configuration, il reste actif et un avertissement est journalisé (migration blue/green : S9).
+
+**Mesures** (2026-11-18 ; détail et conditions : [ADR 0008, suivi](../../../docs/decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18), [ADR 0011, suivi](../../../docs/decisions/0011-embedding-profile-search-index-blue-green.md#suivi-2026-11-18)) :
+
+| Mesure | Valeur |
+|---|---|
+| Image `production` (contenu) / `/app/.venv` | 152 → 479 Mo / 366 → 1 547 Mio (torch 687 Mio), aucun paquet `nvidia-*` |
+| Chargement du modèle, cache chaud (conteneur Linux arm64) | 3,65 s ; premier démarrage avec téléchargement : 330 s dans `worker_ingestion` |
+| RSS après chargement / après un lot de 32 (conteneur) | 904 Mio / 1 667 Mio ; `docker stats` du worker d'ingestion après la première publication : 1,03 Gio ; API : 192 Mio (torch non chargé) |
+| Encodage, lot de 32 chunks de 152 tokens en moyenne | 91 ms/chunk (conteneur, 18 vCPU), 51 ms/chunk (hôte macOS arm64) ; tâche `index_version` de la fiche `qa_python_fastapi_fr.md` (3 chunks, modèle chargé) : 0,32 s |
+| `ChunkPlanner`, tokenizer réel au lieu du compteur approximatif (hôte) | 2 Mo sans blanc : 0,21 s → 7,14 s, 1 345 → 802 chunks ; prose française de 200 Ko : 0,07 s → 0,33 s, 166 → 111 chunks |
+
+Le tokenizer journalise une fois « Token indices sequence length is longer than … (806 > 512) » : la segmentation compte des unités entières, plus longues que le modèle ; seuls les chunks lui sont envoyés, tous sous 512 tokens préfixe compris.
+
+**Variables** : `KB_MODELS_CACHE_DIR` (défaut `/var/cache/interview-rag-trainer/models`, fixé par Compose au point de montage de `models_cache`), `KB_EMBEDDING_BATCH_SIZE` (32). Hôte Qdrant : `QDRANT_*` du runtime.
+
+Tables (migration `448949d0e134`, schéma `knowledge_base`) :
+
+| Table | Contenu | Contraintes |
+|---|---|---|
+| `knowledge_corpus` | `corpus_id`, `active_index_id`, `version` (verrou optimiste) | clé primaire ; pas de clé étrangère sur `active_index_id` (référence circulaire) |
+| `search_indexes` | `index_id`, `corpus_id`, `status`, `embedding_profile jsonb`, `chunking_policy jsonb`, `created_at`, `activated_at`, `retired_at` | `CHECK` du statut ; index unique partiel « un seul `ACTIVE` par corpus » (I10) |
+| `indexations` | `(version_id, index_id)`, `status`, `chunking_policy_version`, `manifest_digest`, `point_count`, `completed_at`, `failure_*` | clés étrangères vers `document_versions` et `search_indexes` ; `COMPLETED` ⇔ digest, nombre et date renseignés ; `FAILED` ⇔ cause renseignée |
+
+La même migration ajoute `UNIQUE (id, version_id, chunking_policy_version)` sur `knowledge_units` et la clé étrangère composite `document_chunks (unit_id, version_id, chunking_policy_version)` → ce `UNIQUE` (correction reportée de la revue S3 : un chunk ne peut référencer qu'une unité de son lot) ; la clé simple `unit_id` de S3 est conservée.
+
 ## Surface publique
 
 `knowledge_base/__init__.py` réexporte, depuis `adapters/controller/dependencies.py` :
@@ -188,7 +274,8 @@ Corpus de fixtures FR/EN (`backend/tests/fixtures/knowledge_base/`, un `.golden.
 | `KnowledgeBaseWorkerResources(session_factory, loop, handlers=())` | ressources d'un processus enfant : fabrique de sessions, boucle asyncio persistante, handlers (registre construit à la création) |
 | `KnowledgeBaseSettings` | réglages `KB_*` (pydantic-settings) |
 | `WorkHandler` | Protocol d'un handler : `kind`, `queue`, `max_attempts` (appliqué au claim), `execute(item, ctx)` ; hook facultatif `on_terminal_failure(session, item, error)` |
-| `build_work_handlers(session_factory, settings=None)` | handlers de production des work items (S3 : `extract_version`), construits par `runtime` dans chaque processus enfant ; ne se connecte à rien |
+| `build_work_handlers(session_factory, qdrant_client, settings=None)` | handlers de production des work items (`extract_version`, `index_version`, `sync_visibility`), construits par `runtime` dans chaque processus enfant sur sa fabrique de sessions et son client Qdrant ; ne se connecte à rien et ne charge pas le modèle (chargé à la première tâche) |
+| `provision_search_index(session_factory, qdrant_client)` | crée et active l'index initial s'il n'existe pas (idempotent) ; rend l'index actif ; appelé par `python -m runtime.provision` au démarrage de la stack |
 
 `runtime` n'importe que cette racine (`backend/tests/architecture/`). `alembic/env.py` importe `knowledge_base.frameworks.sqlalchemy.metadata` (exception documentée dans [005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)).
 
@@ -211,9 +298,21 @@ knowledge_base/
   use_cases/import_steps.py               # nom de fichier, liste blanche, empreinte de requête, idempotence, enqueue / cancel, rejeu après course
   use_cases/import_result.py              # ImportDocumentResult, commun aux deux imports (S2)
   use_cases/errors.py                     # InvalidFilename, UnsupportedDocumentType, DocumentNotFound, DuplicateContentOtherDocument, IdempotencyKeyConflict
-  use_cases/record_extraction/            # RecordExtraction, RecordExtractionHandler (prepare, apply, fail), PreparedExtraction (S3)
+  use_cases/record_extraction/            # RecordExtraction, RecordExtractionHandler (prepare, apply, fail), PreparedExtraction (S3) ; indexations (S4)
+  use_cases/indexing_steps.py             # kinds index_version / sync_visibility, clés de dédoublonnage, enqueue (S4)
+  use_cases/complete_indexation/          # CompleteIndexation, CompleteIndexationHandler (prepare, apply, cancel_if_obsolete, fail), erreurs (S4)
+  use_cases/publish_document_version/     # PublishDocumentVersion, PublishDocumentVersionHandler (handle, apply), refus (S4)
+  use_cases/sync_document_visibility/     # SyncDocumentVisibility, SyncDocumentVisibilityHandler (S4)
+  use_cases/provision_search_index/       # ProvisionSearchIndex, ProvisionSearchIndexHandler (S4)
+  domain/entities/knowledge_corpus.py     # KnowledgeCorpus, SearchIndex, IndexStatus, CORPUS_ID (S4)
+  domain/entities/indexation.py           # Indexation, IndexationStatus (S4)
+  domain/value_objects/                   # S4 : embedding_profile, index_manifest, indexed_point
+  domain/services/point_id.py             # uuid5(index_id, chunk_id) (S4)
+  domain/exceptions/                      # S4 : corpus_errors, indexation_errors
+  domain/providers/                       # S4 : embedder, vector_index, chunk_reader, knowledge_corpus_repository, indexation_repository, indexing_transaction
   adapters/failure_policy.py              # FailureDecision, decide_recovery — purs, partagés controller / gateway
-  adapters/controller/dependencies.py     # register, register_worker et réexports de la surface publique
+  adapters/controller/dependencies.py     # register, register_worker, build_work_handlers, provision_search_index et réexports de la surface publique
+  adapters/controller/composition.py      # build_provision_search_index_handler (S4)
   adapters/controller/rest/               # routes d'import, schémas HTTP, traduction des refus, KnowledgeBaseResources (S2)
   adapters/controller/tasks/
     execution.py                          # execute_work_item, WorkContext (heartbeat, finalize)
@@ -222,16 +321,23 @@ knowledge_base/
     resources.py                          # KnowledgeBaseWorkerResources
     retry_policy.py                       # backoff (equal jitter), classification des erreurs — purs
     extract_version_handler.py            # ExtractVersionWorkHandler, build_extract_version_handler (S3)
+    index_version_handler.py              # IndexVersionWorkHandler, build_index_version_handler (S4)
+    sync_visibility_handler.py            # SyncVisibilityWorkHandler, build_sync_visibility_handler (S4)
+    lease.py                              # keeping_lease : heartbeats pendant un travail long (S3, partagé en S4)
   adapters/gateway/persistence/
     sqlalchemy_work_queue.py              # SqlAlchemyWorkQueue (port), SqlAlchemyWorkLifecycle (transitions §3)
     sqlalchemy_unit_of_work.py            # SqlAlchemyUnitOfWork (S2)
     sqlalchemy_knowledge_document_repository.py, sqlalchemy_idempotency_key_repository.py
     constraint_violations.py              # nom de la contrainte violée (traduction des IntegrityError attendues)
     sqlalchemy_extraction_repository.py, sqlalchemy_extraction_transaction.py  # lot d'unités et chunks (S3)
+    sqlalchemy_knowledge_corpus_repository.py, sqlalchemy_indexation_repository.py, sqlalchemy_chunk_reader.py, sqlalchemy_indexing_transaction.py  # S4
   adapters/gateway/blob/filesystem_blob_store.py  # FileSystemBlobStore : put (S2), read (S3)
   adapters/gateway/parsing/               # RoutingDocumentParser, DoclingMarkdownParser, PlainTextParser (S3)
-  adapters/gateway/embedding/approximate_token_counter.py  # TokenCounter provisoire (S3, remplacé en S4)
-  frameworks/sqlalchemy/tables.py         # MetaData(schema="knowledge_base"), work_items, documents, document_versions, idempotency_keys, knowledge_units, document_chunks
+  adapters/gateway/embedding/approximate_token_counter.py  # TokenCounter provisoire (S3) ; hors production depuis S4 (tests de coût)
+  adapters/gateway/embedding/sentence_transformers_embedder.py  # SentenceTransformersEmbedder : préfixes, normalisation, tokenizer (S4)
+  adapters/gateway/vector_store/qdrant_vector_index.py  # QdrantVectorIndex : collection par index, payload, manifest (S4)
+  frameworks/sqlalchemy/tables.py         # MetaData(schema="knowledge_base"), work_items, documents, document_versions, idempotency_keys, knowledge_units, document_chunks, knowledge_corpus, search_indexes, indexations
+  frameworks/configuration/chunking.py    # DEFAULT_CHUNKING_POLICY (tokenizer du profil depuis S4)
   frameworks/configuration/settings.py    # KnowledgeBaseSettings
 ```
 
@@ -267,4 +373,6 @@ Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` 
 - Unitaires : `backend/tests/unit/knowledge_base/` (backoff, classification, registre, settings, `register_worker`) ; `domain/` pour S1 (import, transitions, publication, retrait, événements, Value Objects), sans I/O.
 - Unitaires S2 : `use_cases/` (handlers avec fakes des ports : dédoublonnage, I6, enqueue, idempotence, courses), `adapters/test_filesystem_blob_store.py`, réglages et montage des routes.
 - Unitaires S3 : `domain/test_extraction_value_objects.py`, `domain/services/` (segmentation Q/R, sections, définitions, identifiants, `ChunkPlanner` et ses fallbacks), `adapters/parsing/` (TXT, routage, Docling), `adapters/test_approximate_token_counter.py`, `use_cases/test_record_extraction.py`, `test_extract_version_handler.py`, `test_extract_version_lease_and_blob.py` (heartbeats pendant le calcul, `BLOB_MISSING`), `test_corpus_golden.py` (goldens rejoués avec Docling) ; `architecture/test_docling_confinement.py`.
-- Intégration (`make test-integration`) : `backend/tests/integration/knowledge_base/`, scénarios 1 à 14 de S0 §12.2 contre PostgreSQL et RabbitMQ réels ; worker in-process (pool solo) et vrai worker prefork en sous-processus (scénarios 13 et 14). S2 : `test_import_api` (POST multipart réel → lignes, blob, work item), `test_import_atomicity` (orphelin après rollback, verrou optimiste, course sur un même nouveau fichier avec barrière explicite), `test_import_persistence`, `test_import_migration` ; le volume de blobs est un répertoire temporaire (`KB_BLOB_ROOT`). S3 : `test_extraction_flow` (import réel → `EXTRACTED`, unités, chunks, citations, Docling réel), `test_extraction_fencing`, `test_extraction_failures`, `test_extraction_rerun` (mêmes identifiants après un crash), `test_extraction_blob_missing`, `test_extraction_migration`.
+- Intégration (`make test-integration`) : `backend/tests/integration/knowledge_base/`, scénarios 1 à 14 de S0 §12.2 contre PostgreSQL et RabbitMQ réels ; worker in-process (pool solo) et vrai worker prefork en sous-processus (scénarios 13 et 14). S2 : `test_import_api` (POST multipart réel → lignes, blob, work item), `test_import_atomicity` (orphelin après rollback, verrou optimiste, course sur un même nouveau fichier avec barrière explicite), `test_import_persistence`, `test_import_migration` ; le volume de blobs est un répertoire temporaire (`KB_BLOB_ROOT`). S3 : `test_extraction_flow` (import réel → `EXTRACTED`, unités, chunks, citations, Docling réel), `test_extraction_fencing`, `test_extraction_failures`, `test_extraction_rerun` (mêmes identifiants après un crash), `test_extraction_blob_missing`, `test_extraction_migration`. S4 (PostgreSQL et Qdrant réels ; chaque scénario tourne avec l'`Embedder` de test `hash` et avec le vrai modèle, paramètre marqué `model`) : `test_indexing_flow` (import → `PUBLISHED`, payload, invisibilité avant synchronisation), `test_indexing_idempotence` (panne entre upserts et finalisation, rejeux, zombie), `test_indexing_integrity` (point perdu ou modifié, collection non conforme ou absente), `test_indexing_visibility`, `test_qdrant_vector_index` (contrat de l'adapter), `test_indexing_migration`.
+- Unitaires S4 : `domain/test_{embedding_profile,index_manifest,indexation,knowledge_corpus}.py`, `use_cases/test_{record_extraction_indexations,complete_indexation,publish_document_version,sync_document_visibility,provision_search_index}.py` (doubles `indexing_fakes.py` : `HashEmbedder`, Qdrant en mémoire, garde « aucun appel externe dans une transaction »), `test_indexing_work_handlers.py`, `adapters/embedding/` (préfixes, normalisation, tokenizer, sans modèle), `adapters/vector_store/` ; `architecture/test_embedding_confinement.py`.
+- Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go.

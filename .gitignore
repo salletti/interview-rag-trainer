@@ -26,3 +26,6 @@ frontend/*.tsbuildinfo
 .idea/
 .vscode/
 .DS_Store
+
+# Cache local des modèles (tests `model`, backend/.cache/models)
+backend/.cache/

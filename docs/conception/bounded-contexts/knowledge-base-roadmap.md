@@ -149,6 +149,8 @@ flowchart LR
 
 ## S4 — Embeddings, Qdrant, index initial et publication
 
+> **Statut : implémentée (2026-11-18)** — profil `intfloat/multilingual-e5-base` épinglé (révision `d1287505`, torch CPU sans CUDA), tokenizer réel (`kb-chunking-v1+xlmr-d1287505`), index initial provisionné par `kb_provision`, indexation vérifiée par manifest, publication sous barrière du corpus, `sync_visibility` ; 759 unitaires et 273 tests d'intégration verts (dont 18 `model` avec le vrai E5) ; import réel jusqu'à `PUBLISHED` sur la stack de dev.
+
 - **Objectif :** indexer les chunks d'une version, vérifier l'index et publier
   la version.
 - **Périmètre :** `KnowledgeCorpus` + `SearchIndex` (création du premier index,

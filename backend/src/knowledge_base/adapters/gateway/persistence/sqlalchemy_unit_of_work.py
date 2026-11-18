@@ -1,6 +1,7 @@
 """Unit of Work SQLAlchemy de Knowledge Base : une session, donc une
-transaction, partagée par le dépôt des documents, la work queue (S0) et les
-clés d'idempotence."""
+transaction, partagée par le dépôt des documents, la work queue (S0), les
+clés d'idempotence (S2), le corpus, les indexations et la lecture des chunks
+(S4)."""
 
 from __future__ import annotations
 
@@ -9,8 +10,17 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_chunk_reader import (
+    SqlAlchemyChunkReader,
+)
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_idempotency_key_repository import (  # noqa: E501
     SqlAlchemyIdempotencyKeyRepository,
+)
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexation_repository import (  # noqa: E501
+    SqlAlchemyIndexationRepository,
+)
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_knowledge_corpus_repository import (  # noqa: E501
+    SqlAlchemyKnowledgeCorpusRepository,
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_knowledge_document_repository import (  # noqa: E501
     SqlAlchemyKnowledgeDocumentRepository,
@@ -29,6 +39,9 @@ class SqlAlchemyUnitOfWork:
         self._documents = SqlAlchemyKnowledgeDocumentRepository(self._session)
         self._work_queue = SqlAlchemyWorkQueue(self._session)
         self._idempotency_keys = SqlAlchemyIdempotencyKeyRepository(self._session)
+        self._corpus = SqlAlchemyKnowledgeCorpusRepository(self._session)
+        self._indexations = SqlAlchemyIndexationRepository(self._session)
+        self._chunks = SqlAlchemyChunkReader(self._session)
 
     @property
     def documents(self) -> SqlAlchemyKnowledgeDocumentRepository:
@@ -41,6 +54,18 @@ class SqlAlchemyUnitOfWork:
     @property
     def idempotency_keys(self) -> SqlAlchemyIdempotencyKeyRepository:
         return self._idempotency_keys
+
+    @property
+    def corpus(self) -> SqlAlchemyKnowledgeCorpusRepository:
+        return self._corpus
+
+    @property
+    def indexations(self) -> SqlAlchemyIndexationRepository:
+        return self._indexations
+
+    @property
+    def chunks(self) -> SqlAlchemyChunkReader:
+        return self._chunks
 
     async def commit(self) -> None:
         await self._session.commit()

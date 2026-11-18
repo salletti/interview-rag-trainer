@@ -16,6 +16,11 @@ API figée par ces tests (ports du domaine) :
 - ``ExtractionTransaction`` (``use_cases/record_extraction``) : ce que
   ``apply`` et ``fail`` reçoivent, un objet exposant ``documents`` et
   ``extractions`` (une ``UnitOfWork`` convient).
+
+Depuis S4, ``apply`` lit aussi le corpus et crée les indexations de la version
+(``corpus``, ``indexations``, ``work_queue``). Les tests de S3 n'ont pas de
+corpus : ``NoCorpus`` n'en rend aucun, donc aucune indexation n'est créée ; les
+doubles complets sont ceux de ``indexing_fakes.py``.
 """
 
 from __future__ import annotations
@@ -27,7 +32,15 @@ from types import TracebackType
 from typing import Self
 from uuid import UUID
 
+from knowledge_base.domain.entities.indexation import Indexation
+from knowledge_base.domain.entities.knowledge_corpus import KnowledgeCorpus
 from knowledge_base.domain.entities.knowledge_document import KnowledgeDocument
+from knowledge_base.domain.providers.indexation_repository import (
+    IndexationRepository,
+)
+from knowledge_base.domain.providers.knowledge_corpus_repository import (
+    KnowledgeCorpusRepository,
+)
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
@@ -87,6 +100,35 @@ class FakeExtractions:
         )
 
 
+class NoCorpus:
+    """Corpus jamais créé : la situation des tests de S3."""
+
+    async def get_shared(self) -> KnowledgeCorpus | None:
+        return None
+
+    async def get_for_update(self) -> KnowledgeCorpus | None:
+        return None
+
+    async def add(self, corpus: KnowledgeCorpus) -> None:
+        raise AssertionError("les tests de S3 ne créent pas de corpus")
+
+    async def save(self, corpus: KnowledgeCorpus) -> None:
+        raise AssertionError("les tests de S3 ne modifient pas de corpus")
+
+
+class NoIndexations:
+    """Sans corpus, aucune indexation n'est lue ni écrite."""
+
+    async def get(self, version_id: UUID, index_id: UUID) -> Indexation | None:
+        return None
+
+    async def add(self, indexation: Indexation) -> None:
+        raise AssertionError("aucune indexation attendue sans corpus")
+
+    async def save(self, indexation: Indexation) -> None:
+        raise AssertionError("aucune indexation attendue sans corpus")
+
+
 class CopyingDocuments(FakeDocuments):
     """Comme une base : ``get`` rend une copie, donc une modification de
     l'agrégat n'existe que si ``save`` est appelé."""
@@ -106,6 +148,8 @@ class ExtractionUnitOfWork(FakeUnitOfWork):
         self._pending: list[StoredBatch] = []
         self.documents = CopyingDocuments(self._working)
         self.extractions = FakeExtractions(self._pending)
+        self.corpus: KnowledgeCorpusRepository = NoCorpus()
+        self.indexations: IndexationRepository = NoIndexations()
 
     async def __aenter__(self) -> Self:
         self._store.opened += 1

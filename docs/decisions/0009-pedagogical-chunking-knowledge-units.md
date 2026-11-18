@@ -96,3 +96,8 @@ budget, puisque le budget effectif en dépend : `identity = version+tokenizer`
 Le passage au tokenizer réel du profil (S4) produit donc une nouvelle identité
 de lot. Revue du commit S3 : voir
 [suivi Knowledge Base](../conception/bounded-contexts/knowledge-base-progress.md).
+
+S4 (2026-11-18) : le compteur de production est le tokenizer du profil
+(`SentenceTransformersEmbedder.token_counter`) ; identité de production
+`kb-chunking-v1+xlmr-d1287505`, budget inchangé (508). Les lots de l'identité
+provisoire ne sont pas réindexés (pas de backfill avant S9).

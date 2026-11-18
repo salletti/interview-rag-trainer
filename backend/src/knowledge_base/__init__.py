@@ -11,6 +11,7 @@ from knowledge_base.adapters.controller.dependencies import (
     KnowledgeBaseWorkerResources,
     WorkHandler,
     build_work_handlers,
+    provision_search_index,
     register,
     register_worker,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
     "build_work_handlers",
+    "provision_search_index",
     "register",
     "register_worker",
 ]

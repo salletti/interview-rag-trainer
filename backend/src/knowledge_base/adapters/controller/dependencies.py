@@ -10,8 +10,12 @@ from uuid import UUID
 
 from celery import Celery
 from fastapi import FastAPI
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from knowledge_base.adapters.controller.composition import (
+    build_provision_search_index_handler,
+)
 from knowledge_base.adapters.controller.rest.documents_router import (
     add_document_routes,
 )
@@ -27,22 +31,39 @@ from knowledge_base.adapters.controller.tasks.execution import (
 from knowledge_base.adapters.controller.tasks.extract_version_handler import (
     build_extract_version_handler,
 )
+from knowledge_base.adapters.controller.tasks.index_version_handler import (
+    build_index_version_handler,
+)
 from knowledge_base.adapters.controller.tasks.registry import WorkHandler
 from knowledge_base.adapters.controller.tasks.resources import (
     KnowledgeBaseWorkerResources,
 )
+from knowledge_base.adapters.controller.tasks.sync_visibility_handler import (
+    build_sync_visibility_handler,
+)
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
+)
+from knowledge_base.adapters.gateway.embedding.sentence_transformers_embedder import (
+    SentenceTransformersEmbedder,
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
     SqlAlchemyUnitOfWork,
 )
+from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
+    QdrantVectorIndex,
+)
+from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
+from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 from knowledge_base.use_cases.import_document.import_document_handler import (
     ImportDocumentHandler,
 )
 from knowledge_base.use_cases.import_document_version.import_document_version_handler import (  # noqa: E501
     ImportDocumentVersionHandler,
+)
+from knowledge_base.use_cases.provision_search_index.provision_search_index_command import (  # noqa: E501
+    ProvisionSearchIndex,
 )
 
 __all__ = [
@@ -51,6 +72,7 @@ __all__ = [
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
     "build_work_handlers",
+    "provision_search_index",
     "register",
     "register_worker",
 ]
@@ -99,13 +121,55 @@ def build_import_version_handler(
 
 def build_work_handlers(
     session_factory: async_sessionmaker[AsyncSession],
+    qdrant_client: AsyncQdrantClient,
     settings: KnowledgeBaseSettings | None = None,
 ) -> tuple[WorkHandler, ...]:
-    """Handlers de production des work items (S3 : ``extract_version`` sur la
-    file ``knowledge_base.ingestion``). Appelé dans chaque processus enfant, sur
-    sa fabrique de sessions ; ne se connecte à rien."""
+    """Handlers de production des work items, tous sur la file
+    ``knowledge_base.ingestion`` : ``extract_version`` (S3), ``index_version``
+    et ``sync_visibility`` (S4). Appelé dans chaque processus enfant, sur sa
+    fabrique de sessions et son client Qdrant ; ne se connecte à rien.
+
+    Un seul modèle d'embeddings par processus, chargé à sa première tâche
+    (jamais dans le processus maître) : l'extraction compte les tokens avec son
+    tokenizer, l'indexation encode avec lui."""
     settings = settings or KnowledgeBaseSettings()
-    return (build_extract_version_handler(session_factory, settings),)
+    embedder = SentenceTransformersEmbedder.lazy(
+        MULTILINGUAL_E5_BASE, cache_dir=settings.models_cache_dir
+    )
+    vector_index = QdrantVectorIndex(qdrant_client)
+    return (
+        build_extract_version_handler(
+            session_factory,
+            settings,
+            token_counter=embedder.token_counter,
+            policy=DEFAULT_CHUNKING_POLICY,
+        ),
+        build_index_version_handler(
+            session_factory,
+            settings,
+            embedder=embedder,
+            vector_index=vector_index,
+            batch_size=settings.embedding_batch_size,
+        ),
+        build_sync_visibility_handler(session_factory, vector_index=vector_index),
+    )
+
+
+async def provision_search_index(
+    session_factory: async_sessionmaker[AsyncSession],
+    qdrant_client: AsyncQdrantClient,
+) -> UUID:
+    """Crée et active l'index initial (profil ``multilingual-e5-base``,
+    politique de production) s'il n'existe pas ; idempotent. Rend l'index
+    actif. Appelé au démarrage de la stack, avant l'API et les workers."""
+    handler = build_provision_search_index_handler(
+        session_factory, QdrantVectorIndex(qdrant_client)
+    )
+    return await handler.handle(
+        ProvisionSearchIndex(
+            profile=MULTILINGUAL_E5_BASE, chunking_policy=DEFAULT_CHUNKING_POLICY
+        )
+    )
 
 
 def register_worker(

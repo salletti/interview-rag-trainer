@@ -26,7 +26,7 @@ review prêt.
 | S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | **Terminée** | voir journal | Ruff, mypy (86 fichiers), 233 unit./archi., 8/8 mutations détectées |
 | S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | **Terminée** | voir journal | Ruff, mypy (125 fichiers), 309 unit./archi., 162 intégration, import réel sur la stack de dev (202 puis 200) |
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | **Terminée** | voir journal | Ruff, mypy (180 fichiers), 529 unit./archi., 192 intégration, extraction réelle sur la stack de dev (3 unités QA, 3 chunks) |
-| S4 | Embeddings, Qdrant, index initial, publication | S3 | À faire | | |
+| S4 | Embeddings, Qdrant, index initial, publication | S3 | **Terminée** | voir journal | Ruff, mypy (252 fichiers), 759 unit./archi., 273 intégration (18 `model`), 3/3 mutations, import réel jusqu'à PUBLISHED (3 points visibles) |
 | S5 | Recherche sémantique, provenance, évaluation | S4 | À faire | | |
 | S6 | PDF et DOCX avec Docling | S3, S5 | À faire | | |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | À faire | | |
@@ -54,6 +54,12 @@ périmètre.
   → revalidation : 130 unitaires/architecture, 109 intégration, Compose 9 services.
 - 2026-11-18 — S1 terminée : domaine pur (I1–I6), 96 tests, 8 mutations
   détectées ; relecture directe (lot court) au lieu d'un agent de revue.
+- 2026-11-18 — S2 et S3 terminées (voir « Corrections en attente », revues faites
+  et corrigées dans `1e14342`).
+- 2026-11-18 — S4 terminée : tests rouges → implémentation (expert-python) →
+  revalidation par l'orchestrateur : Ruff, mypy 252 fichiers, 759 unitaires,
+  273 intégration. Mesures : image `production` 152 → 479 Mo (contenu),
+  RSS worker ~1 Gio, 91 ms/chunk en conteneur. Revue S4 à suivre.
 
 ## Écarts et décisions en cours de route
 
@@ -71,6 +77,11 @@ périmètre.
 - S3 — `RecordExtraction` définit ses propres ports (`DocumentReader`, `ExtractionTransaction`, désormais dans `domain/providers/`) au lieu d'étendre `UnitOfWork`.
 - S3 — en-tête contextuel redondant (titre du document répété dans le chemin) : à mesurer en S5.
 - S3 — blob manquant = `BLOB_MISSING` terminal.
+- S4 — provisionnement initial par une commande dédiée (`python -m runtime.provision`, service Compose `kb_provision`) plutôt qu'au démarrage du worker.
+- S4 — `sync_visibility` ne supprime que les points des versions SUPERSEDED/DISCARDED (précision S4 au §11).
+- S4 — `HF_HUB_DISABLE_XET=1` : le téléchargement xet du Hub est resté bloqué à 0 octet (hôte et conteneur).
+- S4 — la FK simple `unit_id` de S3 est conservée à côté de la FK composite.
+- S4 — import de N+1 n'annule pas encore les indexations de N (S7) ; pas de backfill de l'identité `approx-xlmr-v1` (S9).
 
 ## Corrections en attente
 

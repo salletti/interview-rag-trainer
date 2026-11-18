@@ -24,22 +24,21 @@ dernière tentative, la version passe ``FAILED`` avec ``retryable`` vrai.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import TYPE_CHECKING, ClassVar, Final, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Final
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from knowledge_base.adapters.controller.tasks.lease import keeping_lease
 from knowledge_base.adapters.controller.tasks.retry_policy import TerminalWorkError
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
 )
-from knowledge_base.adapters.gateway.embedding.approximate_token_counter import (
-    ApproximateTokenCounter,
+from knowledge_base.adapters.gateway.embedding.sentence_transformers_embedder import (
+    SentenceTransformersEmbedder,
 )
 from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
     DoclingMarkdownParser,
@@ -67,6 +66,7 @@ from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.work_queue import FailureInfo
 from knowledge_base.domain.services.chunk_planner import ChunkBudgetError
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
+from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
@@ -96,7 +96,6 @@ CHUNKING_FAILED: Final = "CHUNKING_FAILED"
 NOT_RETRYABLE_CODES: Final = PARSE_ERROR_CODES | {CHUNKING_FAILED}
 
 TransactionFactory = Callable[[AsyncSession], ExtractionTransaction]
-T = TypeVar("T")
 
 
 class ExtractVersionWorkHandler:
@@ -120,7 +119,9 @@ class ExtractVersionWorkHandler:
     async def execute(self, item: ClaimedWorkItem, ctx: WorkContext) -> None:
         command = _command(item.payload)
         try:
-            prepared = await self._keeping_lease(ctx, self._use_case.prepare(command))
+            prepared = await keeping_lease(
+                ctx, self._use_case.prepare(command), self._heartbeat_interval
+            )
         except DocumentParseError as error:
             raise TerminalWorkError(
                 error.code.value, error.message or str(error)
@@ -169,30 +170,6 @@ class ExtractVersionWorkHandler:
                 prepared.policy_version,
             )
 
-    async def _keeping_lease(self, ctx: WorkContext, work: Awaitable[T]) -> T:
-        """Attend ``work`` en prolongeant le lease. Un heartbeat refusé
-        (``StaleAttempt``) est relevé dès la fin du travail, qui ne peut être
-        interrompu (thread) : la tentative s'arrête sans finaliser."""
-        if self._heartbeat_interval is None:
-            return await work
-        interval = self._heartbeat_interval.total_seconds()
-
-        async def beat() -> None:
-            while True:
-                await asyncio.sleep(interval)
-                await ctx.heartbeat()
-
-        beating = asyncio.create_task(beat())
-        try:
-            result = await work
-        finally:
-            beating.cancel()
-            # Relève le StaleAttempt d'un heartbeat refusé pendant le travail ;
-            # l'annulation ci-dessus, elle, est attendue.
-            with contextlib.suppress(asyncio.CancelledError):
-                await beating
-        return result
-
 
 def _command(payload: Mapping[str, str]) -> RecordExtraction:
     try:
@@ -215,14 +192,19 @@ def build_extract_version_handler(
     policy: ChunkingPolicy | None = None,
 ) -> ExtractVersionWorkHandler:
     """Composition de production ; chaque défaut est remplaçable (tests). Ne
-    se connecte à rien et n'importe pas Docling (chargé à la première
-    conversion)."""
+    se connecte à rien et n'importe ni Docling (chargé à la première
+    conversion) ni le modèle d'embeddings : le compteur par défaut est le
+    tokenizer du profil initial, chargé au premier comptage. Le worker passe
+    celui de son ``Embedder`` (un seul modèle par processus)."""
     blobs = FileSystemBlobStore(settings.blob_root)
     use_case = RecordExtractionHandler(
         unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory),
         blob_reader=blobs,
         parser=parser or default_parser(),
-        token_counter=token_counter or ApproximateTokenCounter(),
+        token_counter=token_counter
+        or SentenceTransformersEmbedder.lazy(
+            MULTILINGUAL_E5_BASE, cache_dir=settings.models_cache_dir
+        ).token_counter,
         policy=policy or DEFAULT_CHUNKING_POLICY,
     )
     return ExtractVersionWorkHandler(

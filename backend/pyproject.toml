@@ -15,6 +15,8 @@ dependencies = [
     "qdrant-client>=1.20,<2",
     "python-multipart>=0.0.34",
     "docling-slim[format-markdown]==2.150.1",
+    "torch>=2.15,<3",
+    "sentence-transformers>=6.3,<7",
 ]
 
 [dependency-groups]
@@ -25,6 +27,17 @@ dev = [
     "ruff>=0.17",
     "mypy>=2.4",
 ]
+
+# torch vient de l'index CPU de PyTorch (ADR 0008, point 6) : la roue PyPI
+# Linux tire les bibliothèques CUDA (nvidia-*), inutiles sans GPU.
+# ``explicit`` : cet index ne sert qu'aux paquets qui le désignent.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 [build-system]
 requires = ["hatchling"]
@@ -103,4 +116,5 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra -m 'not integration' --import-mode=importlib"
 markers = [
     "integration: nécessite les services de compose.test.yaml (PostgreSQL, Qdrant, RabbitMQ)",
+    "model: charge le vrai modèle d'embeddings (multilingual-e5-base, cache SENTENCE_TRANSFORMERS_HOME)",
 ]
