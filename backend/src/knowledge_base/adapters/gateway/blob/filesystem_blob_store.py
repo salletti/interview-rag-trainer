@@ -12,6 +12,21 @@ n'attend jamais le disque.
 Suppression et inventaire (S7) : seul cet adapter supprime un fichier (test
 d'architecture ``test_withdrawal_purge_structure``) ; l'inventaire ne voit que
 les chemins adressés par contenu, jamais ``tmp/``.
+
+Suppression d'un orphelin (revue S7) : ``put`` remplace un fichier existant
+par ``os.replace`` (nouvel inode, date fraîche). Un ``unlink`` sans condition
+entre l'inventaire et la suppression effacerait le dépôt d'un import du même
+contenu qui vient de commiter : version sans blob, ``BLOB_MISSING`` terminal,
+et contenu jamais réimportable (``UNIQUE(content_hash)``). Le fichier est donc
+d'abord renommé, atomiquement, vers ``quarantine/<empreinte>-<uuid>`` (même
+volume) : un ``put`` ultérieur publie un nouveau fichier au chemin, sans
+conflit. Il n'est supprimé que si son inode et sa date (ns) sont ceux de
+l'inventaire et que l'appelant confirme, fichier retiré, qu'aucun document ne
+le porte ; sinon il revient à son chemin (octets identiques à ceux d'un dépôt
+concurrent : écraser l'un par l'autre est sans danger). Pas sous ``tmp/`` :
+le renommage garde la date de l'orphelin, plus vieille que le délai de grâce,
+et le nettoyage des temporaires (S8) pourrait l'effacer pendant la relecture
+des détenteurs, rendant la remise en place impossible.
 """
 
 from __future__ import annotations
@@ -21,12 +36,14 @@ import hashlib
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterable
+import uuid
+from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
+from knowledge_base.domain.providers.document_blob_inventory import BlobRevision
 from knowledge_base.domain.providers.document_blob_reader import BlobMissingError
 from knowledge_base.domain.providers.document_blob_store import (
     BlobTooLargeError,
@@ -39,11 +56,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class StoredBlobFile:
-    """Élément de l'inventaire : empreinte et date de modification (UTC) du
-    fichier, qui date le dépôt."""
+    """Élément de l'inventaire : empreinte, date de modification (UTC) du
+    fichier, qui date le dépôt, et révision (inode, date en ns) qui
+    conditionne sa suppression."""
 
     content_hash: ContentHash
     modified_at: datetime
+    revision: BlobRevision
 
 
 class FileSystemBlobStore:
@@ -56,6 +75,7 @@ class FileSystemBlobStore:
         # Les temporaires orphelins (crash pendant un upload) restent
         # repérables ici pour la réconciliation (S8).
         self._staging = root / "tmp"
+        self._quarantine_dir = root / "quarantine"
 
     def _path_of(self, content_hash: ContentHash) -> Path:
         digest = content_hash.value
@@ -91,8 +111,59 @@ class FileSystemBlobStore:
     async def delete(self, content_hash: ContentHash) -> bool:
         return await asyncio.to_thread(self._delete, self._path_of(content_hash))
 
+    async def delete_if_unchanged(
+        self,
+        content_hash: ContentHash,
+        observed: BlobRevision,
+        *,
+        still_unreferenced: Callable[[], Awaitable[bool]],
+    ) -> bool:
+        target = self._path_of(content_hash)
+        quarantined = await asyncio.to_thread(
+            self._quarantine, target, content_hash, observed
+        )
+        if quarantined is None:
+            return False
+        try:
+            unreferenced = await still_unreferenced()
+        except BaseException:
+            # Synchrone, comme le nettoyage de ``put`` : un nouvel await
+            # pourrait être annulé à son tour et laisser le fichier hors de
+            # son chemin.
+            _restore(quarantined, target)
+            raise
+        if not unreferenced:
+            await asyncio.to_thread(_restore, quarantined, target)
+            logger.info(
+                "original %s conservé : référencé pendant sa suppression",
+                content_hash.value,
+            )
+            return False
+        await asyncio.to_thread(quarantined.unlink)
+        return True
+
     async def list_blobs(self) -> list[StoredBlobFile]:
         return await asyncio.to_thread(self._list_blobs)
+
+    def _quarantine(
+        self, target: Path, content_hash: ContentHash, observed: BlobRevision
+    ) -> Path | None:
+        """Chemin de quarantaine du fichier, ou ``None`` s'il était absent ou
+        a changé depuis l'inventaire (il est alors déjà remis en place)."""
+        self._quarantine_dir.mkdir(parents=True, exist_ok=True)
+        quarantined = self._quarantine_dir / f"{content_hash.value}-{uuid.uuid4().hex}"
+        try:
+            os.rename(target, quarantined)
+        except FileNotFoundError:
+            return None
+        if _revision(quarantined.stat()) != observed:
+            _restore(quarantined, target)
+            logger.info(
+                "original %s conservé : redéposé depuis l'inventaire",
+                content_hash.value,
+            )
+            return None
+        return quarantined
 
     @staticmethod
     def _delete(path: Path) -> bool:
@@ -111,7 +182,7 @@ class FileSystemBlobStore:
                 continue
             try:
                 content_hash = ContentHash(path.name)
-                modified = path.stat().st_mtime
+                status = path.stat()
             except ValueError:
                 logger.warning("fichier inattendu dans le volume des blobs : %s", path)
                 continue
@@ -123,7 +194,8 @@ class FileSystemBlobStore:
             found.append(
                 StoredBlobFile(
                     content_hash=content_hash,
-                    modified_at=datetime.fromtimestamp(modified, UTC),
+                    modified_at=datetime.fromtimestamp(status.st_mtime, UTC),
+                    revision=_revision(status),
                 )
             )
         return found
@@ -162,6 +234,15 @@ async def _copy(
 def _flush_to_disk(staged: IO[bytes]) -> None:
     staged.flush()
     os.fsync(staged.fileno())
+
+
+def _revision(status: os.stat_result) -> BlobRevision:
+    return BlobRevision(inode=status.st_ino, modified_ns=status.st_mtime_ns)
+
+
+def _restore(quarantined: Path, target: Path) -> None:
+    os.replace(quarantined, target)
+    _fsync_directory(target.parent)
 
 
 def _fsync_directory(directory: Path) -> None:

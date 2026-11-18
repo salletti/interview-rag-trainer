@@ -8,31 +8,38 @@ API figée (``knowledge_base.use_cases.purge_document``) :
   blob_eraser, blob_references, clock)``, coupé en deux comme
   ``CompleteIndexation`` (la finalisation tourne sous fencing) :
 
+  Ordre du point 6 de l'ADR 0012 : points, puis chunks, puis blobs (revue
+  S7 ; S7 supprimait les blobs avant les chunks).
+
   ``await prepare(command) -> PreparedPurge | None``, hors transaction :
   lit le document et les index vivants (``documents.get``,
   ``corpus.get_shared().live_indexes()``, transaction FERMÉE avant tout appel
   externe) ; ``None``, sans AUCUN effet, si le document est inconnu ou n'est PAS
-  ``WITHDRAWN`` (une purge ne détruit jamais un document actif) ; sinon, dans
-  l'ordre : (1) ``vector_index.delete_points(index_id, PointSelector(document_id))``
-  dans chaque index vivant ; (2) pour l'empreinte de chaque version, suppression
-  du blob (``blob_eraser.delete``) SAUF si ``blob_references.holders(hash)``
-  contient un autre document que celui-ci (``holders`` : documents qui portent
-  l'empreinte et dont la purge n'est pas enregistrée ; le document purgé lui-même
-  y figure donc jusqu'à son ``apply`` et ne se protège pas lui-même).
-  Les lignes de version (tombstones) portent encore l'empreinte mais ne
-  retiennent jamais leur propre blob. Une erreur
-  de Qdrant ou du volume remonte (l'item sera rejoué) et interrompt les étapes
-  suivantes. N'écrit RIEN dans PostgreSQL.
+  ``WITHDRAWN`` (une purge ne détruit jamais un document actif) ; sinon
+  ``vector_index.delete_points(index_id, PointSelector(document_id))`` dans
+  chaque index vivant, et RIEN d'autre (ni blob, ni PostgreSQL). Une erreur de
+  Qdrant remonte (l'item sera rejoué).
 
   ``await apply(transaction, prepared) -> None``, dans la transaction de
   finalisation : ``transaction.purger.delete_derived_data(document_id,
   purged_at=clock())``. Les lignes document et versions restent (tombstones).
+
+  ``await erase_unheld_blobs(prepared) -> None``, APRÈS le commit de
+  ``apply`` : pour l'empreinte de chaque version, ``blob_eraser.delete`` SAUF si
+  ``blob_references.holders(hash)`` n'est pas vide (``holders`` : documents qui
+  portent l'empreinte et dont la purge n'est pas enregistrée ; ``purged_at``
+  étant posée, le document purgé n'y figure plus). Au mieux : une erreur du
+  volume ou de PostgreSQL est journalisée, jamais remontée, et n'empêche pas
+  les autres empreintes ; le fichier restant est un orphelin ordinaire pour
+  ``CleanBlobOrphans``.
 
 Idempotente : rejouée, la purge converge vers le même état sans erreur.
 """
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -40,6 +47,13 @@ import pytest
 from knowledge_base.domain.entities.knowledge_document import (
     DocumentStatus,
     VersionStatus,
+)
+from knowledge_base.domain.value_objects.content_hash import ContentHash
+from knowledge_base.use_cases.clean_blob_orphans.clean_blob_orphans_command import (
+    CleanBlobOrphans,
+)
+from knowledge_base.use_cases.clean_blob_orphans.clean_blob_orphans_handler import (
+    CleanBlobOrphansHandler,
 )
 from knowledge_base.use_cases.purge_document.purge_document_command import (
     PurgeDocument,
@@ -303,3 +317,63 @@ async def test_no_external_call_is_made_while_a_transaction_is_open() -> None:
     await rig.run_purge(mine)
 
     assert rig.base.violations == []
+
+
+# --- ordre du point 6 de l'ADR 0012 (revue S7) --------------------------------------
+
+
+async def test_the_blobs_go_only_after_the_points_and_the_committed_chunks() -> None:
+    rig = make_s7_rig()
+    mine, _other, index_id = await two_documents(rig)
+    hashes = {v.source.content_hash.value for v in rig.base.document(mine).versions}
+    rig.mark_withdrawn(mine)
+    use_case = rig.purge_handler()
+
+    prepared = await use_case.prepare(PurgeDocument(document_id=mine))
+    assert prepared is not None
+    assert rig.points_of_document(mine, index_id) == []
+    assert hashes <= rig.blobs.present  # points seulement
+    async with rig.purge_unit_of_work() as uow:
+        await use_case.apply(uow, prepared)
+        await uow.commit()
+    assert rig.ledger.purged_at == {mine: PURGED_AT}
+    assert hashes <= rig.blobs.present  # chunks, puis blobs
+
+    await use_case.erase_unheld_blobs(prepared)
+
+    assert rig.blobs.present & hashes == set()
+
+
+async def test_a_blob_left_after_the_commit_is_logged_and_cleaned_as_an_orphan(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_s7_rig()
+    mine, _other, _index_id = await two_documents(rig)
+    stuck, freed = (v.source.content_hash for v in rig.base.document(mine).versions)
+    rig.mark_withdrawn(mine)
+    delete = rig.blobs.delete
+
+    async def flaky(content_hash: ContentHash) -> bool:
+        if content_hash == stuck:
+            raise PermissionError("volume en lecture seule")
+        return await delete(content_hash)
+
+    monkeypatch.setattr(rig.blobs, "delete", flaky)
+
+    with caplog.at_level(logging.WARNING):
+        assert await rig.run_purge(mine) is True  # rien ne remonte
+
+    assert rig.ledger.purged_at == {mine: PURGED_AT}
+    assert freed.value not in rig.blobs.present
+    assert stuck.value in rig.blobs.present
+    assert stuck.value in caplog.text
+    assert "PermissionError" in caplog.text
+    # Le filet : plus aucun document non purgé ne le porte.
+    assert await rig.references.holders(stuck) == frozenset()
+    await CleanBlobOrphansHandler(
+        inventory=rig.blobs,
+        references=rig.references,
+        eraser=rig.blobs,
+        clock=lambda: PURGED_AT + timedelta(days=2),
+    ).handle(CleanBlobOrphans(grace=timedelta(hours=24)))
+    assert stuck.value not in rig.blobs.present

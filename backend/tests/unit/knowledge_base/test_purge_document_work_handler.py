@@ -12,8 +12,12 @@ même forme que ``index_version_handler`` et ``sync_visibility_handler`` :
   transaction (sous ``keeping_lease`` : un heartbeat refusé l'interrompt avant
   l'effet suivant) ; puis UN SEUL ``ctx.finalize`` dont le callback fait
   ``use_case.apply`` (rien à écrire si ``prepare`` rend ``None``, mais l'item
-  doit se terminer). Une erreur de ``prepare`` (Qdrant, volume) remonte telle
-  quelle : transitoire pour S0, jamais de finalisation, jamais ``SUCCEEDED``.
+  doit se terminer) ; puis, seulement si ``finalize`` a commité,
+  ``use_case.erase_unheld_blobs`` (revue S7 : ordre du point 6 de l'ADR 0012,
+  les blobs après les chunks) ; une tentative périmée (``StaleAttempt`` levée
+  par ``finalize``) ne supprime aucun blob. Une erreur de ``prepare`` (Qdrant)
+  remonte telle quelle : transitoire pour S0, jamais de finalisation, jamais
+  ``SUCCEEDED`` ; une erreur du volume après le commit ne remonte pas.
   Payload illisible : ``TerminalWorkError("INVALID_PAYLOAD")``.
 - ``build_purge_document_handler(session_factory, settings, *, vector_index)``
   composition de production (volume ``settings.blob_root``) ; ne se connecte à
@@ -40,7 +44,10 @@ from knowledge_base.adapters.controller.tasks.purge_document_handler import (
     PurgeDocumentWorkHandler,
 )
 from knowledge_base.adapters.controller.tasks.registry import HandlerRegistry
-from knowledge_base.adapters.controller.tasks.retry_policy import TerminalWorkError
+from knowledge_base.adapters.controller.tasks.retry_policy import (
+    StaleAttempt,
+    TerminalWorkError,
+)
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
     ClaimedWorkItem,
 )
@@ -59,18 +66,23 @@ class FakeContext:
     """Rejoue ``WorkContext.finalize`` : callback dans une transaction que l'on
     valide, une seule fois, sur succès du callback."""
 
-    def __init__(self, rig: S7Rig) -> None:
+    def __init__(self, rig: S7Rig, *, stale: bool = False) -> None:
         self._rig = rig
+        self._stale = stale
         self.current: PurgeUnitOfWork | None = None
         self.finalize_calls = 0
 
     async def finalize(
         self, callback: Callable[[AsyncSession], Awaitable[None]]
     ) -> None:
+        """``stale`` : le token n'est plus courant, la transaction est annulée
+        (pas de commit) et ``StaleAttempt`` levée, comme ``WorkContext``."""
         self.finalize_calls += 1
         async with self._rig.purge_unit_of_work() as uow:
             self.current = uow
             await callback(SESSION)
+            if self._stale:
+                raise StaleAttempt("finalisation refusée")
             await uow.commit()
 
 
@@ -150,6 +162,62 @@ async def test_execute_purges_then_finalizes_exactly_once() -> None:
     assert rig.points_of_document(document_id, index_id) == []
     assert rig.ledger.purged_at == {document_id: PURGED_AT}
     assert rig.versions_with_chunks() == set()
+
+
+async def test_execute_erases_the_blobs_only_after_the_commit() -> None:
+    rig = make_s7_rig()
+    item, document_id, _index_id = await withdrawn_and_indexed(rig)
+    (digest,) = (
+        v.source.content_hash.value for v in rig.base.document(document_id).versions
+    )
+    seen_at_commit: list[bool] = []
+
+    class WatchingContext(FakeContext):
+        async def finalize(
+            self, callback: Callable[[AsyncSession], Awaitable[None]]
+        ) -> None:
+            await super().finalize(callback)
+            seen_at_commit.append(digest in rig.blobs.present)
+
+    ctx = WatchingContext(rig)
+
+    await purge_handler(rig, ctx).execute(item, as_context(ctx))
+
+    assert seen_at_commit == [True]
+    assert digest not in rig.blobs.present
+
+
+async def test_a_stale_attempt_erases_no_blob() -> None:
+    rig = make_s7_rig()
+    ctx = FakeContext(rig, stale=True)
+    item, _document_id, _index_id = await withdrawn_and_indexed(rig)
+    blobs = set(rig.blobs.present)
+
+    with pytest.raises(StaleAttempt):
+        await purge_handler(rig, ctx).execute(item, as_context(ctx))
+
+    assert rig.blobs.present == blobs
+    assert rig.blobs.delete_calls == []
+    assert rig.ledger.purged_at == {}
+    assert rig.versions_with_chunks()  # rollback
+
+
+async def test_a_volume_failure_after_the_commit_does_not_fail_the_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = make_s7_rig()
+    ctx = FakeContext(rig)
+    item, document_id, _index_id = await withdrawn_and_indexed(rig)
+
+    async def read_only(*_args: object, **_kwargs: object) -> bool:
+        raise PermissionError("volume en lecture seule")
+
+    monkeypatch.setattr(rig.blobs, "delete", read_only)
+
+    await purge_handler(rig, ctx).execute(item, as_context(ctx))
+
+    assert ctx.finalize_calls == 1
+    assert rig.ledger.purged_at == {document_id: PURGED_AT}
 
 
 async def test_execute_finalizes_even_when_there_is_nothing_to_purge() -> None:

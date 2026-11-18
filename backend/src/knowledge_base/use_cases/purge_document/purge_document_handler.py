@@ -1,29 +1,24 @@
 """``PurgeDocument`` : suppression physique des données d'un document retiré
 (knowledge-base.md §6 ligne ``purge_document``, §7.3, §10 ; ADR 0012 point 6).
 
-Coupé en deux pour la work queue (S0 §5), comme ``CompleteIndexation`` :
+Ordre du point 6 de l'ADR 0012 : points, puis chunks, puis blobs. Trois
+étapes, autour de la transaction de finalisation du work item (S0 §5) :
 
 - ``prepare``, hors transaction (lecture brève, fermée avant tout effet
   externe) : rien si le document est inconnu ou n'est pas ``WITHDRAWN`` (une
-  purge ne détruit jamais un document actif) ; sinon, dans cet ordre,
-  1. les points du document dans chaque index vivant (``ACTIVE``,
-     ``BUILDING``) ; ceux d'un index ``RETIRED`` partent avec sa collection
-     (S9) ;
-  2. le blob de chaque version, sauf s'il est encore porté par un autre
-     document non purgé : les versions du document purgé (tombstones) ne
-     retiennent jamais leur propre blob.
-  Une panne interrompt les étapes suivantes et remonte : l'item est rejoué,
-  chaque étape étant répétable (suppression par filtre, fichier absent = rien
-  à faire). Les points d'abord : tant qu'ils existent, rien d'autre ne
-  disparaît.
+  purge ne détruit jamais un document actif) ; sinon les points du document
+  dans chaque index vivant (``ACTIVE``, ``BUILDING``) ; ceux d'un index
+  ``RETIRED`` partent avec sa collection (S9). Une panne remonte : l'item est
+  rejoué (suppression par filtre, répétable) et rien d'autre ne disparaît.
 - ``apply``, dans la transaction de finalisation (sous fencing) : chunks et
   unités supprimés, date de purge enregistrée. Les lignes document et
   versions restent (tombstones : citations figées des consommateurs).
-
-Écart d'ordre avec §6 et §10 (points, chunks, puis blobs) : les chunks ne
-sont supprimés qu'à la finalisation, après les blobs, pour que leur
-suppression et ``purged_at`` soient protégés par le fencing (précision S7 de
-§10).
+- ``erase_unheld_blobs``, après le commit de cette transaction : le blob de
+  chaque version, sauf s'il est encore porté par un document non purgé. Au
+  mieux : un échec est journalisé, jamais remonté (l'item est déjà
+  ``SUCCEEDED``) ; ``purged_at`` étant posée, ``BlobReferences.holders`` ne
+  compte plus ce document et ``CleanBlobOrphans`` reprend le fichier après le
+  délai de grâce.
 """
 
 from __future__ import annotations
@@ -54,9 +49,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PreparedPurge:
-    """Effets externes faits : il reste la finalisation SQL."""
+    """Points supprimés : il reste la finalisation SQL, puis les blobs."""
 
     document_id: UUID
+    content_hashes: tuple[ContentHash, ...]
 
 
 class PurgeDocumentHandler:
@@ -92,32 +88,11 @@ class PurgeDocumentHandler:
             await self._vector_index.delete_points(
                 index.index_id, PointSelector(document.document_id)
             )
-        deleted = 0
-        for content_hash in _content_hashes(document):
-            if await self._erase_unless_held_elsewhere(document, content_hash):
-                deleted += 1
-        logger.info(
-            "purge du document %s : points supprimés, %d original(aux) supprimé(s)",
-            document.document_id,
-            deleted,
+        logger.info("purge du document %s : points supprimés", document.document_id)
+        return PreparedPurge(
+            document_id=document.document_id,
+            content_hashes=_content_hashes(document),
         )
-        return PreparedPurge(document_id=document.document_id)
-
-    async def _erase_unless_held_elsewhere(
-        self, document: KnowledgeDocument, content_hash: ContentHash
-    ) -> bool:
-        """Vrai si un fichier a été supprimé."""
-        others = await self._blob_references.holders(content_hash) - {
-            document.document_id
-        }
-        if others:
-            logger.info(
-                "original %s conservé : encore porté par %d autre(s) document(s)",
-                content_hash.value,
-                len(others),
-            )
-            return False
-        return await self._blob_eraser.delete(content_hash)
 
     # --- transaction de finalisation ----------------------------------------------
 
@@ -128,6 +103,53 @@ class PurgeDocumentHandler:
         await transaction.purger.delete_derived_data(
             prepared.document_id, purged_at=self._clock()
         )
+
+    # --- après le commit de la finalisation -----------------------------------------
+
+    async def erase_unheld_blobs(self, prepared: PreparedPurge) -> None:
+        """À n'appeler qu'une fois ``apply`` commité. Ne lève jamais."""
+        deleted = 0
+        for content_hash in prepared.content_hashes:
+            try:
+                if await self._erase_unless_held(content_hash):
+                    deleted += 1
+            except Exception:
+                # Large à dessein : volume ou PostgreSQL, l'item est déjà
+                # SUCCEEDED et ne serait pas rejoué ; le fichier, que plus
+                # aucun document non purgé ne porte, est un orphelin
+                # ordinaire pour CleanBlobOrphans.
+                logger.warning(
+                    "purge du document %s : original %s non supprimé, laissé "
+                    "au nettoyage des orphelins",
+                    prepared.document_id,
+                    content_hash.value,
+                    exc_info=True,
+                )
+        logger.info(
+            "purge du document %s : %d original(aux) supprimé(s)",
+            prepared.document_id,
+            deleted,
+        )
+
+    async def _erase_unless_held(self, content_hash: ContentHash) -> bool:
+        """Vrai si un fichier a été supprimé.
+
+        Défense en profondeur : inatteignable tant que ``UNIQUE(content_hash)``
+        est global (O2), aucun autre document ne pouvant porter l'empreinte ;
+        le contrôle tient si la contrainte était levée. Après le commit,
+        ``purged_at`` est posée : le document purgé ne se retient pas
+        lui-même. Pour la même raison (O2), la suppression est sans
+        condition : un import du même contenu est refusé (le tombstone garde
+        l'empreinte) et son dépôt n'est référencé par aucune version."""
+        holders = await self._blob_references.holders(content_hash)
+        if holders:
+            logger.info(
+                "original %s conservé : encore porté par %d document(s)",
+                content_hash.value,
+                len(holders),
+            )
+            return False
+        return await self._blob_eraser.delete(content_hash)
 
 
 def _content_hashes(document: KnowledgeDocument) -> tuple[ContentHash, ...]:

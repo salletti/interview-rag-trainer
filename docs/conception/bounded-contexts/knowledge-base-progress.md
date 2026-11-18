@@ -183,3 +183,12 @@ Corrections appliquées (2026-11-18) — 1 217 unitaires, 364 intégration, 11 m
 - I3 — rendu des polices non testé dans l'image → test de fumée du parseur PDF dans le conteneur. **Fait.**
 - M1–M8 — `PARTIAL_SUCCESS` journalisé, erreurs Docling dans les messages, cohérence liste blanche / routage, factorisation, lignes de tableau, libellés, mesure RSS sur conversions successives. **Fait.**
 - Reporté à S8 : le pic RSS d'un enfant croît encore sur 5 conversions PDF successives (1 786 → 2 038 Mio, incréments décroissants ; RSS résiduelle stable ~1,4 Gio) → décider `max-tasks-per-child` ou mesure plus longue.
+
+Revue tech lead du commit S7 (`317c421`) : aucun bloquant, 3 importants, 4 mineurs.
+Corrections appliquées (2026-11-18) — 1 321 unitaires, 395 intégration, 8 mutations tuées :
+
+- I1 — course `CleanBlobOrphans` / import du même contenu : un fichier fraîchement réécrit pouvait être supprimé → `BLOB_MISSING` terminal et contenu définitivement non réimportable (`UNIQUE(content_hash)` global). Suppression conditionnelle (quarantaine, inode + mtime, relecture des références). **Fait.**
+- I2 — ordre de purge non conforme à l'ADR 0012 Accepted (point 6 : points → chunks → blobs) et Suivi contradictoire. Consigne appliquée : l'ADR prévaut → ordre rétabli (points, SQL, puis blobs au mieux). **Fait.**
+- I3 — clé `purge_document:<id>` non replanifiable (enqueue renvoie l'item terminé) : contrainte documentée pour S8. **Fait.**
+- M1–M4 — docstring de défense en profondeur, guide (409 au rejeu d'un `DELETE`), test unitaire discriminant du rejeu du retrait. **Fait.**
+- Écart accepté : quarantaine dans `KB_BLOB_ROOT/quarantine/` (et non `tmp/`, que le nettoyage S8 des temporaires viderait). Reprise des fichiers de quarantaine après un crash → S8.

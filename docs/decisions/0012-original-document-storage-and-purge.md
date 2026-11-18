@@ -212,15 +212,19 @@ et [README du contexte](../../backend/src/knowledge_base/README.md#s7--versions-
   transaction : document `WITHDRAWN`, travail en cours annulé, item
   `purge_document`. Les lignes document et versions restent (tombstones),
   conformément au point 6.
-- **Ordre de la purge** (arbitrage de l'orchestrateur) : points Qdrant des
-  index vivants, puis blobs non référencés, puis chunks, unités et
-  `documents.purged_at` dans la transaction de finalisation du work item
-  (fencing). Écart avec « points, puis chunks, puis blobs » du point 6 : les
-  chunks étant des écritures PostgreSQL, ils sont supprimés à la
-  finalisation, ce qui les protège par le fencing ; chaque étape est
-  rejouable, une panne de Qdrant ne supprime rien d'autre. L'ordre n'a pas
-  d'effet sur la visibilité : le document est écarté de toute recherche dès
-  le commit du retrait.
+- **Ordre de la purge** : celui du point 6, **points, puis chunks, puis
+  blobs** (rétabli par la revue S7 ; la première version de S7 supprimait
+  les blobs avant les chunks). Points Qdrant des index vivants hors
+  transaction ; puis chunks, unités et `documents.purged_at` dans la
+  transaction de finalisation du work item (fencing) ; puis, une fois cette
+  transaction commitée, blobs qu'aucun document non purgé ne porte. Cette
+  dernière étape est faite au mieux : un échec du volume est journalisé et
+  ne fait pas échouer l'item (déjà `SUCCEEDED`) ; `purged_at` étant posée, le
+  fichier n'est plus détenu et `CleanBlobOrphans` le supprime après le délai
+  de grâce. Une tentative périmée (fencing refusé) ne supprime aucun blob.
+  Une panne de Qdrant ne supprime rien d'autre (l'item est rejoué). L'ordre
+  n'a pas d'effet sur la visibilité : le document est écarté de toute
+  recherche dès le commit du retrait.
 - **« Plus référencé par aucune version »** s'entend : aucune version d'un
   document **non purgé** (`purged_at IS NULL`), quel que soit son état. Les
   tombstones d'un document purgé gardent l'empreinte (un réimport reste
@@ -232,12 +236,33 @@ et [README du contexte](../../backend/src/knowledge_base/README.md#s7--versions-
   temporaires de `tmp/` sont hors périmètre (S8). Cas couvert : un import
   refusé du contenu d'un document purgé redépose le fichier avant sa
   transaction ; ce fichier devient un orphelin ordinaire.
-- **Risque résiduel** (conséquence « l'inverse est impossible par
-  construction ») : un import du même contenu qu'un orphelin plus vieux que
-  le délai de grâce, qui commiterait entre la lecture des références et la
-  suppression du fichier, laisserait une version sans blob (fenêtre de
-  l'ordre de la milliseconde ; `BLOB_MISSING` à l'extraction). Non fermé en
-  S7 ; à reprendre avec la réconciliation (S8) si l'ordonnancement rend ce
-  cas plausible.
+- **Course orphelin / import du même contenu** (revue S7 ; conséquence
+  « l'inverse est impossible par construction ») : chaque import redépose le
+  fichier avant sa transaction (`put` remplace le fichier par `os.replace` :
+  nouvel inode, date fraîche). Une suppression sans condition entre la
+  lecture des références et l'`unlink` effaçait le dépôt d'un import du même
+  contenu qui venait de commiter : version sans blob, `BLOB_MISSING`
+  **terminal** à l'extraction, et contenu **jamais réimportable**
+  (`UNIQUE(content_hash)` global, la version en échec garde l'empreinte).
+  Fermé : `CleanBlobOrphans` passe par
+  `DocumentBlobEraser.delete_if_unchanged`. Le fichier est renommé
+  atomiquement vers `KB_BLOB_ROOT/quarantine/` (même volume) ; il revient à
+  son chemin si son inode ou sa date (ns) diffèrent de ceux de l'inventaire
+  (dépôt concurrent, octets identiques), ou si les détenteurs, relus une fois
+  le fichier retiré, ne sont plus vides ; sinon il est supprimé. Pas sous
+  `tmp/` : le renommage garde la date de l'orphelin, plus vieille que le délai
+  de grâce, et le nettoyage des temporaires de S8 pourrait l'effacer avant sa
+  remise en place. Vérifié par une barrière entre la lecture des détenteurs et
+  la suppression (`test_s7_blob_orphans`) : blob présent, extraction
+  réussie ; avec l'ancien code, le même test perd le fichier.
+  **Restent**, non mesurés : (a) une extraction qui lirait le blob d'un
+  import tout juste commité pendant qu'il est hors de son chemin, entre le
+  renommage et la remise en place (deux appels système, sans aller-retour
+  réseau) ; (b) un import dont le dépôt a plus que le délai de grâce et dont
+  la transaction ne commite qu'après la relecture des détenteurs (la borne
+  que le délai de grâce doit garantir, « Risques et compromis ») ; (c) un
+  crash entre la quarantaine et la remise en place, qui laisse le fichier
+  sous `quarantine/` : la réconciliation S8 doit le remettre à son chemin
+  s'il est détenu.
 - **Schéma** : migration `9e4b7d2a6c13`, `documents.purged_at timestamptz
   NULL` (ajout de colonne sans réécriture de table).

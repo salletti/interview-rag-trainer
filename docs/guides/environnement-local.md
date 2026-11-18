@@ -160,7 +160,9 @@ curl -s -X DELETE localhost:8010/api/v1/knowledge-base/documents/<document_id>
 # 202 {"document_id": "...", "status": "WITHDRAWN", "visibility_revision": 2}
 ```
 
-Le retrait est immédiat : toute recherche lancée après la réponse ignore le document (contrôle SQL), même si Qdrant porte encore ses points. Le worker d'ingestion exécute ensuite l'item `purge_document` (quelques secondes, intervalle du dispatch) : points Qdrant du document, puis originaux du volume `kb_blobs`, puis unités et chunks ; `knowledge_base.documents.purged_at` est alors renseigné. Le document et ses versions restent en base (tombstones) : un second `DELETE` répond 409 `DOCUMENT_WITHDRAWN`, une nouvelle version ou un réimport du même contenu aussi ; un identifiant inconnu donne 404 `DOCUMENT_NOT_FOUND`. Vérification :
+Le retrait est immédiat : toute recherche lancée après la réponse ignore le document (contrôle SQL), même si Qdrant porte encore ses points. Le worker d'ingestion exécute ensuite l'item `purge_document` (quelques secondes, intervalle du dispatch) : points Qdrant du document, puis unités et chunks avec `knowledge_base.documents.purged_at` (une transaction), puis originaux du volume `kb_blobs` (si leur suppression échoue, le worker journalise un avertissement et le nettoyage des orphelins les reprendra). Le document et ses versions restent en base (tombstones) : un second `DELETE` répond 409 `DOCUMENT_WITHDRAWN`, une nouvelle version ou un réimport du même contenu aussi ; un identifiant inconnu donne 404 `DOCUMENT_NOT_FOUND`.
+
+Un client qui **rejoue** un `DELETE` (délai dépassé, réponse perdue, nouvelle tentative automatique) doit traiter 409 `DOCUMENT_WITHDRAWN` comme un **succès** : le premier appel a abouti, le document est retiré et sa purge planifiée ; le rejeu, lui, ne change rien. Seul 409 `CONCURRENT_MODIFICATION` appelle une nouvelle tentative. Vérification :
 
 ```bash
 docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer -c \

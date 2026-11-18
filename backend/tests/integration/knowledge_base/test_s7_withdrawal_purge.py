@@ -11,7 +11,11 @@ Contrat vérifié :
 - ``purge_document`` : 0 point du document dans l'index, ses unités et chunks
   supprimés, ``documents.purged_at`` renseigné, blobs de ses versions supprimés
   (ceux des autres documents conservés) ; les lignes document et versions restent
-  (tombstones). Rejouable.
+  (tombstones). Rejouable. Ordre du point 6 de l'ADR 0012 (revue S7) : les
+  blobs après le commit des chunks ; une panne du volume à ce moment laisse
+  l'item ``SUCCEEDED`` et le fichier aux orphelins.
+- Replanifier la purge d'un document déjà purgé sous la même clé
+  ``purge_document:<id>`` ne crée aucun travail (comportement figé pour S8).
 - Une tentative zombie d'``index_version`` qui écrit APRÈS la purge laisse des
   points ``visible=false`` (jamais renvoyés) ; une nouvelle exécution de la
   purge (la réconciliation de S8 la planifiera) les supprime. Rien en S7 ne
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -35,6 +40,9 @@ import pytest
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
 )
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
+    SqlAlchemyUnitOfWork,
+)
 from knowledge_base.domain.exceptions.document_errors import DocumentWithdrawnError
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
     ImportDocumentVersion,
@@ -42,6 +50,7 @@ from knowledge_base.use_cases.import_document_version.import_document_version_co
 from knowledge_base.use_cases.import_document_version.import_document_version_handler import (  # noqa: E501
     ImportDocumentVersionHandler,
 )
+from knowledge_base.use_cases.indexing_steps import schedule_purge
 from runtime.database import SessionFactory
 from runtime.settings import Settings
 from tests.integration.knowledge_base.import_support import blob_path
@@ -51,6 +60,7 @@ from tests.integration.knowledge_base.indexing_support import (
     payload,
 )
 from tests.integration.knowledge_base.s7_support import (
+    GRACE,
     PYDANTIC_SHEET,
     TIMEOUT,
     Background,
@@ -60,6 +70,7 @@ from tests.integration.knowledge_base.s7_support import (
     InterferingHandler,
     S7Rig,
     UnreachableVectorIndex,
+    age,
     background_tasks,
     documents_of,
     open_s7_rig,
@@ -265,6 +276,71 @@ async def test_the_purge_deletes_the_blobs_of_the_document_and_keeps_the_others(
     assert not blob_path(rig.blob_root, QA_SHEET_V2).exists()
     assert blob_path(rig.blob_root, PYDANTIC_SHEET).is_file()
     assert rig.blob_root.exists()
+
+
+async def test_a_volume_failure_after_the_commit_leaves_the_blob_to_the_orphans(
+    rig: S7Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordre du point 6 de l'ADR 0012 : chunks et ``purged_at`` sont commités
+    AVANT la suppression des blobs ; un volume qui refuse la suppression ne
+    défait rien et ne fait pas échouer l'item, ``CleanBlobOrphans`` reprend le
+    fichier."""
+    mine = await rig.publish(QA_SHEET, title="Retirée")
+    await rig.withdraw(mine.document_id)
+    path = blob_path(rig.blob_root, QA_SHEET)
+
+    def read_only(_path: Path) -> bool:
+        raise PermissionError(f"volume en lecture seule : {_path}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileSystemBlobStore, "_delete", staticmethod(read_only))
+        outcome = await rig.run_purge(mine.document_id)
+
+    assert outcome == "succeeded"
+    assert path.is_file()
+    assert await rig.count_chunks(mine.document_id) == 0
+    assert await rig.count_units(mine.document_id) == 0
+    assert await rig.points_of(mine.document_id) == []
+    document = await rig.row(
+        "SELECT purged_at FROM knowledge_base.documents WHERE id = :d",
+        d=mine.document_id,
+    )
+    assert document["purged_at"] is not None
+    age(path, GRACE + timedelta(hours=1))
+
+    await rig.clean_orphans()
+
+    assert not path.exists()
+
+
+async def test_rescheduling_a_completed_purge_under_its_key_creates_no_work(
+    rig: S7Rig,
+) -> None:
+    """Fige le comportement actuel pour que S8 le change consciemment :
+    ``UNIQUE(dedup_key)`` sans condition et ``enqueue`` qui rend l'item
+    existant, même terminé. Replanifier une purge (points d'une tentative
+    zombie, S8) exige une clé distincte ou une réouverture explicite."""
+    mine = await rig.publish(QA_SHEET, title="Retirée")
+    await rig.withdraw(mine.document_id)
+    first = await rig.item_id(f"purge_document:{mine.document_id}")
+    assert await rig.run_purge(mine.document_id) == "succeeded"
+
+    async with SqlAlchemyUnitOfWork(rig.session_factory) as uow:
+        await schedule_purge(uow.work_queue, mine.document_id)
+        await uow.commit()
+
+    assert await rig.item_id(f"purge_document:{mine.document_id}") == first
+    purges = [
+        i for i in await rig.items(mine.document_id) if i["kind"] == "purge_document"
+    ]
+    assert purges == [
+        {
+            "kind": "purge_document",
+            "status": "SUCCEEDED",
+            "dedup_key": f"purge_document:{mine.document_id}",
+        }
+    ]
+    assert await rig.indexing.extraction.run(first, rig.purge_handler()) == "skipped"
 
 
 async def test_the_content_of_a_purged_document_cannot_be_reimported(

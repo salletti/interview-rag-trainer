@@ -235,7 +235,7 @@ flowchart LR
 
 ## S7 — Versions concurrentes, retrait et purge
 
-> **Statut : implémentée (2026-11-18)** — import de N+1 qui annule l'indexation de N, `DELETE /documents/{id}` (202, tombstone, purge planifiée), `purge_document` (points des index vivants → blobs non détenus → chunks, unités, `purged_at` sous fencing), `CleanBlobOrphans` (délai de grâce 24 h Proposed, sans ordonnancement), recherche tolérante aux hits supprimés pendant la requête ; décisions consignées dans [knowledge-base.md §10, précisions S7](knowledge-base.md#10-publication-retrait-et-purge).
+> **Statut : implémentée (2026-11-18)** — import de N+1 qui annule l'indexation de N, `DELETE /documents/{id}` (202, tombstone, purge planifiée), `purge_document` (points des index vivants → chunks, unités, `purged_at` sous fencing → blobs non détenus après le commit, ordre de l'ADR 0012 point 6 rétabli par la revue S7), `CleanBlobOrphans` (délai de grâce 24 h Proposed, sans ordonnancement ; suppression conditionnelle, sans course avec un import du même contenu, depuis la revue S7), recherche tolérante aux hits supprimés pendant la requête ; décisions consignées dans [knowledge-base.md §10, précisions S7](knowledge-base.md#10-publication-retrait-et-purge).
 
 - **Objectif :** garantir qu'aucune version obsolète ne devient visible et
   que le retrait est immédiat.
@@ -270,11 +270,21 @@ flowchart LR
   versions `EXTRACTED` sans aucune indexation, repérées par le code de journal
   `EXTRACTED_WITHOUT_INDEXATION` de `RecordExtraction` ; **ajouts S7 :**
   document `WITHDRAWN` qui a encore des points dans un index vivant (tentative
-  zombie d'`index_version` après la purge) → replanifier `purge_document` ;
-  ordonnancement périodique de `CleanBlobOrphans` (délai
-  `KB_BLOB_ORPHAN_GRACE_SECONDS`) ; temporaires de `tmp/` abandonnés ; item
-  `purge_document` `FAILED` (aucun hook métier) ; course résiduelle entre le
-  nettoyage d'un orphelin et un import du même contenu,
+  zombie d'`index_version` après la purge) → replanifier `purge_document`,
+  **sous une clé distincte** (suffixe de génération,
+  `purge_document:<document_id>:<n>`) ou par réouverture explicite de l'item :
+  la clé `purge_document:<document_id>` est `UNIQUE` sans condition et
+  `enqueue` rend l'item existant même terminé, un nouvel `enqueue` serait un
+  no-op silencieux (comportement figé par
+  `test_rescheduling_a_completed_purge_under_its_key_creates_no_work`, à
+  changer consciemment) ; ordonnancement périodique de `CleanBlobOrphans`
+  (délai `KB_BLOB_ORPHAN_GRACE_SECONDS`) ; temporaires de `tmp/` abandonnés ;
+  fichiers laissés sous `KB_BLOB_ROOT/quarantine/` par un crash pendant la
+  suppression conditionnelle d'un orphelin (à remettre à leur chemin s'ils
+  sont détenus, à supprimer sinon ; la course entre ce nettoyage et un import
+  du même contenu est fermée depuis la revue S7) ; blobs restés après une
+  purge dont la suppression post-commit a échoué (orphelins ordinaires) ; item
+  `purge_document` `FAILED` (aucun hook métier),
   [knowledge-base.md §10](knowledge-base.md#10-publication-retrait-et-purge)) ; `RetryIngestion`
   (réouverture d'un item `FAILED`) ; catalogue des codes d'erreur ; consultation
   des échecs (endpoint de lecture) ; décision O10 (DLQ).

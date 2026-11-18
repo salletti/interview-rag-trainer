@@ -319,13 +319,17 @@ récupération repose sur la table et le scheduler, jamais sur une redélivrance
 | `extract_version` | claim (lease, fencing) | lecture du blob, Docling → `StructuredDocument`, segmentation, chunking | fencing + version toujours `RECEIVED` → chunks + `EXTRACTED` + `Indexation PENDING` pour chaque index `ACTIVE`/`BUILDING` (lus sous `FOR SHARE` du corpus) | `index_version` par indexation |
 | `index_version` | claim | embeddings par lots, upserts Qdrant `visible=false`, vérification du manifest | fencing + `Indexation COMPLETED`, puis tentative de publication (§8) | `sync_visibility` si publiée |
 | `sync_visibility` | claim | convergence Qdrant vers l'état SQL du document (§11) | fencing + item `SUCCEEDED` | — |
-| `purge_document` | claim | suppression des points, puis des blobs non référencés | fencing + chunks supprimés, `purged_at` | — |
+| `purge_document` | claim | suppression des points | fencing + chunks supprimés, `purged_at` ; après le commit, au mieux : blobs non référencés | — |
 | `build_index` (S9) | claim | création de la collection, planification du backfill | fencing + `Indexation PENDING` pour le corpus éligible | `index_version`, éventuellement `extract_version` (rechunking) |
 
-*Précision S7 (2026-11-18) : `purge_document` (file d'ingestion, 5
-tentatives, dedup `purge_document:<document_id>`) est implémenté comme décrit
-dans la ligne `purge_document` ; les unités sont supprimées avec les chunks, à la
-finalisation. Voir l'écart d'ordre avec le tableau du §10 dans les précisions
+*Précision S7 (2026-11-18, ordre rétabli par la revue S7) : `purge_document`
+(file d'ingestion, 5 tentatives, dedup `purge_document:<document_id>`) suit
+la ligne `purge_document` et l'ordre de l'ADR 0012 point 6 (points, puis
+chunks, puis blobs) ; les unités sont supprimées avec les chunks, à la
+finalisation. Les blobs sont supprimés par le handler du work item **après**
+le commit de la finalisation, hors de toute transaction : un échec n'est que
+journalisé (l'item est déjà `SUCCEEDED`) et le fichier, plus détenu par aucun
+document non purgé, est repris par `CleanBlobOrphans`. Détail : précisions
 S7 du §10.*
 
 Les noms des `kind` sont **[Proposed]** et fixés au moment de la slice qui les
@@ -412,6 +416,15 @@ Un effet externe est acceptable si **toutes** ces conditions tiennent :
    exécution de `purge_document` supprime. Rien ne la planifie en S7 : la
    réconciliation S8 replanifiera `purge_document` pour un document
    `WITHDRAWN` qui a encore des points.*
+   *Précision S7 (revue, 2026-11-18) : cette replanification ne peut pas
+   réutiliser la clé `purge_document:<document_id>`. `dedup_key` est
+   `UNIQUE` sans condition et `enqueue` rend l'item existant, même terminé :
+   réenfiler la purge d'un document déjà purgé est un no-op silencieux (même
+   item `SUCCEEDED`, aucun travail ; comportement figé par
+   `test_rescheduling_a_completed_purge_under_its_key_creates_no_work`). S8
+   doit choisir une clé distincte (suffixe de génération, par exemple
+   `purge_document:<document_id>:<n>`) ou une réouverture explicite de
+   l'item, et changer ce test en conséquence.*
 
 ## 8. Prévention des publications obsolètes
 
@@ -494,16 +507,24 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   Recall) ; la purge supprime ces points. Vérifié avec des recherches
   concurrentes : aucune recherche commencée après le commit ne rend le
   document.*
-- *Ordre effectif de la purge : **points Qdrant** (index vivants), puis
-  **blobs** non détenus (hors transaction), puis **chunks, unités et
-  `purged_at`** dans la transaction de finalisation, sous fencing. Écart avec
-  « points, puis chunks, puis blobs » du tableau et du §6 : les chunks sont
-  des écritures PostgreSQL ; les faire dans la finalisation les protège par le
-  fencing et rend l'ensemble rejouable étape par étape. Une panne de Qdrant
-  ne supprime rien d'autre ; une panne du volume laisse chunks et `purged_at`
-  intacts ; l'item est rejoué. Les points d'un document retiré ne sont jamais
-  renvoyés de toute façon (contrôle SQL) : l'ordre n'affecte pas la
-  visibilité.*
+- *Ordre de la purge, celui du tableau, du §6 et de l'ADR 0012 point 6
+  (rétabli par la revue S7) : **points Qdrant** (index vivants, hors
+  transaction), puis **chunks, unités et `purged_at`** dans la transaction de
+  finalisation, sous fencing, puis, après son commit, **blobs** non détenus.
+  Une panne de Qdrant ne supprime rien d'autre (l'item est rejoué) ; une
+  tentative périmée ne supprime aucun blob (son `finalize` lève avant). La
+  suppression des blobs est faite au mieux, par le handler du work item : un
+  échec (volume, PostgreSQL) est journalisé sans faire échouer l'item ;
+  `purged_at` posée, le fichier n'est plus détenu et `CleanBlobOrphans` le
+  supprime après le délai de grâce. Choix d'une étape après le commit plutôt
+  que d'un item `delete_blob` : `CleanBlobOrphans` est déjà la garantie
+  durable de cette suppression (même règle, aucun détenteur) ; un `kind` de
+  plus n'en ajouterait pas. La suppression y est sans condition :
+  `UNIQUE(content_hash)` global (O2) empêche tout autre document de porter
+  l'empreinte, et un réimport du contenu est refusé (le dépôt qu'il laisse
+  est un orphelin).
+  Les points d'un document retiré ne sont jamais renvoyés de toute façon
+  (contrôle SQL) : l'ordre n'affecte pas la visibilité.*
 - *Index purgés : les index vivants (`ACTIVE`, `BUILDING`,
   `live_indexes()`). Les points d'un index `RETIRED` partent avec sa
   collection, supprimée en entier en S9.*
@@ -518,11 +539,24 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   en S7 (délai de grâce réglable, `KB_BLOB_ORPHAN_GRACE_SECONDS`, défaut
   24 h, **Proposed**) ; son ordonnancement périodique est celui de la
   réconciliation (S8) ; les fichiers temporaires de `tmp/` sont hors
-  périmètre (S8). Risque résiduel connu : un import du **même** contenu qu'un
-  orphelin plus vieux que le délai, qui commiterait entre la lecture des
-  références et la suppression du fichier, perdrait son blob (fenêtre de
-  l'ordre de la milliseconde ; conséquence visible : `BLOB_MISSING` à
-  l'extraction). Non fermé en S7.*
+  périmètre (S8).*
+- *Course entre `CleanBlobOrphans` et un import du **même** contenu (revue
+  S7) : l'import redépose le fichier (`os.replace`, nouvel inode) puis
+  commite sa version. Un `unlink` sans condition entre la lecture des
+  références et la suppression effaçait ce dépôt : version sans blob,
+  `BLOB_MISSING` **terminal** à l'extraction, et, `UNIQUE(content_hash)`
+  étant global, contenu jamais réimportable. Fermé par
+  `DocumentBlobEraser.delete_if_unchanged(content_hash, observed,
+  still_unreferenced=…)` : le fichier est renommé atomiquement vers
+  `KB_BLOB_ROOT/quarantine/` ; il revient à son chemin si son inode et sa
+  date (ns) ne sont plus ceux de l'inventaire (dépôt concurrent, octets
+  identiques) ou si les détenteurs, relus une fois le fichier retiré, ne sont
+  plus vides ; sinon il est supprimé. Restent, non mesurés : une lecture du
+  blob pendant les deux appels système où il est hors de son chemin ; un
+  import dont le dépôt dépasse le délai de grâce avant son commit ; un crash
+  pendant la quarantaine (fichier sous `quarantine/`, à remettre en place par
+  la réconciliation S8). Détail : [ADR 0012, suivi
+  S7](../../decisions/0012-original-document-storage-and-purge.md#s7--purge-et-orphelins-2026-11-18).*
 - *Défaut corrigé : pendant un `delete_points` concurrent, Qdrant peut rendre
   un hit au payload réduit à la clé de regroupement ; la recherche levait
   `KeyError` (500). Un hit sans `chunk_id` est désormais ignoré.*

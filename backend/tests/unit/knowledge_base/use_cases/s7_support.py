@@ -5,9 +5,13 @@ Les documents sont importés, extraits, indexés et publiés par les VRAIS
 handlers ; seules les frontières nouvelles de S7 sont remplacées :
 
 - ``DocumentBlobEraser.delete(content_hash) -> bool`` (vrai si un fichier a
-  été supprimé, faux s'il était déjà absent ; jamais d'erreur pour un absent) ;
+  été supprimé, faux s'il était déjà absent ; jamais d'erreur pour un absent)
+  et ``delete_if_unchanged(content_hash, observed, *, still_unreferenced)``
+  (revue S7 : supprime seulement si la révision est encore ``observed`` et
+  que ``still_unreferenced()``, appelé après le retrait du fichier, est vrai) ;
 - ``DocumentBlobInventory.list_blobs()`` -> séquence d'objets portant
-  ``content_hash: ContentHash`` et ``modified_at: datetime`` (aware) ;
+  ``content_hash: ContentHash``, ``modified_at: datetime`` (aware) et
+  ``revision: BlobRevision`` ;
 - ``BlobReferences.holders(content_hash) -> frozenset[UUID]`` : identifiants des
   documents dont AU MOINS UNE version (quel que soit son état, tombstone
   comprise) porte cette empreinte ET dont la purge n'est pas enregistrée
@@ -25,13 +29,14 @@ N+1 qui annule les indexations de N) échoue sur son assertion, pas sur un
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import TYPE_CHECKING, Self
 from uuid import UUID
 
+from knowledge_base.domain.providers.document_blob_inventory import BlobRevision
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
     ImportDocumentVersion,
@@ -76,15 +81,19 @@ GRACE_BASE = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 class BlobInfo:
     content_hash: ContentHash
     modified_at: datetime
+    revision: BlobRevision
 
 
 class FakeBlobs:
     """Eraser et inventaire sur le ``InMemoryBlobStore`` du harnais : ce que les
-    imports ont déposé est exactement ce que la purge peut supprimer."""
+    imports ont déposé est exactement ce que la purge peut supprimer.
+    ``redeposit`` simule le ``put`` d'un import concurrent du même contenu
+    (nouvelle révision, comme le nouvel inode de ``os.replace``)."""
 
     def __init__(self, store: InMemoryBlobStore) -> None:
         self._store = store
         self.modified: dict[str, datetime] = {}
+        self.revisions: dict[str, int] = {}
         self.delete_calls: list[str] = []
 
     @property
@@ -98,13 +107,39 @@ class FakeBlobs:
         self._store.blobs[digest] = data
         self.modified[digest] = at
 
+    def redeposit(self, digest: str) -> None:
+        self.revisions[digest] = self._revision(digest).inode + 1
+
+    def _revision(self, digest: str) -> BlobRevision:
+        return BlobRevision(inode=self.revisions.get(digest, 0), modified_ns=0)
+
     async def delete(self, content_hash: ContentHash) -> bool:
         self.delete_calls.append(content_hash.value)
         return self._store.blobs.pop(content_hash.value, None) is not None
 
+    async def delete_if_unchanged(
+        self,
+        content_hash: ContentHash,
+        observed: BlobRevision,
+        *,
+        still_unreferenced: Callable[[], Awaitable[bool]],
+    ) -> bool:
+        digest = content_hash.value
+        self.delete_calls.append(digest)
+        if digest not in self._store.blobs or self._revision(digest) != observed:
+            return False
+        if not await still_unreferenced():
+            return False
+        del self._store.blobs[digest]
+        return True
+
     async def list_blobs(self) -> Sequence[BlobInfo]:
         return [
-            BlobInfo(ContentHash(digest), self.modified.get(digest, NOW))
+            BlobInfo(
+                ContentHash(digest),
+                self.modified.get(digest, NOW),
+                self._revision(digest),
+            )
             for digest in sorted(self._store.blobs)
         ]
 
@@ -276,9 +311,9 @@ class S7Rig:
     async def run_purge(
         self, document_id: UUID, handler: PurgeDocumentHandler | None = None
     ) -> bool:
-        """``prepare`` (effets externes) puis ``apply`` dans la transaction de
-        finalisation, comme le fait le handler de work item. Faux si ``prepare``
-        n'a rien à faire."""
+        """``prepare`` (points), ``apply`` dans la transaction de finalisation,
+        puis, après son commit, ``erase_unheld_blobs`` : comme le handler de
+        work item. Faux si ``prepare`` n'a rien à faire."""
         from knowledge_base.use_cases.purge_document.purge_document_command import (
             PurgeDocument,
         )
@@ -291,6 +326,7 @@ class S7Rig:
         async with self.purge_unit_of_work() as uow:
             await use_case.apply(uow, prepared)
             await uow.commit()
+        await use_case.erase_unheld_blobs(prepared)
         return True
 
     # --- lectures de l'état commité ---

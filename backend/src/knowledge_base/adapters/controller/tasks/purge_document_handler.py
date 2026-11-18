@@ -1,17 +1,30 @@
 """Handler du ``kind`` ``purge_document`` : pont entre la work queue (S0 §5)
 et ``PurgeDocument`` (knowledge-base.md §6, §10 ; ADR 0012 point 6).
 
+Ordre du point 6 de l'ADR 0012 (points, chunks, blobs) :
+
 1. ``use_case.prepare`` hors transaction : points Qdrant du document dans
-   chaque index vivant, puis blobs qu'aucun autre document non purgé ne
-   porte ; un heartbeat refusé l'interrompt (``keeping_lease``) ;
+   chaque index vivant ; un heartbeat refusé l'interrompt (``keeping_lease``) ;
 2. UN ``ctx.finalize`` dont le callback appelle ``use_case.apply`` (chunks,
    unités, ``purged_at``) ; s'il n'y a rien à purger (document inconnu ou
-   actif), la finalisation n'écrit rien, mais l'item se termine.
+   actif), la finalisation n'écrit rien, mais l'item se termine ;
+3. une fois la finalisation commitée, et seulement alors,
+   ``use_case.erase_unheld_blobs`` : blobs qu'aucun document non purgé ne
+   porte. Une tentative périmée (``StaleAttempt`` levée par ``finalize``) n'y
+   arrive jamais. Étape au mieux, qui ne lève pas : l'item est déjà
+   ``SUCCEEDED``, une exception ici serait traitée comme l'échec d'un item
+   terminé ; un fichier restant est repris par ``CleanBlobOrphans``.
+
+Pourquoi une étape après le commit plutôt qu'un item ``delete_blob`` : la
+suppression d'un fichier qu'aucun document ne porte n'a pas besoin d'une
+garantie durable propre, ``CleanBlobOrphans`` en est déjà le filet (même
+règle, ``holders`` vide) ; un nouveau ``kind`` ajouterait clé, handler et
+file pour la même garantie.
 
 Erreurs : payload illisible → terminale ``INVALID_PAYLOAD`` ; toute autre
-(Qdrant, volume, PostgreSQL) est transitoire (retry avec backoff), sans
-finalisation. Aucun état métier n'enregistre l'échec : l'item ``FAILED``
-reste visible en base (réouverture et réconciliation : S8).
+erreur des étapes 1 et 2 (Qdrant, PostgreSQL) est transitoire (retry avec
+backoff), sans finalisation. Aucun état métier n'enregistre l'échec : l'item
+``FAILED`` reste visible en base (réouverture et réconciliation : S8).
 """
 
 from __future__ import annotations
@@ -91,6 +104,8 @@ class PurgeDocumentWorkHandler:
                 await self._use_case.apply(self._transaction(session), prepared)
 
         await ctx.finalize(finalize)
+        if prepared is not None:
+            await self._use_case.erase_unheld_blobs(prepared)
 
 
 def _command(payload: Mapping[str, str]) -> PurgeDocument:

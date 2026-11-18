@@ -35,6 +35,7 @@ import pytest
 from knowledge_base.domain.entities.indexation import IndexationStatus
 from knowledge_base.domain.entities.knowledge_document import (
     DocumentStatus,
+    KnowledgeDocument,
     VersionStatus,
 )
 from knowledge_base.domain.exceptions.document_errors import DocumentWithdrawnError
@@ -49,6 +50,7 @@ from knowledge_base.use_cases.record_extraction.record_extraction_command import
 from knowledge_base.use_cases.withdraw_document.withdraw_document_command import (
     WithdrawDocument,
 )
+from tests.unit.knowledge_base.use_cases.fakes import FakeDocuments
 from tests.unit.knowledge_base.use_cases.indexing_fakes import qa_sheet
 from tests.unit.knowledge_base.use_cases.s7_support import S7Rig, make_s7_rig
 
@@ -250,3 +252,40 @@ async def test_a_lost_optimistic_lock_surfaces_and_changes_nothing() -> None:
 
     assert rig.base.document(command.document_id).status is DocumentStatus.ACTIVE
     assert rig.items_of_kind("purge_document") == []
+
+
+async def test_a_single_lost_lock_is_replayed_and_cancels_the_concurrent_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un import de version commite entre la lecture et l'écriture du retrait :
+    le verrou optimiste est perdu UNE fois. Le rejeu relit l'état à jour et
+    annule l'extraction de la version créée entre-temps ; sans rejeu, le
+    retrait échouerait (409 ``CONCURRENT_MODIFICATION``)."""
+    rig = make_s7_rig()
+    command = await rig.base.import_document(qa_sheet())
+    original = FakeDocuments.save
+    withdrawal_saves = 0
+    concurrent: list[RecordExtraction] = []
+
+    async def conflicting_once(
+        self: FakeDocuments, document: KnowledgeDocument
+    ) -> None:
+        nonlocal withdrawal_saves
+        if document.status is DocumentStatus.WITHDRAWN:
+            withdrawal_saves += 1
+            if withdrawal_saves == 1:
+                concurrent.append(
+                    await rig.import_next(command.document_id, qa_sheet(3, tag="b"))
+                )
+                raise ConcurrentModificationError(document.document_id)
+        await original(self, document)
+
+    monkeypatch.setattr(FakeDocuments, "save", conflicting_once)
+
+    await withdraw(rig, command.document_id)
+
+    assert withdrawal_saves == 2
+    assert rig.base.document(command.document_id).status is DocumentStatus.WITHDRAWN
+    (racing,) = concurrent
+    assert rig.item(f"extract_version:{racing.version_id}") == "CANCELLED"
+    assert rig.items_of_kind("purge_document") == [purge_key(command.document_id)]
