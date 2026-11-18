@@ -32,7 +32,8 @@ PARSE_ERROR_CODES: Final = frozenset(ParseErrorCode)
 class DocumentParseError(Exception):
     """``code`` : ``EMPTY_DOCUMENT`` (aucun contenu), ``INVALID_DOCUMENT``
     (contenu illisible, chiffré ou format non pris en charge),
-    ``DOCUMENT_TOO_COMPLEX`` (imbrication trop profonde pour le parseur),
+    ``DOCUMENT_TOO_COMPLEX`` (imbrication trop profonde pour le parseur, DOCX
+    au-delà de sa limite de XML décompressé),
     ``OCR_REQUIRED`` (PDF sans couche texte : l'OCR est désactivé en V1) ou
     ``TOO_MANY_PAGES`` (PDF au-delà de la limite de pages, ADR 0012)."""
 

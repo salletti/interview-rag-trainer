@@ -164,3 +164,13 @@ Documents, versions, blobs et Qdrant de dev intacts. Garde-fou ajouté dans
 `tests/integration/conftest.py` : session refusée si `ENVIRONMENT != test` ou
 si `POSTGRES_PORT` vise la stack de dev. Base de dev à reconstruire lors de
 la validation S6.
+
+Revue tech lead du commit S6 (`2a53289`) : **1 bloquant**, 3 importants, 8 mineurs.
+Corrections appliquées (2026-11-18) — 1 217 unitaires, 364 intégration, 11 mutations tuées, aucun `chunk_hash` existant modifié, test de fumée `make smoke-pdf-image` OK dans l'image :
+
+- B1 — le mapping Docling commun descendait dans les enfants d'un tableau : le texte des cellules mises en forme sortait une seconde fois en paragraphes (Markdown et DOCX ; régression du Markdown S3, reproduite). **Fait.**
+- I1 — thread de conversion zombie concurrent de la tâche suivante sur un convertisseur partagé sans verrou (~2 × 2,6 Gio) → verrou par parseur. **Fait.**
+- I2 / O16 — décision : garde-fou de taille XML décompressée d'un DOCX (100 Mio, `DOCUMENT_TOO_COMPLEX` terminal) ; borne de volume de texte commune (tokens) reste Open pour S8. **Fait.**
+- I3 — rendu des polices non testé dans l'image → test de fumée du parseur PDF dans le conteneur. **Fait.**
+- M1–M8 — `PARTIAL_SUCCESS` journalisé, erreurs Docling dans les messages, cohérence liste blanche / routage, factorisation, lignes de tableau, libellés, mesure RSS sur conversions successives. **Fait.**
+- Reporté à S8 : le pic RSS d'un enfant croît encore sur 5 conversions PDF successives (1 786 → 2 038 Mio, incréments décroissants ; RSS résiduelle stable ~1,4 Gio) → décider `max-tasks-per-child` ou mesure plus longue.

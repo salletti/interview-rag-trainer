@@ -26,10 +26,11 @@ Règles supposées, observées sur les sorties réelles :
   la ligne et son indentation : limite de Docling, non corrigée ici.
 - ``TableItem`` -> ``Table``, une ligne ``| a | b |`` par rangée ;
   ``TextItem`` -> ``Paragraph`` ; liste -> ``ListBlock``.
-- Le parcours suit l'ordre de lecture ET descend dans les enfants de TOUT
-  nœud : Docling imbrique le contenu d'un DOCX sous le titre qui le précède,
-  le parcours des seuls groupes (celui du Markdown) n'en verrait que les
-  titres.
+- Le parcours suit l'ordre de lecture ET descend dans les enfants de tout
+  nœud sauf un tableau : Docling imbrique le contenu d'un DOCX sous le titre
+  qui le précède, le parcours des seuls groupes (celui du Markdown) n'en
+  verrait que les titres. Les enfants d'un tableau (cellules mises en forme)
+  sont déjà dans ses lignes : ``test_docling_table_mapping``.
 - ``page`` = première page de provenance (``prov``) du bloc ; ``None`` sans
   provenance (DOCX : pas de pagination).
 - Le contenu hors corps (en-têtes et pieds de page : couche ``furniture``) et

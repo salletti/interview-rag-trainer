@@ -2,7 +2,8 @@
 knowledge-base.md, précisions S6) : couche texte et nombre de pages, lus par
 pypdfium2 sans aucun modèle.
 
-La conversion Docling est remplacée par un double (``_convert``) : ces tests
+La conversion Docling est remplacée par un double (``DoclingConversion.convert``,
+commune aux parseurs Docling) : ces tests
 vérifient ce qui est décidé avant elle, et qu'elle n'est appelée que si le PDF
 passe les contrôles.
 """
@@ -16,6 +17,9 @@ import pypdfium2
 import pytest
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
+from knowledge_base.adapters.gateway.parsing.docling_conversion import (
+    DoclingConversion,
+)
 from knowledge_base.adapters.gateway.parsing.docling_pdf_parser import (
     DoclingPdfParser,
 )
@@ -32,13 +36,13 @@ def conversions(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Noms des fichiers réellement confiés à Docling (double sans modèle)."""
     converted: list[str] = []
 
-    def convert(self: DoclingPdfParser, content: bytes, filename: str) -> object:
+    def convert(self: DoclingConversion, content: bytes, filename: str) -> object:
         converted.append(filename)
         document = DoclingDocument(name="double")
         document.add_text(label=DocItemLabel.TEXT, text="Texte converti.")
         return document
 
-    monkeypatch.setattr(DoclingPdfParser, "_convert", convert)
+    monkeypatch.setattr(DoclingConversion, "convert", convert)
     return converted
 
 
@@ -99,8 +103,8 @@ def test_a_pdf_whose_conversion_has_no_block_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        DoclingPdfParser,
-        "_convert",
+        DoclingConversion,
+        "convert",
         lambda self, content, filename: DoclingDocument(name="vide"),
     )
 

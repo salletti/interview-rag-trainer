@@ -124,7 +124,17 @@ curl -s -X POST localhost:8010/api/v1/knowledge-base/documents \
   -F title='Cours Git' -F kind=COURSE -F language=fr -F topics=git
 ```
 
-Le **premier PDF** télécharge les poids de Docling (layout `docling-layout-heron`, TableFormer : ~506 Mio) dans `models_cache/huggingface` : compter environ trois minutes de plus, pendant lesquelles le worker prolonge le lease ; suivi par `docker compose logs -f worker_ingestion` (« Downloaded model … », puis « … page(s) converties par Docling en … s »). Les suivants relisent le cache. Ordres de grandeur dans `worker_ingestion` (Linux arm64, 18 CPU) : de 1 à 3 s par page à chaud (2,0 s/page pour un PDF de 300 pages, 15 min de l'import à `PUBLISHED` en comptant l'encodage de ses 682 chunks) ; un DOCX ne charge aucun modèle (quelques millisecondes par page équivalente). Échecs terminaux visibles dans `document_versions.failure_code` : `OCR_REQUIRED` (PDF scanné, sans couche texte), `TOO_MANY_PAGES` (plus de 300 pages), `INVALID_DOCUMENT` (chiffré, corrompu, DOCX illisible). Les passages issus d'un PDF portent `page_start` / `page_end` dans leur citation ; ceux d'un DOCX, `null`.
+Le **premier PDF** télécharge les poids de Docling (layout `docling-layout-heron`, TableFormer : ~506 Mio) dans `models_cache/huggingface` : compter environ trois minutes de plus, pendant lesquelles le worker prolonge le lease ; suivi par `docker compose logs -f worker_ingestion` (« Downloaded model … », puis « … page(s) converties par Docling en … s »). Les suivants relisent le cache. Ordres de grandeur dans `worker_ingestion` (Linux arm64, 18 CPU) : de 1 à 3 s par page à chaud (2,0 s/page pour un PDF de 300 pages, 15 min de l'import à `PUBLISHED` en comptant l'encodage de ses 682 chunks) ; un DOCX ne charge aucun modèle (quelques millisecondes par page équivalente). Échecs terminaux visibles dans `document_versions.failure_code` : `OCR_REQUIRED` (PDF scanné, sans couche texte), `TOO_MANY_PAGES` (plus de 300 pages), `INVALID_DOCUMENT` (chiffré, corrompu, DOCX illisible), `DOCUMENT_TOO_COMPLEX` (DOCX de plus de 100 Mio de XML décompressé). Les passages issus d'un PDF portent `page_start` / `page_end` dans leur citation ; ceux d'un DOCX, `null`.
+
+**Test de fumée du parseur PDF dans l'image** (après une modification du `Dockerfile` ou de Docling) :
+
+```bash
+make smoke-pdf-image
+# cours_git_fr.pdf : 14 blocs en 7.9 s (CodeBlock 1, Heading 7, Paragraph 6)
+# OK : titres et blocs de code reconnus
+```
+
+La cible lance `backend/scripts/smoke_pdf_parser.py` dans un conteneur éphémère de l'image de `worker_ingestion` (`docker compose run --rm --no-deps` : volumes du service, dont `models_cache`, sans toucher au worker en cours ; script et fixture montés depuis l'hôte). Elle échoue (code 1) si le PDF ne donne pas au moins un titre et un bloc de code : c'est ce qui arrive quand les polices de rendu des pages manquent à l'image (rectangles à la place du texte pour le modèle de layout), écart que les tests d'intégration, exécutés sur l'hôte, ne voient pas. Les poids de Docling doivent être dans `models_cache` (sinon premier téléchargement, ~3 min). Image à jour : `docker compose build worker_ingestion`.
 
 ### Rechercher (Knowledge Base, S5)
 

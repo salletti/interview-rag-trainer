@@ -161,3 +161,43 @@ générés (titres, paragraphes, code, un tableau par chapitre ; 50 pages
   ouvert [O16](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts).
 - Les limites restent des constantes (`KB_MAX_UPLOAD_BYTES`, `MAX_PDF_PAGES`) ;
   à réévaluer sur une autre machine cible ou si l'OCR arrive (ADR 0008).
+
+**Revue S6 — garde-fou DOCX** (2026-11-18, arbitrage de l'orchestrateur sur
+[O16](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts)) :
+avant Docling, la somme des tailles décompressées **déclarées**
+(`ZipInfo.file_size`) des parties `word/*.xml` d'un DOCX est bornée à
+**100 Mio** (`MAX_DOCX_XML_BYTES`, réglable par le constructeur de
+`DoclingDocxParser`) ; au-delà, version `FAILED` `DOCUMENT_TOO_COMPLEX`,
+terminale (message avec la taille et la limite). Un ZIP illisible donne
+`INVALID_DOCUMENT` avant Docling. La taille déclarée suffit : Docling lit
+l'archive par python-docx, donc par `zipfile`, qui tronque une partie à sa
+taille déclarée. Ordre de grandeur : 101 Mio de XML (des espaces) tiennent en
+103 084 octets compressés, bien sous les 20 Mio de l'import ; le DOCX
+équivalent à 300 pages mesuré plus haut fait 51 Ko. Ce garde-fou arrête une
+bombe de décompression, pas un DOCX textuel de quelques Mio de XML : **la
+borne de volume de texte commune à tous les formats (tokens extraits ou
+chunks) reste ouverte pour S8** (O16). Cette section ne modifie pas la
+décision ci-dessus.
+
+**Revue S6 — mémoire sur conversions successives** (2026-11-18, M8) : un
+processus de l'image de `worker_ingestion` (conteneur éphémère `docker compose
+run`, stack de dev, code de la revue S6) garde **un** `DoclingPdfParser`,
+comme l'enfant du worker, et convertit cinq fois le PDF de 50 pages
+(118 918 octets, 407 blocs). Sans modèle d'embeddings. RSS après chaque
+conversion (après `gc.collect()`) et `VmHWM` :
+
+| Conversion | Durée | RSS après | VmHWM |
+|---|---|---|---|
+| (avant) | — | 128 Mio | — |
+| 1 (chargement des modèles compris) | 85,0 s | 1 260 Mio | 1 786 Mio |
+| 2 | 42,8 s | 1 322 Mio | 1 889 Mio |
+| 3 | 45,4 s | 1 423 Mio | 1 954 Mio |
+| 4 | 43,1 s | 1 398 Mio | 2 004 Mio |
+| 5 | 43,9 s | 1 377 Mio | 2 038 Mio |
+
+La RSS résiduelle se stabilise (≈ 1,4 Gio, en baisse aux conversions 4 et 5) ;
+le pic, lui, croît encore à chaque conversion, par incréments décroissants
+(+103, +65, +50, +34 Mio), sans plateau atteint en cinq conversions. Pas de
+fuite démontrée, pas de stabilité démontrée du pic : non corrigé, à remesurer
+sur davantage de conversions (et dans le worker réel, modèle d'embeddings
+compris) si la mémoire du worker devient une contrainte (O5).

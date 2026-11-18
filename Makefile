@@ -1,6 +1,7 @@
 .PHONY: help install lint format format-check typecheck test test-integration \
         test-integration-up test-integration-down ci up down build logs ps \
-        migrate migration worker-ping frontend-install frontend-lint frontend-test
+        migrate migration worker-ping smoke-pdf-image frontend-install \
+        frontend-lint frontend-test
 
 BACKEND := cd backend && uv run
 FRONTEND := cd frontend && npm run
@@ -90,3 +91,12 @@ migration: ## Crée une migration vide : make migration m="slug"
 
 worker-ping: ## Vérifie l'aller-retour broker → worker → result backend
 	docker compose exec api python -c "from runtime.worker import ping; print(ping.delay().get(timeout=10))"
+
+# Conteneur éphémère de l'image de worker_ingestion (volumes du service, dont
+# models_cache), sans toucher au worker en cours ; script et fixture montés
+# depuis l'hôte pour exécuter leur version courante.
+smoke-pdf-image: ## Parseur PDF dans l'image de dev : titres et code reconnus (polices, S6)
+	docker compose run --rm --no-deps -T \
+		-v ./backend/scripts:/app/scripts:ro \
+		-v ./backend/tests/fixtures/knowledge_base/office:/app/smoke:ro \
+		worker_ingestion python scripts/smoke_pdf_parser.py /app/smoke/cours_git_fr.pdf

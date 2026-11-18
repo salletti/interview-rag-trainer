@@ -78,7 +78,7 @@ from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
-from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
+from knowledge_base.use_cases.import_steps import DOCX_MEDIA_TYPE, EXTRACT_VERSION
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -99,9 +99,6 @@ INGESTION_QUEUE: Final = "knowledge_base.ingestion"
 BLOB_MISSING: Final = "BLOB_MISSING"
 INVALID_PAYLOAD: Final = "INVALID_PAYLOAD"
 CHUNKING_FAILED: Final = "CHUNKING_FAILED"
-DOCX_MEDIA_TYPE: Final = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-)
 # Échecs déterministes : relancer l'extraction du même contenu n'a pas de sens.
 # Tout code d'une DocumentParseError en fait partie.
 NOT_RETRYABLE_CODES: Final = PARSE_ERROR_CODES | {CHUNKING_FAILED}

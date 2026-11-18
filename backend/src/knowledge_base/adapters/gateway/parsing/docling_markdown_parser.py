@@ -23,18 +23,16 @@ compose le handler d'extraction sans payer le chargement de Docling.
 from __future__ import annotations
 
 import re
-from io import BytesIO
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Final
 
-from knowledge_base.adapters.gateway.parsing.docling_mapping import (
-    structured_document_from_docling,
+from knowledge_base.adapters.gateway.parsing.docling_conversion import (
+    DoclingConversion,
+    document_with_blocks,
 )
 from knowledge_base.adapters.gateway.parsing.plain_text_parser import decode_utf8
 from knowledge_base.domain.exceptions.parsing_errors import (
     DOCUMENT_TOO_COMPLEX,
     EMPTY_DOCUMENT,
-    INVALID_DOCUMENT,
     DocumentParseError,
 )
 from knowledge_base.domain.value_objects.structured_document import (
@@ -43,7 +41,6 @@ from knowledge_base.domain.value_objects.structured_document import (
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
-    from docling_core.types.doc import DoclingDocument
 
 FRONT_MATTER_FENCE: Final = "---"
 _FRONT_MATTER_ENTRY: Final = re.compile(r"\s*(?P<key>[\w.-]+)\s*:(?P<value>.*)")
@@ -52,7 +49,7 @@ _QUOTES: Final = ('"', "'")
 
 class DoclingMarkdownParser:
     def __init__(self) -> None:
-        self._converter: DocumentConverter | None = None
+        self._conversion = DoclingConversion(".md", _markdown_converter)
 
     def parse(
         self, content: bytes, media_type: str, filename: str
@@ -64,36 +61,11 @@ class DoclingMarkdownParser:
                 EMPTY_DOCUMENT, f"{filename} ne contient aucun texte"
             )
         try:
-            blocks = structured_document_from_docling(
-                self._convert(body, filename)
-            ).blocks
+            document = document_with_blocks(
+                self._conversion.convert(body.encode(), filename), filename
+            )
         except RecursionError as error:
             raise _too_complex(filename) from error
-        if not blocks:
-            raise DocumentParseError(
-                EMPTY_DOCUMENT, f"{filename} ne contient aucun bloc exploitable"
-            )
-        return StructuredDocument(blocks=blocks, metadata=metadata)
-
-    def _convert(self, body: str, filename: str) -> DoclingDocument:
-        from docling.datamodel.base_models import DocumentStream, InputFormat
-        from docling.document_converter import DocumentConverter
-        from docling.exceptions import ConversionError
-
-        if self._converter is None:
-            self._converter = DocumentConverter(allowed_formats=[InputFormat.MD])
-        # Docling choisit le format sur l'extension : le nom transmis est
-        # toujours « .md », quel que soit celui de l'import (« .markdown »).
-        stream = DocumentStream(
-            name=f"{PurePath(filename).stem or 'document'}.md",
-            stream=BytesIO(body.encode()),
-        )
-        try:
-            return self._converter.convert(stream).document
-        except ConversionError as error:
-            raise DocumentParseError(
-                INVALID_DOCUMENT, f"Docling n'a pas pu convertir {filename} : {error}"
-            ) from error
         except RuntimeError as error:
             # Le pipeline Docling enveloppe toute erreur de son backend dans
             # RuntimeError(« Pipeline … failed ») ; seule la récursion est
@@ -101,6 +73,14 @@ class DoclingMarkdownParser:
             if isinstance(error.__cause__, RecursionError):
                 raise _too_complex(filename) from error
             raise
+        return StructuredDocument(blocks=document.blocks, metadata=metadata)
+
+
+def _markdown_converter() -> DocumentConverter:
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import DocumentConverter
+
+    return DocumentConverter(allowed_formats=[InputFormat.MD])
 
 
 def _too_complex(filename: str) -> DocumentParseError:

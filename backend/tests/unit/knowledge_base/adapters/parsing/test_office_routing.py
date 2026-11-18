@@ -18,8 +18,14 @@ from knowledge_base.adapters.controller.tasks.extract_version_handler import (
 from knowledge_base.adapters.gateway.parsing.docling_docx_parser import (
     DoclingDocxParser,
 )
+from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
+    DoclingMarkdownParser,
+)
 from knowledge_base.adapters.gateway.parsing.docling_pdf_parser import (
     DoclingPdfParser,
+)
+from knowledge_base.adapters.gateway.parsing.plain_text_parser import (
+    PlainTextParser,
 )
 from knowledge_base.domain.exceptions.parsing_errors import (
     INVALID_DOCUMENT,
@@ -29,6 +35,7 @@ from knowledge_base.domain.value_objects.structured_document import (
     Paragraph,
     StructuredDocument,
 )
+from knowledge_base.use_cases.import_steps import SUPPORTED_TYPES
 from tests.office_support import DOCX, PDF
 
 FROM_PDF = StructuredDocument(blocks=(Paragraph(text="vu par le parseur PDF"),))
@@ -66,3 +73,21 @@ def test_other_office_types_stay_unsupported(media_type: str) -> None:
         default_parser().parse(b"x", media_type, "a.doc")
 
     assert raised.value.code == INVALID_DOCUMENT
+
+
+@pytest.mark.parametrize("media_type", sorted(SUPPORTED_TYPES))
+def test_every_importable_media_type_has_a_parser(
+    media_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contrat entre la liste blanche de l'import et la composition de
+    l'extraction : un type accepté à l'import sans parseur ferait échouer
+    chaque version en ``INVALID_DOCUMENT``."""
+    parsed = StructuredDocument(blocks=(Paragraph(text="parsé"),))
+    for parser in (DoclingMarkdownParser, PlainTextParser):
+        monkeypatch.setattr(
+            parser, "parse", lambda self, content, media_type, filename: parsed
+        )
+
+    result = default_parser().parse(b"x", media_type, "fichier")
+
+    assert result in (parsed, FROM_PDF, FROM_DOCX)

@@ -45,15 +45,19 @@ logger = logging.getLogger(__name__)
 EXTRACT_VERSION: Final = "extract_version"
 MAX_FILENAME_LENGTH: Final = 255
 
+DOCX_MEDIA_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
 # Liste blanche (S2, S6) : le type de média ET l'extension doivent concorder.
 # Le Word binaire historique (``application/msword``, ``.doc``) n'y figure pas.
-_SUPPORTED_TYPES: Final[Mapping[str, frozenset[str]]] = {
+# Chaque type doit avoir son parseur dans ``default_parser()`` (test de
+# contrat ``test_every_importable_media_type_has_a_parser``).
+SUPPORTED_TYPES: Final[Mapping[str, frozenset[str]]] = {
     "text/markdown": frozenset({".md", ".markdown"}),
     "text/plain": frozenset({".txt"}),
     "application/pdf": frozenset({".pdf"}),
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
-        frozenset({".docx"})
-    ),
+    DOCX_MEDIA_TYPE: frozenset({".docx"}),
 }
 
 
@@ -90,7 +94,7 @@ def accepted_media_type(filename: str, media_type: str) -> str:
     type / extension est autorisé ; ``UnsupportedDocumentTypeError`` sinon."""
     essence = media_type.split(";", 1)[0].strip().lower()
     extension = PurePath(filename).suffix.lower()
-    if extension not in _SUPPORTED_TYPES.get(essence, frozenset()):
+    if extension not in SUPPORTED_TYPES.get(essence, frozenset()):
         raise UnsupportedDocumentTypeError(filename, media_type)
     return essence
 

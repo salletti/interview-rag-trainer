@@ -4,7 +4,10 @@ Docling ne sort de ``adapters/gateway/parsing/``.
 
 - Parcours en ordre de lecture de TOUT l'arbre : un nœud, puis ses enfants.
   Docling imbrique le contenu d'un DOCX sous le titre qui le précède ; un
-  parcours limité aux groupes n'en verrait que les titres.
+  parcours limité aux groupes n'en verrait que les titres. Seule exception :
+  un tableau, dont les enfants sont le contenu de ses cellules mises en forme
+  (groupes ``rich_cell_group_*``, Markdown et DOCX), déjà rendu dans les
+  lignes du ``Table``, et ses légendes et notes (PDF), émises à part.
 - Titres : ``TitleItem`` -> niveau 1, ``SectionHeaderItem(level=n)`` -> niveau
   ``min(n + 1, 6)``. Docling rend ``#`` en titre et ``##`` en section de niveau
   1 : les niveaux Markdown sont restitués, un DOCX garde « Titre » = 1 et
@@ -18,7 +21,10 @@ Docling ne sort de ``adapters/gateway/parsing/``.
   ligne et son indentation : limite de Docling, non corrigée ici.
 - Liste : un ``ListBlock`` par liste de premier niveau, sous-listes aplaties
   dans l'ordre.
-- Tableau : une ligne ``| a | b |`` par rangée (en-tête compris).
+- Tableau : une ligne ``| a | b |`` par rangée (en-tête compris) ; les
+  retours à la ligne d'une cellule (une cellule DOCX de plusieurs
+  paragraphes) deviennent des espaces. Ses légendes puis ses notes suivent en
+  ``Paragraph``.
 - ``page`` : première page de provenance du bloc (pour une liste ou un
   paragraphe à mise en forme, celle de son premier morceau) ; ``None`` sans
   provenance (Markdown, DOCX).
@@ -138,6 +144,13 @@ def _blocks(document: DoclingDocument) -> Iterator[Block]:
         if isinstance(item, InlineGroup):
             yield from _paragraph(inline_text(item), page(item))
             continue
+        if isinstance(item, TableItem):
+            yield Table(text=_table_text(item), page=page(item))
+            for note_ref in (*item.captions, *item.footnotes):
+                note = note_ref.resolve(document)
+                if isinstance(note, TextItem):
+                    yield from _paragraph(note.text, page(note))
+            continue
         if isinstance(item, TitleItem):
             yield Heading(level=1, text=item.text, page=page(item))
         elif isinstance(item, SectionHeaderItem):
@@ -152,8 +165,6 @@ def _blocks(document: DoclingDocument) -> Iterator[Block]:
                 language=_language(item.code_language.value),
                 page=page(item),
             )
-        elif isinstance(item, TableItem):
-            yield Table(text=_table_text(item), page=page(item))
         elif isinstance(item, TextItem):
             yield from _paragraph(item.text, page(item))
         pending.append(iter(item.children))
@@ -170,6 +181,12 @@ def _language(label: str) -> str | None:
 
 def _table_text(table: TableItem) -> str:
     return "\n".join(
-        "| " + " | ".join(cell.text.strip() for cell in row) + " |"
+        "| " + " | ".join(_cell_text(cell.text) for cell in row) + " |"
         for row in table.data.grid
     )
+
+
+def _cell_text(text: str) -> str:
+    """Une rangée tient sur une ligne : les lignes d'une cellule sont jointes
+    par un espace."""
+    return " ".join(line.strip() for line in text.splitlines() if line.strip())

@@ -18,6 +18,7 @@ hiérarchie de titres (tous de niveau 2), chaque bloc porte sa première page.
 Docling, pypdfium2 et les modèles sont chargés à la première conversion, pas à
 l'import du module ni à la construction : l'API compose le handler
 d'extraction sans eux, et chaque processus enfant du worker charge les siens.
+Les conversions d'un parseur sont sérialisées (``docling_conversion``).
 Les poids sont téléchargés au premier usage dans le cache du Hub
 (``HF_HOME``, volume ``models_cache`` sous Compose).
 """
@@ -26,15 +27,13 @@ from __future__ import annotations
 
 import logging
 import time
-from io import BytesIO
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Final
 
-from knowledge_base.adapters.gateway.parsing.docling_mapping import (
-    structured_document_from_docling,
+from knowledge_base.adapters.gateway.parsing.docling_conversion import (
+    DoclingConversion,
+    document_with_blocks,
 )
 from knowledge_base.domain.exceptions.parsing_errors import (
-    EMPTY_DOCUMENT,
     INVALID_DOCUMENT,
     OCR_REQUIRED,
     TOO_MANY_PAGES,
@@ -47,7 +46,6 @@ from knowledge_base.domain.value_objects.structured_document import (
 if TYPE_CHECKING:
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter
-    from docling_core.types.doc import DoclingDocument
     from pypdfium2 import PdfPage
 
 logger = logging.getLogger(__name__)
@@ -62,7 +60,7 @@ LAYOUT_MODEL_REVISION: Final = "8f39ad3c0b4c58e9c2d2c84a38465abf757272d8"
 class DoclingPdfParser:
     def __init__(self, *, max_pages: int = MAX_PDF_PAGES) -> None:
         self._max_pages = max_pages
-        self._converter: DocumentConverter | None = None
+        self._conversion = DoclingConversion(".pdf", _pdf_converter)
 
     def parse(
         self, content: bytes, media_type: str, filename: str
@@ -76,20 +74,14 @@ class DoclingPdfParser:
                 pages,
             )
         started = time.perf_counter()
-        blocks = structured_document_from_docling(
-            self._convert(content, filename)
-        ).blocks
+        converted = self._conversion.convert(content, filename)
         logger.info(
             "%s : %d page(s) converties par Docling en %.1f s",
             filename,
             pages,
             time.perf_counter() - started,
         )
-        if not blocks:
-            raise DocumentParseError(
-                EMPTY_DOCUMENT, f"{filename} ne contient aucun bloc exploitable"
-            )
-        return StructuredDocument(blocks=blocks)
+        return document_with_blocks(converted, filename)
 
     def _check_before_layout(self, content: bytes, filename: str) -> tuple[int, int]:
         """Nombre de pages et de pages sans couche texte ; lève les échecs
@@ -127,25 +119,6 @@ class DoclingPdfParser:
                 "(document scanné ?), l'OCR est désactivé",
             )
         return pages, without_text
-
-    def _convert(self, content: bytes, filename: str) -> DoclingDocument:
-        from docling.datamodel.base_models import DocumentStream
-        from docling.exceptions import ConversionError
-
-        if self._converter is None:
-            self._converter = _pdf_converter()
-        # Docling choisit le format sur l'extension : le nom transmis est
-        # toujours « .pdf », quel que soit celui de l'import.
-        stream = DocumentStream(
-            name=f"{PurePath(filename).stem or 'document'}.pdf",
-            stream=BytesIO(content),
-        )
-        try:
-            return self._converter.convert(stream).document
-        except ConversionError as error:
-            raise DocumentParseError(
-                INVALID_DOCUMENT, f"Docling n'a pas pu convertir {filename} : {error}"
-            ) from error
 
 
 def _has_text(page: PdfPage) -> bool:

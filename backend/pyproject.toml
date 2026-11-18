@@ -80,7 +80,7 @@ extend-immutable-calls = ["fastapi.Depends"]
 python_version = "3.13"
 strict = true
 mypy_path = "src"
-files = ["src", "tests", "alembic"]
+files = ["src", "tests", "alembic", "scripts"]
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 
