@@ -1,10 +1,10 @@
 """Étapes communes à ``ImportDocument`` et ``ImportDocumentVersion``
 (knowledge-base.md §6, ligne « Import » ; 002, « Erreurs et idempotence »).
 
-Ordre d'un import : contrôle du type (avant toute écriture), dépôt du blob
-(hors transaction, ADR 0012), puis une transaction unique : document et
-version, item ``extract_version``, annulation des items des versions écartées
-(I6), clé d'idempotence.
+Ordre d'un import : contrôle du nom de fichier et du type (avant toute
+écriture), dépôt du blob (hors transaction, ADR 0012), puis une transaction
+unique : document et version, item ``extract_version``, annulation des items
+des versions écartées (I6), clé d'idempotence.
 """
 
 from __future__ import annotations
@@ -18,10 +18,6 @@ from pathlib import PurePath
 from typing import Final
 from uuid import UUID
 
-from knowledge_base.domain.entities.knowledge_document import (
-    DocumentVersion,
-    KnowledgeDocument,
-)
 from knowledge_base.domain.events.document_events import (
     DocumentEvent,
     DocumentVersionDiscarded,
@@ -31,21 +27,23 @@ from knowledge_base.domain.providers.idempotency_key_repository import (
     IdempotencyRecord,
 )
 from knowledge_base.domain.providers.knowledge_document_repository import (
+    ConcurrentModificationError,
     ContentHashTakenError,
 )
 from knowledge_base.domain.providers.unit_of_work import UnitOfWork
-from knowledge_base.domain.value_objects.content_hash import ContentHash
 from knowledge_base.use_cases.errors import (
     IdempotencyKeyConflictError,
+    InvalidFilenameError,
     UnsupportedDocumentTypeError,
 )
-from knowledge_base.use_cases.import_document.import_document_result import (
+from knowledge_base.use_cases.import_result import (
     ImportDocumentResult,
 )
 
 logger = logging.getLogger(__name__)
 
 EXTRACT_VERSION: Final = "extract_version"
+MAX_FILENAME_LENGTH: Final = 255
 
 # Liste blanche de S2 : le type de média ET l'extension doivent concorder.
 _SUPPORTED_TYPES: Final[Mapping[str, frozenset[str]]] = {
@@ -60,6 +58,26 @@ def utc_now() -> datetime:
 
 def extract_version_key(version_id: UUID) -> str:
     return f"{EXTRACT_VERSION}:{version_id}"
+
+
+def accepted_filename(filename: str) -> str:
+    """Nom final du fichier, sans aucun chemin (séparateurs ``/`` et ``\\``) :
+    le nom fourni par le client n'est qu'une métadonnée affichée, il ne doit
+    jamais porter de chemin. ``InvalidFilenameError`` si rien d'utilisable ne
+    reste (``dossier/``, ``..``), si le nom dépasse 255 caractères ou contient
+    un caractère de contrôle."""
+    # Découpage explicite plutôt que PureWindowsPath : celui-ci normalise
+    # « dossier/ » en « dossier », qui n'est pas le nom d'un fichier.
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.strip() or name in {".", ".."}:
+        raise InvalidFilenameError(filename, "nom de fichier vide")
+    if len(name) > MAX_FILENAME_LENGTH:
+        raise InvalidFilenameError(
+            filename, f"nom de fichier de plus de {MAX_FILENAME_LENGTH} caractères"
+        )
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in name):
+        raise InvalidFilenameError(filename, "caractère de contrôle")
+    return name
 
 
 def accepted_media_type(filename: str, media_type: str) -> str:
@@ -77,14 +95,6 @@ def request_fingerprint(fields: Mapping[str, str | list[str] | None]) -> str:
     canonique, indépendante de l'ordre de déclaration des champs."""
     canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def version_with_content(
-    document: KnowledgeDocument, content_hash: ContentHash
-) -> DocumentVersion:
-    """Version du document qui porte cette empreinte ; l'appelant l'a trouvé
-    par ``find_by_content_hash``, elle existe donc."""
-    return next(v for v in document.versions if v.source.content_hash == content_hash)
 
 
 async def replay(
@@ -146,11 +156,17 @@ async def retry_once_after_race(
     attempt: Callable[[], Awaitable[ImportDocumentResult]],
 ) -> ImportDocumentResult:
     """Rejoue une fois la transaction d'import quand un import concurrent a
-    commité la même empreinte ou la même clé entre notre lecture et notre
-    écriture : la seconde tentative le voit et prend le chemin « contenu
-    connu » ou « rejeu »."""
+    commité entre notre lecture et notre écriture : même empreinte, même clé,
+    ou nouvelle version du même document (verrou optimiste perdu). La seconde
+    tentative relit tout et prend le chemin « rejeu » (même clé), « contenu
+    connu » (ou ``DUPLICATE_CONTENT``), ou importe sur l'état à jour. Une
+    seconde course perdue remonte (409 ``CONCURRENT_MODIFICATION``)."""
     try:
         return await attempt()
-    except (ContentHashTakenError, IdempotencyKeyTakenError) as race:
+    except (
+        ConcurrentModificationError,
+        ContentHashTakenError,
+        IdempotencyKeyTakenError,
+    ) as race:
         logger.info("import concurrent détecté, relecture : %s", race)
         return await attempt()

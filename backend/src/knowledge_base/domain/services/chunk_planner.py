@@ -20,6 +20,12 @@ tokens de la politique (ADR 0009 §3-5 ; knowledge-base.md §15.2 ; I13).
   recours garantissent le budget quel que soit le contenu.
 - En-tête plus long que la moitié du budget : tronqué aux mots (suivi de
   ``…``), pour laisser au moins la moitié du budget au contenu.
+- Identité : ``chunk_id`` et ``chunk_hash`` dépendent de ``policy.identity``
+  (version et tokenizer) ; ``chunk_hash`` = SHA-256 de ``contextual_text``,
+  ``\\x00``, ``policy.identity``.
+- Coût : chaque recherche du plus long préfixe qui tient (caractères, mots,
+  morceaux recollés) procède par bonds doublés puis dichotomie ; la découpe
+  d'un bloc est quasi linéaire en sa taille.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from knowledge_base.domain.value_objects.structured_document import (
 CONTINUATION_MARKER: Final = "(suite)"
 TRUNCATION_MARK: Final = "…"
 QUESTION_LABEL: Final = "Question : "
+HASH_SEPARATOR: Final = "\x00"
 
 Fits = Callable[[str], bool]
 
@@ -165,10 +172,13 @@ class ChunkPlanner:
             return self._counter.count(truncated(prefix)) <= limit
 
         word_ends = [match.end() for match in re.finditer(r"\S+", header)]
-        kept = _longest_prefix(header, word_ends, fits)
-        if not kept:
-            kept = _longest_prefix(header, list(range(1, len(header) + 1)), fits)
-        return truncated(kept) if kept else TRUNCATION_MARK
+        words = _longest_fitting(
+            lambda count: fits(header[: word_ends[count - 1]]), len(word_ends)
+        )
+        if words:
+            return truncated(header[: word_ends[words - 1]])
+        length = _longest_fitting(lambda n: fits(header[:n]), len(header))
+        return truncated(header[:length]) if length else TRUNCATION_MARK
 
     # --- découpe d'un bloc trop grand ---------------------------------------------
 
@@ -211,14 +221,12 @@ class ChunkPlanner:
         pages = PageSpan.covering(b.page for b in blocks)
         return DocumentChunk(
             chunk_id=chunk_id(
-                citation_base.version_id, self._policy.version, unit.ordinal, ordinal
+                citation_base.version_id, self._policy.identity, unit.ordinal, ordinal
             ),
             unit_id=unit.unit_id,
             ordinal_in_unit=ordinal,
             contextual_text=text,
-            chunk_hash=hashlib.sha256(
-                (text + self._policy.version).encode()
-            ).hexdigest(),
+            chunk_hash=_chunk_hash(text, self._policy.identity),
             token_count=self._counter.count(text),
             citation=replace(
                 citation_base,
@@ -227,6 +235,14 @@ class ChunkPlanner:
                 page_end=pages.end,
             ),
         )
+
+
+def _chunk_hash(contextual_text: str, policy_identity: str) -> str:
+    """SHA-256 de ``contextual_text``, ``\\x00``, ``policy_identity`` : sans le
+    séparateur, un texte et une identité différents pourraient se concaténer
+    en la même chaîne."""
+    payload = f"{contextual_text}{HASH_SEPARATOR}{policy_identity}"
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _continued(fragment: str, index: int) -> str:
@@ -254,43 +270,82 @@ def _split(text: str, boundaries: list[_Boundary], fits: Fits) -> list[str]:
     pieces = boundary.split(text)
     if len(pieces) <= 1:
         return _split(text, finer, fits)
-    fragments: list[str] = []
+    # Suites de parties recollables : les parties d'un même morceau sont déjà
+    # regroupées au plus large, seule la première peut rejoindre ce qui précède.
+    runs: list[list[str]] = [[]]
     for piece in pieces:
-        # Les parties d'un même morceau sont déjà regroupées au plus large :
-        # seule la première peut rejoindre le fragment précédent.
         first, *rest = _split(piece, finer, fits)
-        joined = f"{fragments[-1]}{boundary.separator}{first}" if fragments else ""
-        if fragments and fits(joined):
-            fragments[-1] = joined
-        else:
-            fragments.append(first)
-        fragments.extend(rest)
+        runs[-1].append(first)
+        runs.extend([part] for part in rest)
+    return [
+        fragment for run in runs for fragment in _pack(run, boundary.separator, fits)
+    ]
+
+
+def _pack(parts: list[str], separator: str, fits: Fits) -> list[str]:
+    """Parties qui tiennent chacune, recollées en fragments les plus larges
+    possible, dans l'ordre."""
+    fragments: list[str] = []
+    start = 0
+    while start < len(parts):
+        count = _fitting_parts(parts, start, separator, fits)
+        fragments.append(separator.join(parts[start : start + count]))
+        start += count
     return fragments
+
+
+def _fitting_parts(parts: list[str], start: int, separator: str, fits: Fits) -> int:
+    """Nombre de parties, depuis ``start``, du plus long recollement qui tient ;
+    au moins une, puisque chacune tient seule."""
+    return _longest_fitting(
+        lambda count: fits(separator.join(parts[start : start + count])),
+        len(parts) - start,
+        known=1,
+    )
 
 
 def _split_characters(text: str, fits: Fits) -> list[str]:
     fragments: list[str] = []
-    rest = text
-    while rest:
-        kept = _longest_prefix(rest, list(range(1, len(rest) + 1)), fits)
-        if not kept:
+    start = 0
+    while start < len(text):
+        length = _fitting_length(text, start, fits)
+        if not length:
             raise ChunkBudgetError(
                 "budget de chunk trop petit : aucun caractère ne tient après "
                 "l'en-tête et le marqueur de continuation"
             )
-        fragments.append(kept)
-        rest = rest[len(kept) :]
+        fragments.append(text[start : start + length])
+        start += length
     return fragments
 
 
-def _longest_prefix(text: str, cut_points: list[int], fits: Fits) -> str:
-    """Plus long ``text[:cut]`` qui tient, par dichotomie sur ``cut_points``
-    croissants (le compte de tokens croît avec le préfixe) ; vide si aucun."""
-    low, high = 0, len(cut_points)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if fits(text[: cut_points[middle - 1]]):
+def _fitting_length(text: str, start: int, fits: Fits) -> int:
+    """Longueur du plus long ``text[start:start + n]`` qui tient ; 0 si aucun."""
+    return _longest_fitting(
+        lambda length: fits(text[start : start + length]), len(text) - start
+    )
+
+
+def _longest_fitting(fits_at: Callable[[int], bool], limit: int, known: int = 0) -> int:
+    """Plus grand ``n`` de ``[known, limit]`` tel que ``fits_at(n)``, sachant
+    ``fits_at`` vrai puis faux quand ``n`` croît (le compte de tokens croît
+    avec le texte) et vrai en ``known`` ; ``fits_at`` n'est jamais appelé en 0.
+
+    Bonds doublés depuis ``known``, puis dichotomie entre le dernier bond qui
+    tient et le premier qui ne tient pas : O(log n) appels sur des textes d'au
+    plus ~2n, quel que soit ``limit``. Une dichotomie sur tout ``[0, limit]``
+    compterait des textes de la taille du reste à chaque fragment : découpe
+    quadratique d'un long bloc (revue S3).
+    """
+    low, high = known, max(1, 2 * known)
+    while high <= limit and fits_at(high):
+        low, high = high, 2 * high
+    high = min(high, limit + 1)
+    # fits_at(low) est vrai ; fits_at(high) est faux, ou high dépasse limit.
+    while high - low > 1:
+        middle = (low + high) // 2
+        if fits_at(middle):
             low = middle
         else:
-            high = middle - 1
-    return text[: cut_points[low - 1]] if low else ""
+            high = middle
+    return low

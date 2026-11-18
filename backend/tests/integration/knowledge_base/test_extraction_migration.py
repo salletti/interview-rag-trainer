@@ -2,6 +2,10 @@
 ``knowledge_base``). Le schéma est figé ici (noms, types, nullabilité,
 contraintes) ; Alembic reste l'unique créateur (aucun ``create_all``).
 
+L'aller-retour est ancré sur les révisions (redescente jusqu'à la révision
+de S2, ``BEFORE_S3_REVISION``), pas sur ``downgrade -1`` : des migrations
+postérieures à S3 existent déjà.
+
 Identité d'un lot : ``(version_id, chunking_policy_version)`` (§3.4) ; les
 unités et chunks sont immuables et dérivés : pas de ``updated_at``.
 """
@@ -22,6 +26,8 @@ pytestmark = pytest.mark.integration
 
 BACKEND = Path(__file__).resolve().parents[3]
 S3_TABLES = ("knowledge_units", "document_chunks")
+S3_REVISION = "22df253e1e05"
+BEFORE_S3_REVISION = "65b08637988e"  # migration S2 (documents, versions)
 
 # colonne -> (type PostgreSQL, nullable)
 EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, bool]]] = {
@@ -126,12 +132,18 @@ async def test_downgrade_removes_the_s3_tables_and_keeps_the_s2_ones(
     for table in (*S3_TABLES, "document_versions", "work_items"):
         assert await existing(session_factory, table)
 
-    alembic_ok("downgrade", "-1")
+    alembic_ok("downgrade", BEFORE_S3_REVISION)
 
+    assert BEFORE_S3_REVISION in alembic_ok("current")
     for table in S3_TABLES:
         assert not await existing(session_factory, table)
     assert await existing(session_factory, "document_versions")
     assert await existing(session_factory, "work_items")
+
+    alembic_ok("upgrade", S3_REVISION)
+    assert S3_REVISION in alembic_ok("current")
+    for table in S3_TABLES:
+        assert await existing(session_factory, table)
 
     alembic_ok("upgrade", "head")
     for table in S3_TABLES:

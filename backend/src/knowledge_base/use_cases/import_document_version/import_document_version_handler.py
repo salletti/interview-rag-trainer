@@ -12,13 +12,14 @@ from knowledge_base.use_cases.errors import (
     DocumentNotFoundError,
     DuplicateContentOtherDocumentError,
 )
-from knowledge_base.use_cases.import_document.import_document_result import (
-    ImportDocumentResult,
-)
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
     ImportDocumentVersion,
 )
+from knowledge_base.use_cases.import_result import (
+    ImportDocumentResult,
+)
 from knowledge_base.use_cases.import_steps import (
+    accepted_filename,
     accepted_media_type,
     remember,
     replay,
@@ -26,7 +27,6 @@ from knowledge_base.use_cases.import_steps import (
     retry_once_after_race,
     schedule_extraction,
     utc_now,
-    version_with_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,12 +52,13 @@ class ImportDocumentVersionHandler:
         self._clock = clock
 
     async def handle(self, command: ImportDocumentVersion) -> ImportDocumentResult:
-        media_type = accepted_media_type(command.filename, command.media_type)
+        filename = accepted_filename(command.filename)
+        media_type = accepted_media_type(filename, command.media_type)
         blob = await self._blob_store.put(
             command.content, max_bytes=self._max_upload_bytes
         )
         source = DocumentSource(
-            filename=command.filename,
+            filename=filename,
             media_type=media_type,
             size_bytes=blob.size_bytes,
             content_hash=blob.content_hash,
@@ -71,7 +72,7 @@ class ImportDocumentVersionHandler:
                 "kind": None,
                 "topics": None,
                 "language": None,
-                "filename": command.filename,
+                "filename": filename,
                 "media_type": media_type,
                 "content_hash": blob.content_hash.value,
             }
@@ -97,9 +98,8 @@ class ImportDocumentVersionHandler:
                 raise DocumentNotFoundError(command.document_id)
             owner = await uow.documents.find_by_content_hash(source.content_hash)
             if owner is not None and owner.document_id != document.document_id:
-                known = version_with_content(owner, source.content_hash)
                 raise DuplicateContentOtherDocumentError(
-                    owner.document_id, known.version_id
+                    owner.document_id, owner.version_id
                 )
             # Même document : I3 est refusé par l'agrégat (DuplicateContentError).
             version = document.import_version(version_id=version_id, source=source)

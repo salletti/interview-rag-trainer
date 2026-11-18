@@ -68,17 +68,31 @@ périmètre.
 - S2 — le corps multipart est mis en tampon par Starlette (disque au-delà de 1 Mio) avant la limite de 20 Mo : borner la taille du corps relève du serveur/proxy.
 - S2 — dépendance ajoutée : `python-multipart`.
 - S3 — compteur de tokens approximatif (majorant, chunks ~30 % plus courts que nécessaire) jusqu'au tokenizer réel de S4.
-- S3 — `RecordExtraction` définit ses propres ports (`DocumentReader`, `ExtractionTransaction`) au lieu d'étendre `UnitOfWork`.
+- S3 — `RecordExtraction` définit ses propres ports (`DocumentReader`, `ExtractionTransaction`, désormais dans `domain/providers/`) au lieu d'étendre `UnitOfWork`.
 - S3 — en-tête contextuel redondant (titre du document répété dans le chemin) : à mesurer en S5.
 - S3 — blob manquant = `BLOB_MISSING` terminal.
 
 ## Corrections en attente
 
-Revue tech lead du commit S2 (`2fc83da`) : aucun bloquant. À appliquer juste
-après S3 (fichiers partagés avec l'implémentation S3 en cours) :
+Revue tech lead du commit S2 (`2fc83da`) : aucun bloquant. Corrections
+appliquées après S3 (2026-11-18), non commitées à ce stade :
 
-- I-1 — verrou optimiste : la première lecture d'un document dans une UoW doit faire foi (`find_by_content_hash` ne doit pas écraser `lock_version`) ; test d'intégration avec commit concurrent entre les deux lectures.
-- I-2 — même `Idempotency-Key` concurrente sur `/versions` : inclure `ConcurrentModificationError` dans le rejeu unique.
-- I-3 — `knowledge-base.md` §4.1 I3 : aligner sur `UNIQUE(content_hash)` global (renvoi O2).
-- M-2 fabriques des handlers injectables ; M-3 basename + longueur bornée du nom de fichier ; M-4 I1 en base (trigger ou texte ajusté) ; M-5 `ImportDocumentResult` commun ; M-6 expiration des clés d'idempotence → point ouvert §16 ; M-7 test HTTP `DOCUMENT_WITHDRAWN`.
-- M-1 — libellé « streaming » de la feuille de route corrigé (fait) ; refus précoce sur `Content-Length` à évaluer.
+- I-1 — verrou optimiste : la première lecture d'un document dans une UoW fait foi (`get` ne rafraîchit plus `lock_version`) ; `find_by_content_hash` rend un modèle de lecture `ContentOwner(document_id, document_status, version_id, version_number)` ; tests d'intégration avec commit concurrent entre les deux lectures (`test_import_persistence`). **Fait.**
+- I-2 — même `Idempotency-Key` concurrente sur `/versions` : `ConcurrentModificationError` inclus dans le rejeu unique (`retry_once_after_race`) ; test d'intégration (deux 202 identiques) et tests unitaires (rejeu de la clé, `DUPLICATE_CONTENT`, import sur l'état à jour). **Fait.**
+- I-3 — `knowledge-base.md` §4.1 I3 aligné sur `UNIQUE(content_hash)` global (renvoi O2, précision S2). **Fait.**
+- M-1 — libellé « streaming » de la feuille de route corrigé (fait) ; refus précoce sur `Content-Length` à évaluer (non traité).
+- M-2 — fabriques des handlers injectables : assemblage dans `adapters/controller/dependencies.py`, `add_document_routes` reçoit les fabriques ; test HTTP sans base (`tests/unit/knowledge_base/test_document_routes_http.py`). **Fait.**
+- M-3 — nom de fichier réduit à son nom final (`/` et `\`), refusé s'il est vide, > 255 caractères ou avec caractère de contrôle : 422 `INVALID_FILENAME`. **Fait.**
+- M-4 — I1 en base : trigger `BEFORE UPDATE` sur `document_versions` (migration `756db53032ab`, au-dessus de `22df253e1e05`) ; `alembic check` propre. **Fait.** La migration de S4 devra avoir `down_revision = "756db53032ab"`.
+- M-5 — `ImportDocumentResult` déplacé dans `use_cases/import_result.py`. **Fait.**
+- M-6 — expiration des clés d'idempotence : point O15 [Open] dans `knowledge-base.md` §16. **Fait.**
+- M-7 — test HTTP `POST /documents` d'un contenu de document retiré → 409 `DOCUMENT_WITHDRAWN`. **Fait.**
+- Tests de migration S2 et S3 ancrés sur leurs révisions (redescente jusqu'à la révision précédente, vérification, `upgrade` de la révision, `upgrade head`). **Fait.**
+
+Revue tech lead du commit S3 (`3cb1ecf`) : aucun bloquant ; corrections
+appliquées le 2026-11-18 :
+
+- I-1 découpe linéaire (2 Mo sans blanc : 238,3 s → 2,48 s ; lettres 17,9 s → 0,20 s ; test < 5 s). Fait.
+- I-2 identité de politique `version+tokenizer` (précision ADR 0009, section Suivi). Fait.
+- Front-matter strict ; `DOCUMENT_TOO_COMPLEX` et `CHUNKING_FAILED` terminaux non rejouables ; goldens enrichis (empreinte des blocs), Docling importé directement ; UUID épinglés ; séparateur `\x00` dans `chunk_hash` ; ports dans `domain/providers/`, politique dans `frameworks/configuration/chunking.py`. Fait.
+- Reportés : FK composite chunks → units (migration S4) ; `BLOB_MISSING` terminal mais `retryable=True` alors que `RetryIngestion` n'arrive qu'en S8 (à traiter avec O14).

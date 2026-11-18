@@ -4,13 +4,16 @@ aussi de base à l'évaluation de S5).
 Chaque fixture ``tests/fixtures/knowledge_base/<nom>.md|.txt`` a son attendu
 ``<nom>.golden.json`` : titre, ``kind``, langue, type de média, politique
 (version, ``max_tokens``) puis, par unité dans l'ordre : ``type``,
-``question``, ``section_path``, ``chunks`` (nombre). Le compteur de tokens est
-celui des tests (un mot = un token).
+``question``, ``section_path``, ``chunks`` (nombre) et ``blocks`` : l'empreinte
+des blocs de l'unité, un ``[type, cinq premiers mots]`` par bloc (revue S3 :
+vérifie que chaque explication reste sous sa question). Le compteur de tokens
+est celui des tests (un mot = un token), nommé ``TOKENIZER`` dans l'identité
+de la politique.
 
 Le pipeline testé est parseur -> ``KnowledgeUnitSegmenter`` -> ``ChunkPlanner``.
 Le parseur Markdown est un double (``MarkdownLiteParser``) ; les mêmes goldens
-sont rejoués avec le vrai ``DoclingMarkdownParser`` quand ``docling`` est
-installé (sinon ce rejeu est ignoré).
+sont rejoués avec le vrai ``DoclingMarkdownParser`` (dépendance ferme du
+backend).
 
 Un golden ne se corrige jamais pour faire passer le code : s'il est faux, on le
 dit et on le justifie dans le même changement.
@@ -25,6 +28,9 @@ from typing import Any
 
 import pytest
 
+from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
+    DoclingMarkdownParser,
+)
 from knowledge_base.adapters.gateway.parsing.plain_text_parser import PlainTextParser
 from knowledge_base.domain.providers.document_parser import DocumentParser
 from knowledge_base.domain.services.chunk_planner import ChunkPlanner
@@ -36,18 +42,23 @@ from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
 from knowledge_base.domain.value_objects.structured_document import (
+    Block,
     CodeBlock,
+    Heading,
+    ListBlock,
     Paragraph,
 )
 from tests.unit.knowledge_base.domain.services.support import (
     COUNTER,
     DOCUMENT_ID,
+    TOKENIZER,
     VERSION_ID,
     base_citation,
 )
 from tests.unit.knowledge_base.markdown_lite import MarkdownLiteParser
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "knowledge_base"
+FINGERPRINT_WORDS = 5
 
 
 @dataclass(frozen=True)
@@ -82,7 +93,9 @@ def run(
 ) -> tuple[tuple[KnowledgeUnit, ...], tuple[DocumentChunk, ...]]:
     golden = case.golden
     policy = ChunkingPolicy(
-        version=golden["policy"]["version"], max_tokens=golden["policy"]["max_tokens"]
+        version=golden["policy"]["version"],
+        tokenizer=TOKENIZER,
+        max_tokens=golden["policy"]["max_tokens"],
     )
     document = parser.parse(
         case.source.read_bytes(), golden["media_type"], case.source.name
@@ -107,9 +120,23 @@ def summary(
             "question": unit.question_text,
             "section_path": list(unit.section_path.parts),
             "chunks": sum(1 for c in chunks if c.unit_id == unit.unit_id),
+            "blocks": [fingerprint(block) for block in unit.blocks],
         }
         for unit in units
     ]
+
+
+def fingerprint(block: Block) -> list[str]:
+    """``[type, cinq premiers mots]`` : assez pour reconnaître le bloc dans la
+    fixture, sans figer son rendu exact (Docling et le double diffèrent sur
+    la mise en forme en ligne)."""
+    if isinstance(block, Heading):
+        text = block.text
+    elif isinstance(block, ListBlock):
+        text = " ".join(block.items)
+    else:
+        text = block.text
+    return [type(block).__name__, " ".join(text.split()[:FINGERPRINT_WORDS])]
 
 
 def lite_parser(case: Case) -> DocumentParser:
@@ -153,11 +180,6 @@ def test_units_and_chunk_counts_match_the_golden_file(case: Case) -> None:
 
 @pytest.mark.parametrize("case", MARKDOWN_CASES, ids=lambda c: c.name)
 def test_the_same_golden_holds_with_the_real_docling_parser(case: Case) -> None:
-    pytest.importorskip("docling")
-    from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
-        DoclingMarkdownParser,
-    )
-
     units, chunks = run(case, DoclingMarkdownParser())
 
     assert summary(units, chunks) == case.golden["units"]

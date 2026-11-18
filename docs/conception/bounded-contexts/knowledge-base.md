@@ -143,7 +143,7 @@ port technique vers le moteur vectoriel), `DocumentStatus` comme concept autonom
 
 - Persistés dans PostgreSQL, **hors des agrégats**, par lot, dans la
   transaction qui fait passer la version à `EXTRACTED`.
-- Identité d'un lot : `(version_id, chunking_policy_version)`.
+- Identité d'un lot : `(version_id, chunking_policy_version)`. *Précision S3 (2026-11-18) : `chunking_policy_version` est l'identité `version+tokenizer` de la politique (ex. `kb-chunking-v1+approx-xlmr-v1`).*
 - `KnowledgeUnit` : `unit_id`, `ordinal`, `unit_type` (`QA`, `SECTION`,
   `DEFINITION`), `question_text?`, `section_path`, `page_span`, `token_count`.
 - `DocumentChunk` : `chunk_id`, `unit_id`, `ordinal_in_unit`,
@@ -152,7 +152,7 @@ port technique vers le moteur vectoriel), `DocumentStatus` comme concept autonom
 - Identifiants **déterministes** [Proposed] : `unit_id` et `chunk_id` sont des
   UUIDv5 dérivés de `(version_id, chunking_policy_version, ordinals)`. Une
   ré-extraction après panne produit donc les mêmes identifiants.
-- `chunk_hash = SHA-256(contextual_text ‖ chunking_policy_version)`.
+- `chunk_hash = SHA-256(contextual_text ‖ chunking_policy_version)`. *Précision S3 (2026-11-18) : séparateur `\x00` entre les deux termes ; `unit_id` et `chunk_id` épinglés par `test_policy_identity`.*
 - Taille : une transaction unique suffit dans les limites de l'ADR 0012
   (20 Mo, 300 pages). Un mécanisme de staging ne sera introduit que si une
   mesure le rend nécessaire.
@@ -175,9 +175,9 @@ payloads Qdrant, chemins de blobs, messages Celery, lignes `work_items`.
 
 | # | Invariant | Mécanisme |
 |---|---|---|
-| I1 | Une `DocumentVersion` est immuable (source, empreinte, numéro) | Aucune méthode de modification ; contraintes SQL |
+| I1 | Une `DocumentVersion` est immuable (source, empreinte, numéro) | Aucune méthode de modification ; contraintes SQL. *Précision S2, 2026-11-18 :* trigger `BEFORE UPDATE` sur `document_versions` refusant la modification de `number`, `content_hash`, `filename`, `media_type`, `size_bytes`, `imported_at` (migration `756db53032ab`) |
 | I2 | Numéros de version strictement croissants par document | Attribution sous verrou optimiste de l'agrégat |
-| I3 | Une même empreinte n'est importée qu'une fois par document | `UNIQUE(document_id, content_hash)` |
+| I3 | Une même empreinte n'est importée qu'une fois par document | *Précision S2, 2026-11-18 :* `UNIQUE(content_hash)` **global** sur `document_versions`, qui couvre I3 et la décision O2 (un contenu n'appartient qu'à un document, §16) ; remplace `UNIQUE(document_id, content_hash)` |
 | I4 | Au plus une version `PUBLISHED` par document | `published_version_id` sous verrou + index unique partiel |
 | I5 | Publication monotone : une version ne peut être publiée que si son numéro est supérieur à celui de la version publiée | Règle de l'agrégat, vérifiée dans la transaction de publication (§8) |
 | I6 | Importer la version N supplante (`DISCARDED`) toutes les versions antérieures non publiées et annule leurs `work_items` | Même transaction que l'import |
@@ -658,3 +658,4 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 |
 | O13 | Heuristiques Q/R sans front-matter | Couvrir les formats rencontrés, mesurés par golden tests | S3 — **Heuristiques retenues en S3 (2026-11-18), Proposed jusqu'aux mesures de S5 :** un titre est une question s'il commence par `Question` ou `Q` (casse indifférente, numéro facultatif) suivi de `:`, ou s'il se termine par `?` ; l'unité `QA` court jusqu'à la question suivante ou un titre de niveau strictement inférieur, les titres du corps (« Réponse », « Explication ») restent des blocs ; le contenu hors question forme des unités `SECTION` ; une fiche sans aucune question est découpée comme un cours. Le front-matter `kind: qa_sheet` l'emporte : tout titre de niveau 2 est alors une question. Couverture : golden files du corpus FR/EN (`backend/tests/fixtures/knowledge_base/`) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s3--docling-markdown-knowledgeunit-et-chunking) |
 | O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 |
+| O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 |

@@ -31,7 +31,19 @@ from knowledge_base.adapters.controller.tasks.registry import WorkHandler
 from knowledge_base.adapters.controller.tasks.resources import (
     KnowledgeBaseWorkerResources,
 )
+from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
+    FileSystemBlobStore,
+)
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
+    SqlAlchemyUnitOfWork,
+)
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.import_document.import_document_handler import (
+    ImportDocumentHandler,
+)
+from knowledge_base.use_cases.import_document_version.import_document_version_handler import (  # noqa: E501
+    ImportDocumentVersionHandler,
+)
 
 __all__ = [
     "KnowledgeBaseResources",
@@ -58,7 +70,31 @@ def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> N
     """Monte les routes de Knowledge Base, à la construction de l'application.
     ``resources`` n'est appelé qu'au traitement d'une requête : la fabrique de
     sessions n'existe qu'après le démarrage (``lifespan``)."""
-    add_document_routes(app.router, resources)
+    add_document_routes(
+        app.router,
+        import_document_handler=lambda: build_import_document_handler(resources()),
+        import_version_handler=lambda: build_import_version_handler(resources()),
+    )
+
+
+def build_import_document_handler(
+    resources: KnowledgeBaseResources,
+) -> ImportDocumentHandler:
+    return ImportDocumentHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(resources.session_factory),
+        blob_store=FileSystemBlobStore(resources.settings.blob_root),
+        max_upload_bytes=resources.settings.max_upload_bytes,
+    )
+
+
+def build_import_version_handler(
+    resources: KnowledgeBaseResources,
+) -> ImportDocumentVersionHandler:
+    return ImportDocumentVersionHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(resources.session_factory),
+        blob_store=FileSystemBlobStore(resources.settings.blob_root),
+        max_upload_bytes=resources.settings.max_upload_bytes,
+    )
 
 
 def build_work_handlers(

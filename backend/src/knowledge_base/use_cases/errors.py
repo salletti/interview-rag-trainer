@@ -17,6 +17,15 @@ class UnsupportedDocumentTypeError(Exception):
         self.media_type = media_type
 
 
+class InvalidFilenameError(Exception):
+    """Nom de fichier inutilisable une fois réduit à son nom final."""
+
+    def __init__(self, filename: str, reason: str) -> None:
+        super().__init__(f"nom de fichier refusé ({reason}) : {filename[:300]!r}")
+        self.filename = filename
+        self.reason = reason
+
+
 class DocumentNotFoundError(Exception):
     def __init__(self, document_id: UUID) -> None:
         super().__init__(f"document {document_id} inconnu")

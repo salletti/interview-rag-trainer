@@ -60,17 +60,17 @@ Cas d'usage (`use_cases/`, un dossier par commande ; étapes communes dans `use_
 | `ImportDocument(title, kind, topics, language, filename, media_type, content, idempotency_key=None)` | `ImportDocumentHandler` | nouveau document `ACTIVE`, version 1 `RECEIVED` ; contenu déjà connu → document existant (`created=False`) |
 | `ImportDocumentVersion(document_id, filename, media_type, content, idempotency_key=None)` | `ImportDocumentVersionHandler` | version N+1 `RECEIVED` ; versions antérieures non publiées `DISCARDED` (I6) et leur item `extract_version` annulé |
 
-Les deux rendent `ImportDocumentResult(document_id, version_id, number, created)`. Déroulé :
+Les deux rendent `ImportDocumentResult(document_id, version_id, number, created)` (`use_cases/import_result.py`). Déroulé :
 
-1. contrôle du type **avant toute écriture** : liste blanche type de média + extension (`text/markdown` : `.md`, `.markdown` ; `text/plain` : `.txt`), paramètres (`; charset=…`) retirés du type stocké ;
+1. contrôle du nom de fichier et du type **avant toute écriture** : le nom est réduit à son nom final (tout chemin `/` ou `\` retiré : `..\..\notes/cours.md` → `cours.md`), refusé s'il est vide (`dossier/`, `..`), dépasse 255 caractères ou contient un caractère de contrôle (`InvalidFilenameError`) ; liste blanche type de média + extension (`text/markdown` : `.md`, `.markdown` ; `text/plain` : `.txt`), paramètres (`; charset=…`) retirés du type stocké ;
 2. dépôt du blob **hors transaction** (`DocumentBlobStore.put`) : SHA-256 au fil du flux, limite `KB_MAX_UPLOAD_BYTES` appliquée pendant la lecture ; un fichier vide est accepté (il échouera à l'extraction, S3) ;
 3. **une** transaction (`UnitOfWork`) : rejeu éventuel de la clé d'idempotence, document / version, item `extract_version` (`dedup_key = extract_version:<version_id>`, payload `document_id`, `version_id`), annulations d'I6, clé d'idempotence, `commit`.
 
 Un échec de la transaction laisse un blob orphelin (purgé par la réconciliation S7/S8), jamais une ligne sans blob. L'item `extract_version` est traité depuis S3 (ci-dessous).
 
 - **Dédoublonnage et O2** ([knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)) : `UNIQUE(content_hash)` global. Même contenu sans cible → document existant, quelles que soient les métadonnées ; version ciblée dont le contenu appartient à un autre document → `DuplicateContentOtherDocumentError` ; même document → `DuplicateContentError` (I3). Le contenu d'un document retiré ne peut pas être réimporté (`DocumentWithdrawnError`).
-- **Idempotence** (002) : `Idempotency-Key` facultatif. Empreinte de requête = SHA-256 d'un JSON canonique (opération, document cible, titre, nature, thèmes, langue, nom de fichier, type de média, empreinte du contenu). Même clé et même empreinte → résultat enregistré, sans ré-exécution (même `created`) ; empreinte différente → `IdempotencyKeyConflictError`. La clé est écrite dans la transaction de l'import. Les clés n'expirent pas encore.
-- **Concurrence** : deux versions concurrentes d'un même document → verrou optimiste (`documents.version`), le perdant reçoit `ConcurrentModificationError`, sans réessai automatique. Deux imports simultanés du même nouveau contenu, ou de la même clé → l'adapter traduit la violation d'unicité en `ContentHashTakenError` / `IdempotencyKeyTakenError` (aucune `IntegrityError` ne sort de la persistance) ; le handler rejoue **une fois** sa transaction, qui voit alors le gagnant.
+- **Idempotence** (002) : `Idempotency-Key` facultatif. Empreinte de requête = SHA-256 d'un JSON canonique (opération, document cible, titre, nature, thèmes, langue, nom de fichier réduit, type de média, empreinte du contenu). Même clé et même empreinte → résultat enregistré, sans ré-exécution (même `created`) ; empreinte différente → `IdempotencyKeyConflictError`. La clé est écrite dans la transaction de l'import. Les clés n'expirent pas encore (point ouvert O15).
+- **Concurrence** : deux versions concurrentes d'un même document → verrou optimiste (`documents.version`), le perdant lève `ConcurrentModificationError`. Deux imports simultanés du même nouveau contenu, ou de la même clé → l'adapter traduit la violation d'unicité en `ContentHashTakenError` / `IdempotencyKeyTakenError` (aucune `IntegrityError` ne sort de la persistance). Dans les trois cas, le handler rejoue **une fois** sa transaction, qui relit tout : même clé → réponse du gagnant (même résultat), même contenu sans clé → `DUPLICATE_CONTENT` (ou document existant), autre contenu → import sur l'état à jour. Une seconde course perdue remonte (409 `CONCURRENT_MODIFICATION`).
 
 Routes (`adapters/controller/rest/`, montées par `register`) :
 
@@ -83,13 +83,14 @@ En-tête facultatif `Idempotency-Key` (1 à 255 caractères). Erreurs `{code, me
 
 | HTTP | `code` | Champs complémentaires | Cause |
 |---|---|---|---|
+| 422 | `INVALID_FILENAME` | `reason` | nom de fichier vide une fois réduit à son nom final, de plus de 255 caractères ou avec un caractère de contrôle ; ni blob ni ligne |
 | 413 | `PAYLOAD_TOO_LARGE` | `max_bytes` | fichier au-delà de `KB_MAX_UPLOAD_BYTES` ; ni blob ni ligne |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | `filename`, `media_type` | couple type / extension hors liste blanche |
 | 404 | `DOCUMENT_NOT_FOUND` | `document_id` | document cible inconnu |
 | 409 | `DUPLICATE_CONTENT` | `document_id`, `version_id` (version existante) | contenu déjà présent dans ce document (I3) ou dans un autre (O2) |
 | 409 | `IDEMPOTENCY_KEY_CONFLICT` | — | même clé, autre requête |
 | 409 | `DOCUMENT_WITHDRAWN` | `document_id` | document retiré (nouvelle version ou réimport de son contenu) |
-| 409 | `CONCURRENT_MODIFICATION` | — | verrou optimiste perdu (ou course perdue deux fois de suite) ; le client rejoue |
+| 409 | `CONCURRENT_MODIFICATION` | — | course perdue deux fois de suite (la première est rejouée par le handler) ; le client rejoue |
 | 422 | format FastAPI (`detail`) | — | formulaire invalide (champ manquant, `kind` inconnu, identifiant non UUID) |
 
 Le fichier n'est jamais lu en entier en mémoire : Starlette stocke la partie multipart dans un fichier temporaire (en mémoire jusqu'à 1 Mio, sur disque au-delà) **avant** l'appel de la route, puis le routeur la transmet au blob store par morceaux de 64 Kio. Pic mesuré (`tracemalloc`) pour un dépôt de 20 Mio : environ 120 Kio. La limite ne s'applique donc qu'après la réception complète par Starlette ; borner le corps HTTP lui-même relève du serveur ou du proxy.
@@ -104,7 +105,11 @@ Tables (migration `65b08637988e`, schéma `knowledge_base`) :
 | `document_versions` | `number`, `status`, `filename`, `media_type`, `size_bytes`, `content_hash`, `imported_at`, `failure_*` | `UNIQUE(content_hash)` (I3 + O2), `UNIQUE(document_id, number)` (I2), clé étrangère vers `documents`, `CHECK` sur `status` et « `failure_*` renseignés ssi `FAILED` », index unique partiel « une `PUBLISHED` par document » (I4) |
 | `idempotency_keys` | `key` (clé primaire), `fingerprint`, résultat (`document_id`, `version_id`, `number`, `created`) | sans clé étrangère : un enregistrement rend un résultat passé |
 
-Persistance (`adapters/gateway/persistence/`) : `SqlAlchemyUnitOfWork(session_factory)` — une session et une transaction par `async with`, partagées par le dépôt du document, `SqlAlchemyWorkQueue` (S0) et le dépôt des clés. `save(document)` écrit le document **avant** ses versions (`UPDATE … WHERE version = <lue>`, zéro ligne → `ConcurrentModificationError`), puis seulement les versions nouvelles ou modifiées par rapport à l'état lu dans la transaction.
+Persistance (`adapters/gateway/persistence/`) : `SqlAlchemyUnitOfWork(session_factory)` — une session et une transaction par `async with`, partagées par le dépôt du document, `SqlAlchemyWorkQueue` (S0) et le dépôt des clés. `save(document)` écrit le document **avant** ses versions (`UPDATE … WHERE version = <lue>`, zéro ligne → `ConcurrentModificationError`), puis seulement les versions nouvelles ou modifiées par rapport à l'état lu dans la transaction. Dans une Unit of Work, la **première** lecture d'un document fait foi : une relecture (`get`) ne rafraîchit ni la version du verrou ni l'état de référence, donc sauver l'instance lue en premier après un commit concurrent lève `ConcurrentModificationError` (pas de lost update). `find_by_content_hash` rend un modèle de lecture `ContentOwner(document_id, document_status, version_id, version_number)`, pas l'agrégat.
+
+I1 en base (migration `756db53032ab`) : le trigger `BEFORE UPDATE` `trg_document_versions_source_immutable` refuse toute modification de `number`, `content_hash`, `filename`, `media_type`, `size_bytes`, `imported_at` (`check_violation`) ; seuls l'état et `failure_*` changent. Fonction et trigger hors MetaData : `alembic check` ne les compare pas.
+
+Assemblage (`adapters/controller/dependencies.py`) : `register` construit les handlers d'import (`build_import_document_handler`, `build_import_version_handler`) et les passe en fabriques à `add_document_routes(router, *, import_document_handler, import_version_handler)` ; le routeur ne connaît ni SQLAlchemy ni le blob store, et un test peut substituer les fabriques (`tests/unit/knowledge_base/test_document_routes_http.py`, sans base).
 
 ### S3 — Docling Markdown, `KnowledgeUnit` et chunking
 
@@ -118,7 +123,7 @@ Une version `RECEIVED` devient `EXTRACTED` avec ses unités et chunks, par le ha
 
 **Parseurs** (`adapters/gateway/parsing/`, port `DocumentParser`, synchrone) : `RoutingDocumentParser` aiguille sur le type de média (sans paramètre ni casse) ; `text/markdown` → `DoclingMarkdownParser`, `text/plain` → `PlainTextParser` (adapter natif, point O7). Docling n'est importé que par `docling_markdown_parser.py` (test d'architecture `test_docling_confinement`), et seulement à la première conversion : l'API compose le handler sans charger Docling.
 
-- Markdown : UTF-8 (BOM toléré) ; **front-matter lu avant Docling** (`---` / `clé: valeur` / `---`) → `metadata`, jamais en blocs ; niveaux de titres restitués (Docling rend `#` en `TitleItem`, `##` en `SectionHeaderItem(level=1)`) ; paragraphe à mise en forme recollé (code en ligne entre accents graves, retours à la ligne → espaces) ; code avec le langage reconnu par Docling en minuscules (`None` si inconnu) ; listes aplaties ; tableau → une ligne `| a | b |` par rangée ; pas de page.
+- Markdown : UTF-8 (BOM toléré) ; **front-matter lu avant Docling** (`---` / `clé: valeur` / `---`) → `metadata`, jamais en blocs ; le bloc n'est un front-matter que si chaque ligne est `clé: valeur` (clé `[\w.-]+`), vide ou commentaire `#`, sinon le document est rendu tel quel à Docling ; guillemets entourant une valeur retirés ; imbrication trop profonde (`RecursionError` de Docling) → `DOCUMENT_TOO_COMPLEX`, parcours de l'arbre Docling itératif ; niveaux de titres restitués (Docling rend `#` en `TitleItem`, `##` en `SectionHeaderItem(level=1)`) ; paragraphe à mise en forme recollé (code en ligne entre accents graves, retours à la ligne → espaces) ; code avec le langage reconnu par Docling en minuscules (`None` si inconnu) ; listes aplaties ; tableau → une ligne `| a | b |` par rangée ; pas de page.
 - TXT : une suite de lignes non vides = un bloc ; `CodeBlock` (indentation commune retirée) si toutes ses lignes sont indentées de 4 espaces ou d'une tabulation, `Paragraph` sinon ; ni titre, ni page, ni métadonnée.
 
 **Segmentation** (`domain/services/knowledge_unit_segmenter.py`, heuristiques O13) :
@@ -144,9 +149,9 @@ Une version `RECEIVED` devient `EXTRACTED` avec ses unités et chunks, par le ha
 | paragraphe | phrases (`.`, `!`, `?`, `…`) |
 | titre | — |
 
-Puis, pour tous, les mots, et en dernier recours les caractères : le budget est garanti quel que soit le contenu. **Choix S3 pour les cas non figés par les tests de l'auteur** : paragraphe ou liste seuls trop grands → phrases / éléments puis mots (recollés par une espace : les retours à la ligne internes d'un paragraphe découpé sont perdus) ; **en-tête de plus de la moitié du budget → tronqué aux mots et suivi de ` …`** (la moitié du budget reste au contenu) ; `overlap_tokens > 0` → `ValueError` (mesuré en S5/S9) ; budget ne laissant pas un caractère de contenu → `ChunkBudgetError`. `chunk_hash = SHA-256(contextual_text ‖ policy.version)` ; `chunk_id` = UUIDv5(version, politique, rang de l'unité, rang dans l'unité) ; la citation reprend la base de l'import (document, titre, version, numéro, fichier) avec le chemin de l'unité et les pages des blocs du chunk (I13).
+Puis, pour tous, les mots, et en dernier recours les caractères : le budget est garanti quel que soit le contenu. **Choix S3 pour les cas non figés par les tests de l'auteur** : paragraphe ou liste seuls trop grands → phrases / éléments puis mots (recollés par une espace : les retours à la ligne internes d'un paragraphe découpé sont perdus) ; **en-tête de plus de la moitié du budget → tronqué aux mots et suivi de ` …`** (la moitié du budget reste au contenu) ; `overlap_tokens > 0` → `ValueError` (mesuré en S5/S9) ; budget ne laissant pas un caractère de contenu → `ChunkBudgetError`. `chunk_hash = SHA-256(contextual_text ‖ "\x00" ‖ policy.identity)` ; `unit_id` et `chunk_id` = UUIDv5(version, `policy.identity`, rangs), où `identity = version+tokenizer` (valeur persistée dans `chunking_policy_version`). Chaque recherche du plus long préfixe qui tient procède par bonds doublés puis dichotomie : découpe linéaire (2 Mo sans blanc : 238 s → 2,5 s, mesuré le 2026-11-18) ; la citation reprend la base de l'import (document, titre, version, numéro, fichier) avec le chemin de l'unité et les pages des blocs du chunk (I13).
 
-**Politique de production** (`DEFAULT_CHUNKING_POLICY`, `extract_version_handler.py`) : version `kb-chunking-v1`, `max_tokens` **508** = 512 (profil `multilingual-e5-base`) − 2 tokens spéciaux (`<s>`, `</s>`) − 2 tokens du préfixe `passage: ` (mesurés sur le tokenizer réel le 2026-11-18). L'en-tête contextuel fait partie du texte compté : il n'appelle pas de marge supplémentaire. Overlap 0, fallbacks de code par défaut.
+**Politique de production** (`DEFAULT_CHUNKING_POLICY`, `frameworks/configuration/chunking.py`) : version `kb-chunking-v1`, tokenizer `approx-xlmr-v1` (brancher le tokenizer réel en S4 impose un autre nom), identité persistée `kb-chunking-v1+approx-xlmr-v1`, `max_tokens` **508** = 512 (profil `multilingual-e5-base`) − 2 tokens spéciaux (`<s>`, `</s>`) − 2 tokens du préfixe `passage: ` (mesurés sur le tokenizer réel le 2026-11-18). L'en-tête contextuel fait partie du texte compté : il n'appelle pas de marge supplémentaire. Overlap 0, fallbacks de code par défaut.
 
 **Compteur de tokens provisoire** (`adapters/gateway/embedding/approximate_token_counter.py`, port `TokenCounter`) : approximation **par excès** du tokenizer XLM-R du profil, sans dépendance (un mot = `ceil(longueur / 3)` tokens, +1 s'il contient un caractère non ASCII ; ponctuation et `_` = 1, 2 après un blanc). Mesure contre le vrai tokenizer sur 937 paragraphes et lignes (fixtures, conception, code) : rapport estimation / réel 1,40 au global, jamais inférieur à 1,07 sur les échantillons de 50 tokens ou plus. Les chunks sont donc environ 30 % plus courts que ce que le modèle accepterait. S4 remplace ce compteur par celui de l'`Embedder` (nouvelle version de politique si les chunks changent).
 
@@ -201,10 +206,11 @@ knowledge_base/
   domain/value_objects/                   # S3 : structured_document, section_path, page_span, citation, chunking_policy, knowledge_unit, document_chunk
   domain/exceptions/parsing_errors.py     # DocumentParseError, EMPTY_DOCUMENT, INVALID_DOCUMENT (S3)
   domain/services/                        # knowledge_unit_segmenter, chunk_planner, identifiers (UUIDv5) (S3)
-  use_cases/import_document/              # ImportDocument, ImportDocumentHandler, ImportDocumentResult (S2)
+  use_cases/import_document/              # ImportDocument, ImportDocumentHandler (S2)
   use_cases/import_document_version/      # ImportDocumentVersion, ImportDocumentVersionHandler (S2)
-  use_cases/import_steps.py               # liste blanche, empreinte de requête, idempotence, enqueue / cancel, rejeu après course
-  use_cases/errors.py                     # UnsupportedDocumentType, DocumentNotFound, DuplicateContentOtherDocument, IdempotencyKeyConflict
+  use_cases/import_steps.py               # nom de fichier, liste blanche, empreinte de requête, idempotence, enqueue / cancel, rejeu après course
+  use_cases/import_result.py              # ImportDocumentResult, commun aux deux imports (S2)
+  use_cases/errors.py                     # InvalidFilename, UnsupportedDocumentType, DocumentNotFound, DuplicateContentOtherDocument, IdempotencyKeyConflict
   use_cases/record_extraction/            # RecordExtraction, RecordExtractionHandler (prepare, apply, fail), PreparedExtraction (S3)
   adapters/failure_policy.py              # FailureDecision, decide_recovery — purs, partagés controller / gateway
   adapters/controller/dependencies.py     # register, register_worker et réexports de la surface publique
@@ -215,7 +221,7 @@ knowledge_base/
     registry.py                           # WorkHandler, HandlerRegistry
     resources.py                          # KnowledgeBaseWorkerResources
     retry_policy.py                       # backoff (equal jitter), classification des erreurs — purs
-    extract_version_handler.py            # ExtractVersionWorkHandler, build_extract_version_handler, DEFAULT_CHUNKING_POLICY (S3)
+    extract_version_handler.py            # ExtractVersionWorkHandler, build_extract_version_handler (S3)
   adapters/gateway/persistence/
     sqlalchemy_work_queue.py              # SqlAlchemyWorkQueue (port), SqlAlchemyWorkLifecycle (transitions §3)
     sqlalchemy_unit_of_work.py            # SqlAlchemyUnitOfWork (S2)
@@ -246,7 +252,7 @@ En S0, `finalize` et `on_terminal_failure` reçoivent une `AsyncSession` ; l'Uni
 - `FailureInfo` (`domain/providers/work_queue.py`, code stable + message tronqué à 2 000 caractères) décrit l'échec d'une **tentative** de work item : colonnes `last_error_*` et argument du hook `on_terminal_failure` (S0 §5) ;
 - `FailureReason` (`domain/value_objects/failure_reason.py`, `code`, `message`, `retryable`) est l'état **durable** d'une version `FAILED` ; `retryable` dit si `RetryIngestion` a un sens.
 
-Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` faux pour `EMPTY_DOCUMENT` et `INVALID_DOCUMENT`) ; une fusion ne sera envisagée que si les deux formes convergent.
+Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` faux pour tout code de `ParseErrorCode` — `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX` — et pour `CHUNKING_FAILED`) ; une fusion ne sera envisagée que si les deux formes convergent.
 
 ## Choix d'implémentation à connaître
 

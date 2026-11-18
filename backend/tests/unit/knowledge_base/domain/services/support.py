@@ -37,6 +37,11 @@ VERSION_ID = UUID(int=22)
 TITLE = "Python avancé"
 FILENAME = "python.md"
 POLICY_VERSION = "chunking-test-1"
+# Nom du compteur de test (``WordCounter``) dans l'identité de la politique.
+TOKENIZER = "test-words-v1"
+# ``ChunkingPolicy.identity`` attendue : ce qui est persisté comme
+# ``chunking_policy_version`` (version et tokenizer).
+POLICY_IDENTITY = "chunking-test-1+test-words-v1"
 
 
 class WordCounter:
@@ -54,8 +59,12 @@ def words(n: int, prefix: str = "w") -> str:
     return " ".join(f"{prefix}{i}" for i in range(n))
 
 
-def policy(max_tokens: int = 1000, version: str = POLICY_VERSION) -> ChunkingPolicy:
-    return ChunkingPolicy(version=version, max_tokens=max_tokens)
+def policy(
+    max_tokens: int = 1000,
+    version: str = POLICY_VERSION,
+    tokenizer: str = TOKENIZER,
+) -> ChunkingPolicy:
+    return ChunkingPolicy(version=version, tokenizer=tokenizer, max_tokens=max_tokens)
 
 
 def h(level: int, text: str, page: int | None = None) -> Heading:
@@ -83,9 +92,10 @@ def segment(
     max_tokens: int = 1000,
     version_id: UUID = VERSION_ID,
     policy_version: str = POLICY_VERSION,
+    tokenizer: str = TOKENIZER,
 ) -> tuple[KnowledgeUnit, ...]:
     segmenter = KnowledgeUnitSegmenter(
-        COUNTER, policy(max_tokens, version=policy_version)
+        COUNTER, policy(max_tokens, version=policy_version, tokenizer=tokenizer)
     )
     return tuple(segmenter.segment(document, kind=kind, version_id=version_id))
 
@@ -110,8 +120,11 @@ def plan(
     max_tokens: int = 1000,
     version_id: UUID = VERSION_ID,
     policy_version: str = POLICY_VERSION,
+    tokenizer: str = TOKENIZER,
 ) -> tuple[DocumentChunk, ...]:
-    planner = ChunkPlanner(COUNTER, policy(max_tokens, version=policy_version))
+    planner = ChunkPlanner(
+        COUNTER, policy(max_tokens, version=policy_version, tokenizer=tokenizer)
+    )
     return tuple(planner.plan(unit, base_citation(version_id)))
 
 
@@ -122,6 +135,7 @@ def pipeline(
     max_tokens: int = 1000,
     version_id: UUID = VERSION_ID,
     policy_version: str = POLICY_VERSION,
+    tokenizer: str = TOKENIZER,
 ) -> tuple[tuple[KnowledgeUnit, ...], tuple[DocumentChunk, ...]]:
     units = segment(
         document,
@@ -129,6 +143,7 @@ def pipeline(
         max_tokens=max_tokens,
         version_id=version_id,
         policy_version=policy_version,
+        tokenizer=tokenizer,
     )
     chunks = tuple(
         chunk
@@ -138,6 +153,7 @@ def pipeline(
             max_tokens=max_tokens,
             version_id=version_id,
             policy_version=policy_version,
+            tokenizer=tokenizer,
         )
     )
     return units, chunks

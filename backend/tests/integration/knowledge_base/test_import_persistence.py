@@ -19,6 +19,10 @@ API figée (module ``knowledge_base.adapters.gateway.persistence``) :
   ``uq_document_versions_content_hash`` : ``IntegrityError`` ne sort pas de la
   persistance (arbitrage S2), le handler rejoue alors sa transaction. La
   contrainte elle-même est vérifiée par ``test_import_migration``.
+- Revue S2 I-1 : dans une Unit of Work, la **première** lecture d'un document
+  fixe la version du verrou ; une relecture (``get``) ne la rafraîchit pas, et
+  ``find_by_content_hash`` rend un modèle de lecture (``ContentOwner``), pas
+  l'agrégat.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import 
     SqlAlchemyUnitOfWork,
 )
 from knowledge_base.domain.entities.knowledge_document import (
+    DocumentStatus,
     KnowledgeDocument,
     VersionStatus,
 )
@@ -40,6 +45,7 @@ from knowledge_base.domain.providers.idempotency_key_repository import (
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
     ContentHashTakenError,
+    ContentOwner,
 )
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from runtime.database import SessionFactory
@@ -47,6 +53,7 @@ from tests.integration.knowledge_base.import_support import clean_documents
 from tests.unit.knowledge_base.domain.builders import (
     DOCUMENT_ID,
     content_hash,
+    extract,
     import_next,
     new_document,
     source,
@@ -151,11 +158,77 @@ async def test_find_by_content_hash_matches_any_version_of_any_document(
         by_received = await uow.documents.find_by_content_hash(content_hash(2))
         unknown = await uow.documents.find_by_content_hash(content_hash(99))
 
-    assert by_discarded is not None
-    assert by_discarded.document_id == DOCUMENT_ID
-    assert by_received is not None
-    assert by_received.document_id == DOCUMENT_ID
+    assert by_discarded == ContentOwner(
+        document_id=DOCUMENT_ID,
+        document_status=DocumentStatus.ACTIVE,
+        version_id=version_id(1),
+        version_number=1,
+    )
+    assert by_received == ContentOwner(
+        document_id=DOCUMENT_ID,
+        document_status=DocumentStatus.ACTIVE,
+        version_id=version_id(2),
+        version_number=2,
+    )
     assert unknown is None
+
+
+async def commit_a_concurrent_extraction(factory: SessionFactory) -> None:
+    """Une autre transaction fait passer la version 1 à ``EXTRACTED`` : le
+    document change (verrou + 1) sans nouvelle version."""
+    async with SqlAlchemyUnitOfWork(factory) as other:
+        document = await other.documents.get(DOCUMENT_ID)
+        assert document is not None
+        extract(document, 1)
+        await other.documents.save(document)
+        await other.commit()
+
+
+async def test_a_second_read_does_not_refresh_the_lock_of_the_first_instance(
+    session_factory: SessionFactory,
+) -> None:
+    await persist(session_factory, new_document(1))
+
+    async with SqlAlchemyUnitOfWork(session_factory) as uow:
+        first_read = await uow.documents.get(DOCUMENT_ID)
+        assert first_read is not None
+        await commit_a_concurrent_extraction(session_factory)
+        second_read = await uow.documents.get(DOCUMENT_ID)
+        assert second_read is not None
+        # READ COMMITTED : la relecture voit le commit concurrent.
+        assert second_read.versions[0].status is VersionStatus.EXTRACTED
+        import_next(first_read, 2)
+
+        with pytest.raises(ConcurrentModificationError):
+            await uow.documents.save(first_read)
+
+    loaded = await load(session_factory, DOCUMENT_ID)
+    assert [(v.number, v.status) for v in loaded.versions] == [
+        (1, VersionStatus.EXTRACTED)
+    ]
+
+
+async def test_a_lookup_by_content_hash_does_not_refresh_the_lock(
+    session_factory: SessionFactory,
+) -> None:
+    await persist(session_factory, new_document(1))
+
+    async with SqlAlchemyUnitOfWork(session_factory) as uow:
+        document = await uow.documents.get(DOCUMENT_ID)
+        assert document is not None
+        await commit_a_concurrent_extraction(session_factory)
+        owner = await uow.documents.find_by_content_hash(content_hash(1))
+        assert owner is not None
+        assert owner.version_id == version_id(1)
+        import_next(document, 2)
+
+        with pytest.raises(ConcurrentModificationError):
+            await uow.documents.save(document)
+
+    loaded = await load(session_factory, DOCUMENT_ID)
+    assert [(v.number, v.status) for v in loaded.versions] == [
+        (1, VersionStatus.EXTRACTED)
+    ]
 
 
 async def test_save_persists_the_new_version_and_the_discarded_one(

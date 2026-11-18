@@ -72,8 +72,8 @@ async def test_a_received_version_becomes_extracted_with_units_and_chunks(
     assert [list(u["section_path"]) for u in units] == [["Cours asyncio"]]
     assert len(chunks) == 1
     assert chunks[0]["unit_id"] == units[0]["id"]
-    assert chunks[0]["chunking_policy_version"] == POLICY.version
-    assert units[0]["chunking_policy_version"] == POLICY.version
+    assert chunks[0]["chunking_policy_version"] == "itest-1+test-words-v1"
+    assert units[0]["chunking_policy_version"] == "itest-1+test-words-v1"
 
 
 async def test_nothing_is_written_before_the_item_runs(rig: ExtractionRig) -> None:
@@ -134,7 +134,7 @@ async def test_chunk_hash_and_token_count_are_stored_as_specified(
 
     for chunk in await rig.chunks(imported.version_id):
         text = chunk["contextual_text"]
-        digest = hashlib.sha256((text + POLICY.version).encode()).hexdigest()
+        digest = hashlib.sha256(f"{text}\x00{POLICY.identity}".encode()).hexdigest()
         assert chunk["chunk_hash"] == digest
         assert chunk["token_count"] == len(text.split())
         assert chunk["token_count"] <= POLICY.max_tokens
@@ -160,7 +160,6 @@ async def test_a_plain_text_file_is_extracted_without_docling(
 async def test_the_real_docling_parser_extracts_a_markdown_qa_sheet(
     rig: ExtractionRig,
 ) -> None:
-    pytest.importorskip("docling")
     imported = await rig.import_document(QA_SHEET, kind="QA_SHEET")
 
     outcome = await rig.run(imported.item_id, rig.handler_with(None))

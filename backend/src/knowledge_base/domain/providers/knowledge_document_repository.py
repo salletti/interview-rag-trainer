@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from knowledge_base.domain.entities.knowledge_document import KnowledgeDocument
+from knowledge_base.domain.entities.knowledge_document import (
+    DocumentStatus,
+    KnowledgeDocument,
+)
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 
 
@@ -32,14 +36,31 @@ class ContentHashTakenError(Exception):
         self.document_id = document_id
 
 
+@dataclass(frozen=True)
+class ContentOwner:
+    """Modèle de lecture : la version qui porte une empreinte et l'état de son
+    document. Ce n'est pas l'agrégat : il ne peut pas être sauvegardé, et sa
+    lecture ne touche pas le verrou optimiste d'un document déjà lu."""
+
+    document_id: UUID
+    document_status: DocumentStatus
+    version_id: UUID
+    version_number: int
+
+
 class KnowledgeDocumentRepository(Protocol):
-    async def get(self, document_id: UUID) -> KnowledgeDocument | None: ...
+    async def get(self, document_id: UUID) -> KnowledgeDocument | None:
+        """Dans une même Unit of Work, la **première** lecture d'un document
+        fixe la version du verrou optimiste : une relecture ne la rafraîchit
+        pas (sinon la sauvegarde de l'instance lue en premier écraserait un
+        commit concurrent)."""
+        ...
 
     async def find_by_content_hash(
         self, content_hash: ContentHash
-    ) -> KnowledgeDocument | None:
-        """Document dont **une** version, quel que soit son état, porte cette
-        empreinte."""
+    ) -> ContentOwner | None:
+        """Version (quel que soit son état) qui porte cette empreinte, avec
+        l'état de son document."""
         ...
 
     async def add(self, document: KnowledgeDocument) -> None:

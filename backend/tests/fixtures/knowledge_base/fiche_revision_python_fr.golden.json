@@ -15,7 +15,13 @@
         "Fiche de révision Python",
         "GIL"
       ],
-      "chunks": 1
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Le Global Interpreter Lock est"
+        ]
+      ]
     },
     {
       "type": "DEFINITION",
@@ -24,7 +30,21 @@
         "Fiche de révision Python",
         "Décorateur"
       ],
-      "chunks": 1
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Un décorateur est une fonction"
+        ],
+        [
+          "Heading",
+          "Exemple"
+        ],
+        [
+          "CodeBlock",
+          "def chronometre(fonction): def enveloppe(*args, **kwargs):"
+        ]
+      ]
     },
     {
       "type": "DEFINITION",
@@ -33,7 +53,13 @@
         "Fiche de révision Python",
         "Générateur"
       ],
-      "chunks": 1
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Un générateur est une fonction"
+        ]
+      ]
     }
   ]
 }

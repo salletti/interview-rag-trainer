@@ -26,6 +26,7 @@ pytestmark = pytest.mark.integration
 
 BACKEND = Path(__file__).resolve().parents[3]
 S2_TABLES = ("documents", "document_versions", "idempotency_keys")
+S2_REVISION = "65b08637988e"
 BEFORE_S2_REVISION = "f35542284e25"  # migration S0 (work_items)
 
 # colonne -> (type PostgreSQL, nullable)
@@ -111,9 +112,15 @@ async def test_downgrade_removes_the_s2_tables_and_keeps_work_items(
 
     alembic_ok("downgrade", BEFORE_S2_REVISION)
 
+    assert BEFORE_S2_REVISION in alembic_ok("current")
     for table in S2_TABLES:
         assert not await existing(session_factory, table)
     assert await existing(session_factory, "work_items")
+
+    alembic_ok("upgrade", S2_REVISION)
+    assert S2_REVISION in alembic_ok("current")
+    for table in S2_TABLES:
+        assert await existing(session_factory, table)
 
     alembic_ok("upgrade", "head")
     for table in S2_TABLES:

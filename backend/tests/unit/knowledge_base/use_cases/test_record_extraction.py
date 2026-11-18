@@ -55,7 +55,7 @@ from knowledge_base.use_cases.import_document_version.import_document_version_co
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
-from tests.unit.knowledge_base.domain.services.support import POLICY_VERSION
+from tests.unit.knowledge_base.domain.services.support import POLICY_IDENTITY
 from tests.unit.knowledge_base.use_cases.extraction_fakes import ExtractionRig, make_rig
 from tests.unit.knowledge_base.use_cases.fakes import stream
 
@@ -101,7 +101,7 @@ async def test_prepare_segments_by_the_document_kind_and_cites_the_source() -> N
         command.document_id,
         command.version_id,
     )
-    assert prepared.policy_version == POLICY_VERSION
+    assert prepared.policy_version == POLICY_IDENTITY
     assert [(u.unit_type, u.question_text) for u in prepared.units] == [
         (UnitType.QA, "Qu'est-ce que Depends ?"),
         (UnitType.QA, "Qu'est-ce que lifespan ?"),
@@ -254,7 +254,7 @@ async def test_apply_writes_units_chunks_and_the_extracted_status_together() -> 
     assert status(rig, command) is VersionStatus.EXTRACTED
     (batch,) = rig.store.batches
     assert batch.version_id == command.version_id
-    assert batch.policy_version == POLICY_VERSION
+    assert batch.policy_version == POLICY_IDENTITY
     assert batch.units == prepared.units
     assert batch.chunks == prepared.chunks
     assert {c.unit_id for c in batch.chunks} == {u.unit_id for u in batch.units}

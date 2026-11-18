@@ -285,7 +285,8 @@ async def test_a_refused_duplicate_cancels_nothing() -> None:
     assert item.status == "PENDING"
 
 
-async def test_a_lost_optimistic_lock_surfaces_and_persists_nothing() -> None:
+async def test_a_lock_lost_twice_surfaces_and_persists_nothing() -> None:
+    # Le premier verrou perdu est rejoué (test_import_race) ; le second remonte.
     harness = make_harness()
     first = await harness.import_document.handle(new_document_command(V1))
     harness.state.conflict_on_save = True

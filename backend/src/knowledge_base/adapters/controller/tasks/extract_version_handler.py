@@ -13,6 +13,8 @@ Erreurs terminales (sans retry) :
 |---|---|---|
 | ``EMPTY_DOCUMENT`` | aucun contenu | faux |
 | ``INVALID_DOCUMENT`` | non UTF-8, type inconnu, conversion impossible | faux |
+| ``DOCUMENT_TOO_COMPLEX`` | imbrication trop profonde pour le parseur | faux |
+| ``CHUNKING_FAILED`` | ``ChunkBudgetError`` (budget sans place) | faux |
 | ``BLOB_MISSING`` | original absent du volume | vrai (après restauration) |
 | ``INVALID_PAYLOAD`` | payload de l'item illisible | — (aucune version désignée) |
 
@@ -53,23 +55,26 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import 
     SqlAlchemyUnitOfWork,
 )
 from knowledge_base.domain.exceptions.parsing_errors import (
-    EMPTY_DOCUMENT,
-    INVALID_DOCUMENT,
+    PARSE_ERROR_CODES,
     DocumentParseError,
 )
 from knowledge_base.domain.providers.document_blob_reader import BlobMissingError
 from knowledge_base.domain.providers.document_parser import DocumentParser
+from knowledge_base.domain.providers.extraction_transaction import (
+    ExtractionTransaction,
+)
 from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.work_queue import FailureInfo
+from knowledge_base.domain.services.chunk_planner import ChunkBudgetError
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
+from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
 from knowledge_base.use_cases.record_extraction.record_extraction_handler import (
-    ExtractionTransaction,
     PreparedExtraction,
     RecordExtractionHandler,
 )
@@ -85,17 +90,10 @@ logger = logging.getLogger(__name__)
 INGESTION_QUEUE: Final = "knowledge_base.ingestion"
 BLOB_MISSING: Final = "BLOB_MISSING"
 INVALID_PAYLOAD: Final = "INVALID_PAYLOAD"
+CHUNKING_FAILED: Final = "CHUNKING_FAILED"
 # Échecs déterministes : relancer l'extraction du même contenu n'a pas de sens.
-NOT_RETRYABLE_CODES: Final = frozenset({EMPTY_DOCUMENT, INVALID_DOCUMENT})
-
-# Politique de production (ADR 0009 §7). Budget : 512 tokens du profil
-# multilingual-e5-base, moins 2 tokens spéciaux (<s>, </s>) et 2 pour le
-# préfixe « passage: » ajouté par l'Embedder (mesurés sur le tokenizer réel) ;
-# l'en-tête contextuel fait partie du texte compté, il n'appelle pas de marge.
-# Le compteur provisoire surestime (voir approximate_token_counter).
-DEFAULT_CHUNKING_POLICY: Final = ChunkingPolicy(
-    version="kb-chunking-v1", max_tokens=508
-)
+# Tout code d'une DocumentParseError en fait partie.
+NOT_RETRYABLE_CODES: Final = PARSE_ERROR_CODES | {CHUNKING_FAILED}
 
 TransactionFactory = Callable[[AsyncSession], ExtractionTransaction]
 T = TypeVar("T")
@@ -124,7 +122,11 @@ class ExtractVersionWorkHandler:
         try:
             prepared = await self._keeping_lease(ctx, self._use_case.prepare(command))
         except DocumentParseError as error:
-            raise TerminalWorkError(error.code, error.message or str(error)) from error
+            raise TerminalWorkError(
+                error.code.value, error.message or str(error)
+            ) from error
+        except ChunkBudgetError as error:
+            raise TerminalWorkError(CHUNKING_FAILED, str(error)) from error
         except BlobMissingError as error:
             raise TerminalWorkError(BLOB_MISSING, str(error)) from error
 

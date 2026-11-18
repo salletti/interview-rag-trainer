@@ -19,9 +19,10 @@ dataclasses figées, égalité par valeur) :
 - ``citation.Citation`` (I13) : ``document_id, document_title, version_id,
   version_number, section_path: SectionPath, page_start, page_end,
   source_filename`` ; titre et nom de fichier non blancs, numéro >= 1.
-- ``chunking_policy.ChunkingPolicy(version, max_tokens, overlap_tokens=0,
-  fallbacks=...)`` : version non blanche, ``max_tokens > 0``,
-  ``0 <= overlap_tokens < max_tokens``.
+- ``chunking_policy.ChunkingPolicy(version, tokenizer, max_tokens,
+  overlap_tokens=0, fallbacks=...)`` : version et tokenizer non blancs,
+  tokenizer sans ``+``, ``max_tokens > 0``, ``0 <= overlap_tokens <
+  max_tokens`` ; ``identity`` = ``version+tokenizer``.
 - ``knowledge_unit.KnowledgeUnit(unit_id, ordinal, unit_type: UnitType,
   question_text, section_path, page_span, token_count, blocks)`` ;
   ``UnitType`` : ``QA``, ``SECTION``, ``DEFINITION`` ; une unité ``QA`` a une
@@ -181,18 +182,37 @@ def test_a_citation_without_pages_is_valid() -> None:
 
 
 def test_a_policy_has_no_overlap_by_default() -> None:
-    assert ChunkingPolicy(version="v1", max_tokens=512).overlap_tokens == 0
+    policy = ChunkingPolicy(version="v1", tokenizer="t", max_tokens=512)
+
+    assert policy.overlap_tokens == 0
+
+
+def test_the_policy_identity_joins_the_version_and_the_tokenizer() -> None:
+    policy = ChunkingPolicy(
+        version="kb-chunking-v1", tokenizer="approx-xlmr-v1", max_tokens=508
+    )
+
+    assert policy.identity == "kb-chunking-v1+approx-xlmr-v1"
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"version": " ", "max_tokens": 10},
-        {"version": "v1", "max_tokens": 0},
-        {"version": "v1", "max_tokens": 10, "overlap_tokens": -1},
-        {"version": "v1", "max_tokens": 10, "overlap_tokens": 10},
+        {"version": " ", "tokenizer": "t", "max_tokens": 10},
+        {"version": "v1", "tokenizer": " ", "max_tokens": 10},
+        {"version": "v1", "tokenizer": "a+b", "max_tokens": 10},
+        {"version": "v1", "tokenizer": "t", "max_tokens": 0},
+        {"version": "v1", "tokenizer": "t", "max_tokens": 10, "overlap_tokens": -1},
+        {"version": "v1", "tokenizer": "t", "max_tokens": 10, "overlap_tokens": 10},
     ],
-    ids=["blank-version", "zero-budget", "negative-overlap", "overlap-ge-budget"],
+    ids=[
+        "blank-version",
+        "blank-tokenizer",
+        "ambiguous-tokenizer",
+        "zero-budget",
+        "negative-overlap",
+        "overlap-ge-budget",
+    ],
 )
 def test_an_incoherent_policy_is_rejected(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):

@@ -363,6 +363,50 @@ async def test_a_version_of_a_withdrawn_document_is_a_409_and_changes_nothing(
     assert [i["status"] for i in await rig.extract_items()] == ["PENDING"]
 
 
+async def test_reimporting_the_content_of_a_withdrawn_document_is_a_409(
+    rig: ImportRig,
+) -> None:
+    # Revue S2 M-7 ; le retrait est fait en base (WithdrawDocument arrive en S7).
+    first = (await rig.post_document(V1)).json()
+    async with rig.session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_base.documents SET status = 'WITHDRAWN' WHERE id = :d"
+            ),
+            {"d": first["document_id"]},
+        )
+
+    response = await rig.post_document(V1, title="Autre titre", idempotency_key="k")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == "DOCUMENT_WITHDRAWN"
+    assert body["document_id"] == first["document_id"]
+    assert await rig.count("documents") == 1
+    assert await rig.count("idempotency_keys") == 0
+    assert [i["status"] for i in await rig.extract_items()] == ["PENDING"]
+
+
+async def test_a_path_in_the_filename_is_dropped_before_storage(
+    rig: ImportRig,
+) -> None:
+    body = (await rig.post_document(V1, filename="..\\..\\notes/asyncio.md")).json()
+
+    (version,) = await rig.versions(body["document_id"])
+    assert version["filename"] == "asyncio.md"
+
+
+async def test_a_filename_over_255_characters_is_a_422_without_blob_or_row(
+    rig: ImportRig,
+) -> None:
+    response = await rig.post_document(V1, filename="x" * 253 + ".md")
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_FILENAME"
+    assert rig.blob_files() == []
+    assert await rig.count("documents") == 0
+
+
 async def test_a_refused_type_on_a_version_is_a_415_and_nothing_changes(
     rig: ImportRig,
 ) -> None:

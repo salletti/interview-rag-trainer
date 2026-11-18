@@ -38,6 +38,7 @@ from tests.unit.knowledge_base.domain.services.support import (
     COUNTER,
     POLICY_VERSION,
     TITLE,
+    TOKENIZER,
     base_citation,
     code,
     header,
@@ -170,7 +171,10 @@ def test_the_policy_decides_the_order_of_the_code_fallbacks() -> None:
 
     def first_fragment(fallbacks: tuple[CodeFallback, ...]) -> str:
         policy = ChunkingPolicy(
-            version=POLICY_VERSION, max_tokens=budget, fallbacks=fallbacks
+            version=POLICY_VERSION,
+            tokenizer=TOKENIZER,
+            max_tokens=budget,
+            fallbacks=fallbacks,
         )
         chunks = ChunkPlanner(COUNTER, policy).plan(unit, base_citation())
         assert all(c.token_count <= budget for c in chunks)
@@ -185,7 +189,10 @@ def test_the_policy_decides_the_order_of_the_code_fallbacks() -> None:
 def test_a_policy_with_overlap_is_refused() -> None:
     with pytest.raises(ValueError, match="overlap"):
         ChunkPlanner(
-            COUNTER, ChunkingPolicy(version="v", max_tokens=100, overlap_tokens=10)
+            COUNTER,
+            ChunkingPolicy(
+                version="v", tokenizer=TOKENIZER, max_tokens=100, overlap_tokens=10
+            ),
         )
 
 
@@ -193,6 +200,7 @@ def test_a_policy_with_a_repeated_fallback_is_refused() -> None:
     with pytest.raises(ValueError, match="fallback"):
         ChunkingPolicy(
             version="v",
+            tokenizer=TOKENIZER,
             max_tokens=100,
             fallbacks=(CodeFallback.LINES, CodeFallback.LINES),
         )

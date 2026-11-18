@@ -128,7 +128,7 @@ class KnowledgeUnitSegmenter:
 
     def _unit(self, draft: _Draft, ordinal: int, version_id: UUID) -> KnowledgeUnit:
         return KnowledgeUnit(
-            unit_id=unit_id(version_id, self._policy.version, ordinal),
+            unit_id=unit_id(version_id, self._policy.identity, ordinal),
             ordinal=ordinal,
             unit_type=draft.unit_type,
             question_text=draft.question,

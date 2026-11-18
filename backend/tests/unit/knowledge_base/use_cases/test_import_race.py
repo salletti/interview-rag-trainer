@@ -1,27 +1,33 @@
 """Courses entre imports concurrents (arbitrage S2 : ``IntegrityError`` ne fuit
-pas).
+pas, revue S2 I-2).
 
 Le dépôt SQL traduit la violation de ``UNIQUE(content_hash)`` en
 ``ContentHashTakenError`` et celle de la clé primaire des clés d'idempotence
 en ``IdempotencyKeyTakenError``. Ici, l'écriture du perdant commite d'abord
 l'état du gagnant (invisible pour la Unit of Work déjà ouverte, comme sous
 PostgreSQL) puis lève l'exception : le handler doit rejouer sa transaction une
-fois et rendre le résultat du gagnant.
+fois et rendre le résultat du gagnant. Même règle pour un verrou optimiste
+perdu (``ConcurrentModificationError``) : la seconde tentative relit le
+document et la clé.
 """
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from knowledge_base.domain.entities.knowledge_document import KnowledgeDocument
-from knowledge_base.domain.exceptions.document_errors import DocumentWithdrawnError
+from knowledge_base.domain.exceptions.document_errors import (
+    DocumentWithdrawnError,
+    DuplicateContentError,
+)
 from knowledge_base.domain.providers.idempotency_key_repository import (
     IdempotencyKeyTakenError,
     IdempotencyRecord,
 )
 from knowledge_base.domain.providers.knowledge_document_repository import (
+    ConcurrentModificationError,
     ContentHashTakenError,
 )
 from knowledge_base.domain.value_objects.content_hash import ContentHash
@@ -37,6 +43,7 @@ from knowledge_base.use_cases.import_document.import_document_command import (
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
     ImportDocumentVersion,
 )
+from knowledge_base.use_cases.import_result import ImportDocumentResult
 from tests.unit.knowledge_base.use_cases.fakes import (
     NOW,
     FakeDocuments,
@@ -242,3 +249,94 @@ async def test_the_content_of_a_withdrawn_document_cannot_be_reimported() -> Non
     assert raised.value.document_id == first.document_id
     assert harness.state.keys == {}
     assert len(harness.state.documents) == 1
+
+
+def new_version(
+    document_id: UUID, content: bytes, key: str | None = None
+) -> ImportDocumentVersion:
+    return ImportDocumentVersion(
+        document_id=document_id,
+        filename="v2.md",
+        media_type="text/markdown",
+        content=stream(content),
+        idempotency_key=key,
+    )
+
+
+def lose_next_save_to(
+    monkeypatch: pytest.MonkeyPatch, harness: Harness, winner: ImportDocumentVersion
+) -> list[ImportDocumentResult]:
+    """Juste avant la prochaine écriture ``save``, ``winner`` est importé et
+    commité par une autre Unit of Work ; la sauvegarde perd alors le verrou
+    optimiste. Les écritures suivantes passent."""
+    original = FakeDocuments.save
+    won: list[ImportDocumentResult] = []
+    lost = False
+
+    async def racing(self: FakeDocuments, document: KnowledgeDocument) -> None:
+        nonlocal lost
+        if not lost:
+            lost = True  # avant l'import gagnant, qui passe aussi par ``save``
+            won.append(await harness.import_version.handle(winner))
+            raise ConcurrentModificationError(document.document_id)
+        await original(self, document)
+
+    monkeypatch.setattr(FakeDocuments, "save", racing)
+    return won
+
+
+async def test_a_lost_lock_with_the_same_key_replays_the_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = make_harness()
+    target = await harness.import_document.handle(new_document(OTHER))
+    won = lose_next_save_to(
+        monkeypatch, harness, new_version(target.document_id, CONTENT, "key-1")
+    )
+
+    result = await harness.import_version.handle(
+        new_version(target.document_id, CONTENT, "key-1")
+    )
+
+    assert result == won[0]
+    assert result.created is True
+    versions = harness.state.documents[target.document_id].versions
+    assert [v.number for v in versions] == [1, 2]
+
+
+async def test_a_lost_lock_on_the_same_content_without_key_is_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = make_harness()
+    target = await harness.import_document.handle(new_document(OTHER))
+    won = lose_next_save_to(
+        monkeypatch, harness, new_version(target.document_id, CONTENT)
+    )
+
+    with pytest.raises(DuplicateContentError) as raised:
+        await harness.import_version.handle(new_version(target.document_id, CONTENT))
+
+    assert raised.value.existing_version_id == won[0].version_id
+    assert len(harness.state.documents[target.document_id].versions) == 2
+
+
+async def test_a_lost_lock_on_another_content_imports_on_the_fresh_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = make_harness()
+    target = await harness.import_document.handle(new_document(OTHER))
+    won = lose_next_save_to(
+        monkeypatch, harness, new_version(target.document_id, b"# Gagnant\n")
+    )
+
+    result = await harness.import_version.handle(
+        new_version(target.document_id, CONTENT)
+    )
+
+    assert (won[0].number, result.number) == (2, 3)
+    document = harness.state.documents[target.document_id]
+    assert [v.status.value for v in document.versions] == [
+        "DISCARDED",
+        "DISCARDED",
+        "RECEIVED",
+    ]

@@ -4,12 +4,15 @@
   blob orphelin (repérable sous ``KB_BLOB_ROOT``, purgé par la réconciliation
   S7/S8) et AUCUNE ligne : ni document, ni version, ni work item, ni clé
   d'idempotence, ni annulation de l'item de la version précédente.
-- Concurrence (choix) : deux imports concurrents de versions d'un même
-  document -> le verrou optimiste (``documents.version``) en laisse passer un ;
-  l'autre reçoit 409 ``CONCURRENT_MODIFICATION``, sans réessai automatique (le
-  client rejoue). La détection déterministe est testée sur le dépôt
-  (``test_import_persistence``) ; ici, l'invariant tient quel que soit
-  l'entrelacement.
+- Concurrence : deux imports concurrents de versions d'un même document -> le
+  verrou optimiste (``documents.version``) en laisse passer un ; l'autre rejoue
+  **une fois** sa transaction sur l'état à jour (revue S2 I-2) et ne reçoit
+  409 ``CONCURRENT_MODIFICATION`` que s'il perd une seconde fois. La détection
+  déterministe est testée sur le dépôt (``test_import_persistence``) ; ici,
+  l'invariant tient quel que soit l'entrelacement.
+- Même ``Idempotency-Key`` envoyée deux fois en parallèle sur ``/versions``
+  (barrière après les lectures) : le perdant perd le verrou optimiste, rejoue,
+  voit la clé du gagnant et rend la même réponse 202.
 - Course sur un même nouveau fichier (arbitrage S2) : les deux imports lisent
   « contenu inconnu » (barrière explicite après la lecture), le perdant bute
   sur ``UNIQUE(content_hash)``, rejoue sa transaction et rend le document du
@@ -29,7 +32,9 @@ from sqlalchemy import text
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_knowledge_document_repository import (  # noqa: E501
     SqlAlchemyKnowledgeDocumentRepository,
 )
-from knowledge_base.domain.entities.knowledge_document import KnowledgeDocument
+from knowledge_base.domain.providers.knowledge_document_repository import (
+    ContentOwner,
+)
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 from runtime.database import SessionFactory
 from runtime.settings import Settings
@@ -165,15 +170,16 @@ async def test_concurrent_version_imports_keep_a_single_live_version(
 
 def both_lookups_meet_at_a_barrier(monkeypatch: pytest.MonkeyPatch) -> None:
     """Les deux premières recherches par empreinte s'attendent après leur
-    lecture : chaque import a vu « contenu inconnu » avant que l'un d'eux
-    n'écrive. Les recherches suivantes (rejeu du perdant) passent."""
+    lecture : chaque import a fait toutes ses lectures (clé, document, contenu
+    inconnu) avant que l'un d'eux n'écrive. Les recherches suivantes (rejeu du
+    perdant) passent."""
     original = SqlAlchemyKnowledgeDocumentRepository.find_by_content_hash
     barrier = asyncio.Barrier(2)
     calls = 0
 
     async def meeting(
         self: SqlAlchemyKnowledgeDocumentRepository, content_hash: ContentHash
-    ) -> KnowledgeDocument | None:
+    ) -> ContentOwner | None:
         nonlocal calls
         calls += 1
         found = await original(self, content_hash)
@@ -207,3 +213,20 @@ async def test_two_concurrent_imports_of_the_same_new_file_yield_one_document(
     assert len(await rig.versions(document["id"])) == 1
     assert len(await rig.extract_items()) == 1
     assert rig.blob_files() == [blob_path(rig.blob_root, V1)]
+
+
+async def test_the_same_key_sent_twice_in_parallel_on_versions_answers_twice_202(
+    rig: ImportRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = (await rig.post_document(V1)).json()
+    both_lookups_meet_at_a_barrier(monkeypatch)
+
+    one, two = await asyncio.gather(
+        rig.post_version(first["document_id"], V2, idempotency_key="key-v"),
+        rig.post_version(first["document_id"], V2, idempotency_key="key-v"),
+    )
+
+    assert (one.status_code, two.status_code) == (202, 202), [one.text, two.text]
+    assert one.json() == two.json()
+    assert [v["number"] for v in await rig.versions(first["document_id"])] == [1, 2]
+    assert await rig.count("idempotency_keys") == 1

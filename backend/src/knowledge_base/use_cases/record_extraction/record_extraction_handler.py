@@ -20,8 +20,6 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from types import TracebackType
-from typing import Protocol, Self
 from uuid import UUID
 
 from knowledge_base.domain.entities.knowledge_document import (
@@ -33,11 +31,9 @@ from knowledge_base.domain.entities.knowledge_document import (
 from knowledge_base.domain.exceptions.document_errors import VersionNotFoundError
 from knowledge_base.domain.providers.document_blob_reader import DocumentBlobReader
 from knowledge_base.domain.providers.document_parser import DocumentParser
-from knowledge_base.domain.providers.extraction_repository import (
-    ExtractionRepository,
-)
-from knowledge_base.domain.providers.knowledge_document_repository import (
-    KnowledgeDocumentRepository,
+from knowledge_base.domain.providers.document_reader import DocumentReader
+from knowledge_base.domain.providers.extraction_transaction import (
+    ExtractionTransaction,
 )
 from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.services.chunk_planner import ChunkPlanner
@@ -57,37 +53,12 @@ from knowledge_base.use_cases.record_extraction.record_extraction_command import
 logger = logging.getLogger(__name__)
 
 
-class DocumentReader(Protocol):
-    """Unit of Work en lecture seule : ``prepare`` n'appelle jamais ``commit``."""
-
-    @property
-    def documents(self) -> KnowledgeDocumentRepository: ...
-
-    async def __aenter__(self) -> Self: ...
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None: ...
-
-
-class ExtractionTransaction(Protocol):
-    """Dépôts liés à la transaction de finalisation (ou d'échec) en cours ; la
-    transaction appartient à l'appelant."""
-
-    @property
-    def documents(self) -> KnowledgeDocumentRepository: ...
-
-    @property
-    def extractions(self) -> ExtractionRepository: ...
-
-
 @dataclass(frozen=True)
 class PreparedExtraction:
     document_id: UUID
     version_id: UUID
+    # ``ChunkingPolicy.identity`` (version + tokenizer), persistée comme
+    # ``chunking_policy_version``.
     policy_version: str
     units: tuple[KnowledgeUnit, ...]
     chunks: tuple[DocumentChunk, ...]
@@ -130,7 +101,7 @@ class RecordExtractionHandler:
         return PreparedExtraction(
             document_id=document.document_id,
             version_id=version.version_id,
-            policy_version=self._policy.version,
+            policy_version=self._policy.identity,
             units=units,
             chunks=chunks,
         )

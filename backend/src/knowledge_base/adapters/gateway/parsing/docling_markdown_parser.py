@@ -2,7 +2,11 @@
 anti-corruption, aucun type Docling ne sort de ce module.
 
 - Le front-matter (``---`` / ``clé: valeur`` / ``---``) est lu ici, AVANT
-  Docling, et rendu dans ``metadata`` ; Docling ne reçoit que le corps.
+  Docling, et rendu dans ``metadata`` ; Docling ne reçoit que le corps. Le
+  bloc n'est un front-matter que si chacune de ses lignes est ``clé: valeur``,
+  vide ou commentaire ``#`` : sinon (une règle horizontale suivie de prose,
+  par exemple) le document est rendu tel quel à Docling. Les guillemets
+  simples ou doubles qui entourent une valeur sont retirés.
 - Titres : Docling rend le ``#`` en ``TitleItem`` et ``##``… en
   ``SectionHeaderItem(level=n-1)`` ; les niveaux Markdown sont restitués.
 - Paragraphe à mise en forme (gras, lien, code en ligne) : Docling le découpe
@@ -14,6 +18,9 @@ anti-corruption, aucun type Docling ne sort de ce module.
   dans l'ordre.
 - Tableau : une ligne ``| a | b |`` par rangée (en-tête compris).
 - Markdown n'a pas de pages : ``page`` vaut toujours ``None``.
+- Imbrication trop profonde (listes, citations) : Docling échoue sur une
+  ``RecursionError`` ; l'échec est déterministe, rendu en
+  ``DOCUMENT_TOO_COMPLEX``. Le parcours de l'arbre Docling, lui, est itératif.
 
 Docling est importé à la première conversion, pas à l'import du module : l'API
 compose le handler d'extraction sans payer le chargement de Docling.
@@ -21,6 +28,7 @@ compose le handler d'extraction sans payer le chargement de Docling.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from io import BytesIO
 from pathlib import PurePath
@@ -28,6 +36,7 @@ from typing import TYPE_CHECKING, Final
 
 from knowledge_base.adapters.gateway.parsing.plain_text_parser import decode_utf8
 from knowledge_base.domain.exceptions.parsing_errors import (
+    DOCUMENT_TOO_COMPLEX,
     EMPTY_DOCUMENT,
     INVALID_DOCUMENT,
     DocumentParseError,
@@ -48,6 +57,8 @@ if TYPE_CHECKING:
 
 FRONT_MATTER_FENCE: Final = "---"
 MAX_HEADING_LEVEL: Final = 6
+_FRONT_MATTER_ENTRY: Final = re.compile(r"\s*(?P<key>[\w.-]+)\s*:(?P<value>.*)")
+_QUOTES: Final = ('"', "'")
 
 
 class DoclingMarkdownParser:
@@ -63,7 +74,10 @@ class DoclingMarkdownParser:
             raise DocumentParseError(
                 EMPTY_DOCUMENT, f"{filename} ne contient aucun texte"
             )
-        blocks = tuple(_blocks(self._convert(body, filename)))
+        try:
+            blocks = tuple(_blocks(self._convert(body, filename)))
+        except RecursionError as error:
+            raise _too_complex(filename) from error
         if not blocks:
             raise DocumentParseError(
                 EMPTY_DOCUMENT, f"{filename} ne contient aucun bloc exploitable"
@@ -89,20 +103,55 @@ class DoclingMarkdownParser:
             raise DocumentParseError(
                 INVALID_DOCUMENT, f"Docling n'a pas pu convertir {filename} : {error}"
             ) from error
+        except RuntimeError as error:
+            # Le pipeline Docling enveloppe toute erreur de son backend dans
+            # RuntimeError(« Pipeline … failed ») ; seule la récursion est
+            # reconnue comme déterministe, le reste remonte tel quel.
+            if isinstance(error.__cause__, RecursionError):
+                raise _too_complex(filename) from error
+            raise
+
+
+def _too_complex(filename: str) -> DocumentParseError:
+    return DocumentParseError(
+        DOCUMENT_TOO_COMPLEX,
+        f"{filename} : imbrication trop profonde pour être convertie",
+    )
 
 
 def read_front_matter(text: str) -> tuple[dict[str, str], str]:
     """Métadonnées ``clé: valeur`` d'un front-matter en tête de document, et le
-    reste du texte. Sans barrière fermante, il n'y a pas de front-matter."""
+    reste du texte. Sans barrière fermante, ou si une ligne du bloc n'est ni
+    ``clé: valeur``, ni vide, ni un commentaire, il n'y a pas de front-matter."""
     lines = text.split("\n")
     if not lines or lines[0].strip() != FRONT_MATTER_FENCE:
         return {}, text
     for end in range(1, len(lines)):
         if lines[end].strip() == FRONT_MATTER_FENCE:
-            pairs = (line.partition(":") for line in lines[1:end] if ":" in line)
-            metadata = {key.strip(): value.strip() for key, _, value in pairs}
+            metadata = _front_matter_entries(lines[1:end])
+            if metadata is None:
+                return {}, text
             return metadata, "\n".join(lines[end + 1 :])
     return {}, text
+
+
+def _front_matter_entries(lines: list[str]) -> dict[str, str] | None:
+    """Les entrées du bloc ; ``None`` dès qu'une ligne n'en est pas une."""
+    metadata: dict[str, str] = {}
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        entry = _FRONT_MATTER_ENTRY.fullmatch(line)
+        if entry is None:
+            return None
+        metadata[entry["key"]] = _unquoted(entry["value"].strip())
+    return metadata
+
+
+def _unquoted(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTES:
+        return value[1:-1]
+    return value
 
 
 # --- traduction DoclingDocument -> blocs ------------------------------------------
@@ -120,8 +169,15 @@ def _blocks(document: DoclingDocument) -> Iterator[Block]:
         TitleItem,
     )
 
-    def walk(node: NodeItem) -> Iterator[Block]:
-        for reference in node.children:
+    def walk(root: NodeItem) -> Iterator[Block]:
+        # Pile d'itérateurs plutôt que récursion : la profondeur des groupes
+        # ne dépend que du document.
+        pending = [iter(root.children)]
+        while pending:
+            reference = next(pending[-1], None)
+            if reference is None:
+                pending.pop()
+                continue
             item = reference.resolve(document)
             if isinstance(item, TitleItem):
                 yield Heading(level=1, text=item.text)
@@ -142,7 +198,7 @@ def _blocks(document: DoclingDocument) -> Iterator[Block]:
             elif isinstance(item, TextItem):
                 yield from _paragraph(item.text)
             elif isinstance(item, GroupItem):
-                yield from walk(item)
+                pending.append(iter(item.children))
 
     def _inline_text(group: NodeItem) -> str:
         parts: list[str] = []
@@ -155,16 +211,25 @@ def _blocks(document: DoclingDocument) -> Iterator[Block]:
         return "".join(parts)
 
     def _list_items(group: NodeItem) -> Iterator[str]:
-        for reference in group.children:
+        """Éléments d'une liste et de ses sous-listes, dans l'ordre. Chaque
+        niveau de la pile énumère soit les éléments d'une liste, soit les
+        enfants d'un élément (texte à mise en forme, sous-liste)."""
+        pending = [(True, iter(group.children))]
+        while pending:
+            in_list, references = pending[-1]
+            reference = next(references, None)
+            if reference is None:
+                pending.pop()
+                continue
             item = reference.resolve(document)
-            if isinstance(item, TextItem) and item.text.strip():
-                yield item.text.strip()
-            for child in item.children:
-                nested = child.resolve(document)
-                if isinstance(nested, InlineGroup):
-                    yield _inline_text(nested).strip()
-                elif isinstance(nested, ListGroup):
-                    yield from _list_items(nested)
+            if in_list:
+                if isinstance(item, TextItem) and item.text.strip():
+                    yield item.text.strip()
+                pending.append((False, iter(item.children)))
+            elif isinstance(item, InlineGroup):
+                yield _inline_text(item).strip()
+            elif isinstance(item, ListGroup):
+                pending.append((True, iter(item.children)))
 
     yield from walk(document.body)
 

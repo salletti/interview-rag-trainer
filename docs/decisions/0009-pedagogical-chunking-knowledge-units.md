@@ -86,3 +86,13 @@ l'explication, et citer précisément sa source.
   [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md),
   [0011](0011-embedding-profile-search-index-blue-green.md).
 - Conception : [knowledge-base.md §15.2](../conception/bounded-contexts/knowledge-base.md#152-chunking-pédagogique-résumé--détail-dans-ladr-0009).
+
+## Suivi (2026-11-18)
+
+Précision d'implémentation (S3), sans changement de décision : l'identité de
+la `ChunkingPolicy` (point 7) comprend le **tokenizer** utilisé pour compter le
+budget, puisque le budget effectif en dépend : `identity = version+tokenizer`
+(production : `kb-chunking-v1+approx-xlmr-v1`, compteur provisoire majorant).
+Le passage au tokenizer réel du profil (S4) produit donc une nouvelle identité
+de lot. Revue du commit S3 : voir
+[suivi Knowledge Base](../conception/bounded-contexts/knowledge-base-progress.md).

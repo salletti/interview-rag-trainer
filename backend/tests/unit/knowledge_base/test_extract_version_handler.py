@@ -17,14 +17,17 @@ API figée (``knowledge_base.adapters.controller.tasks.extract_version_handler``
   ne se connecte à rien et n'importe pas Docling à la construction.
 - ``execute(item, ctx)`` : payload ``document_id`` + ``version_id`` ->
   ``use_case.prepare`` (hors transaction) ; ``DocumentParseError`` ->
-  ``TerminalWorkError(code, message)`` (pas de retry) ; sinon UN appel à
+  ``TerminalWorkError(code, message)`` (pas de retry), ``ChunkBudgetError`` ->
+  ``TerminalWorkError("CHUNKING_FAILED")`` ; sinon UN appel à
   ``ctx.finalize`` dont le callback fait ``use_case.apply`` (même quand
   ``prepare`` n'a rien à faire : l'item doit se terminer). Payload illisible :
   ``TerminalWorkError("INVALID_PAYLOAD")``.
 - ``on_terminal_failure(session, item, error: FailureInfo)`` : ``use_case.fail``
   avec ``FailureReason(error.code, error.message, retryable)`` ; ``retryable``
-  est faux pour ``EMPTY_DOCUMENT`` et ``INVALID_DOCUMENT`` (déterministes), vrai
-  pour tout autre code. Payload illisible : ne fait rien et ne lève pas.
+  est faux pour tout code de ``DocumentParseError`` (``EMPTY_DOCUMENT``,
+  ``INVALID_DOCUMENT``, ``DOCUMENT_TOO_COMPLEX``) et pour ``CHUNKING_FAILED``
+  (déterministes), vrai pour tout autre code. Payload illisible : ne fait
+  rien et ne lève pas.
 """
 
 from __future__ import annotations
@@ -50,8 +53,10 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
 )
 from knowledge_base.domain.entities.knowledge_document import VersionStatus
 from knowledge_base.domain.exceptions.parsing_errors import (
+    DOCUMENT_TOO_COMPLEX,
     EMPTY_DOCUMENT,
     INVALID_DOCUMENT,
+    ParseErrorCode,
 )
 from knowledge_base.domain.providers.work_queue import FailureInfo
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
@@ -208,6 +213,23 @@ async def test_an_unreadable_file_is_a_terminal_invalid_document() -> None:
     assert raised.value.code == INVALID_DOCUMENT
 
 
+async def test_a_budget_without_room_for_content_is_a_terminal_chunking_failure() -> (
+    None
+):
+    # Deux tokens : l'en-tête tronqué (« … ») et le marqueur ne laissent
+    # aucune place au contenu ; le refaire échouerait pareillement.
+    rig = make_rig(max_tokens=2)
+    ctx = FakeContext(rig)
+    command = await rig.import_document(COURSE)
+
+    with pytest.raises(TerminalWorkError) as raised:
+        await make_handler(rig, ctx).execute(claimed(command), as_context(ctx))
+
+    assert raised.value.code == "CHUNKING_FAILED"
+    assert ctx.finalize_calls == 0
+    assert rig.store.batches == []
+
+
 @pytest.mark.parametrize(
     "payload",
     [{}, {"document_id": str(UUID(int=1))}, {"document_id": "x", "version_id": "y"}],
@@ -240,7 +262,14 @@ async def fail_with(
 
 @pytest.mark.parametrize(
     ("code", "retryable"),
-    [(EMPTY_DOCUMENT, False), (INVALID_DOCUMENT, False), ("TRANSIENT", True)],
+    [
+        (EMPTY_DOCUMENT, False),
+        (INVALID_DOCUMENT, False),
+        (DOCUMENT_TOO_COMPLEX, False),
+        ("CHUNKING_FAILED", False),
+        ("TRANSIENT", True),
+        ("UNEXPECTED_ERROR", True),
+    ],
 )
 async def test_the_failure_hook_marks_the_version_failed_with_the_item_error(
     code: str, retryable: bool
@@ -256,6 +285,21 @@ async def test_the_failure_hook_marks_the_version_failed_with_the_item_error(
     assert version.failure is not None
     assert (version.failure.code, version.failure.message) == (code, "diagnostic")
     assert version.failure.retryable is retryable
+
+
+@pytest.mark.parametrize("code", list(ParseErrorCode))
+async def test_every_parse_error_code_fails_the_version_as_not_retryable(
+    code: ParseErrorCode,
+) -> None:
+    rig = make_rig()
+    command = await rig.import_document(COURSE)
+
+    await fail_with(rig, claimed(command), FailureInfo(code.value, "diagnostic"))
+
+    document = rig.harness.state.documents[command.document_id]
+    failure = document.get_version(command.version_id).failure
+    assert failure is not None
+    assert failure.retryable is False
 
 
 async def test_the_failure_hook_ignores_a_malformed_payload() -> None:

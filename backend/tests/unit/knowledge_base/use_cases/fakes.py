@@ -15,8 +15,9 @@ API figée par ces tests (ports du domaine) :
   (ou sur exception) = rollback.
 - ``...knowledge_document_repository.KnowledgeDocumentRepository`` :
   ``get(document_id) -> KnowledgeDocument | None``,
-  ``find_by_content_hash(content_hash) -> KnowledgeDocument | None`` (toute
-  version, quel que soit son statut), ``add(document)``, ``save(document)``
+  ``find_by_content_hash(content_hash) -> ContentOwner | None`` (modèle de
+  lecture : document, son statut, version et numéro ; toute version, quel que
+  soit son statut), ``add(document)``, ``save(document)``
   (lève ``ConcurrentModificationError`` si le verrou optimiste est perdu).
 - ``...idempotency_key_repository.IdempotencyKeyRepository`` : ``get(key)``,
   ``add(record)`` ; ``IdempotencyRecord(key, fingerprint, document_id,
@@ -48,6 +49,7 @@ from knowledge_base.domain.providers.idempotency_key_repository import (
 )
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
+    ContentOwner,
 )
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 from knowledge_base.use_cases.import_document.import_document_handler import (
@@ -92,10 +94,16 @@ class FakeDocuments:
 
     async def find_by_content_hash(
         self, content_hash: ContentHash
-    ) -> KnowledgeDocument | None:
+    ) -> ContentOwner | None:
         for document in self._w.documents.values():
-            if any(v.source.content_hash == content_hash for v in document.versions):
-                return document
+            for version in document.versions:
+                if version.source.content_hash == content_hash:
+                    return ContentOwner(
+                        document_id=document.document_id,
+                        document_status=document.status,
+                        version_id=version.version_id,
+                        version_number=version.number,
+                    )
         return None
 
     async def add(self, document: KnowledgeDocument) -> None:

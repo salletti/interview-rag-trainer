@@ -3,8 +3,9 @@ exécution de l'item ``extract_version`` par ``execute_work_item`` (S0), sur
 PostgreSQL réel et un volume de blobs temporaire.
 
 Le parseur Markdown est ``MarkdownLiteParser`` (double de la frontière Docling)
-sauf dans les tests qui exigent le vrai Docling (``importorskip``). Compteur de
-tokens : un mot = un token ; politique de test ``itest-1`` à 120 tokens.
+sauf dans les tests qui exigent le vrai Docling (dépendance ferme). Compteur
+de tokens : un mot = un token ; politique de test ``itest-1`` à 120 tokens,
+tokenizer ``test-words-v1`` (identité persistée ``itest-1+test-words-v1``).
 
 Tables figées par ces tests (schéma ``knowledge_base``, cf.
 ``test_extraction_migration``) : ``knowledge_units``, ``document_chunks``.
@@ -49,7 +50,7 @@ from tests.integration.knowledge_base.support import fetch_item, kb_settings
 from tests.unit.knowledge_base.domain.services.support import COUNTER
 from tests.unit.knowledge_base.markdown_lite import MarkdownLiteParser
 
-POLICY = ChunkingPolicy(version="itest-1", max_tokens=120)
+POLICY = ChunkingPolicy(version="itest-1", tokenizer="test-words-v1", max_tokens=120)
 FAST_RETRY = {"work_backoff_base_seconds": 0.01}
 
 

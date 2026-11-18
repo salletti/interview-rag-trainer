@@ -23,10 +23,12 @@ from knowledge_base.use_cases.errors import (
     DocumentNotFoundError,
     DuplicateContentOtherDocumentError,
     IdempotencyKeyConflictError,
+    InvalidFilenameError,
     UnsupportedDocumentTypeError,
 )
 
 IMPORT_REFUSALS = (
+    InvalidFilenameError,
     BlobTooLargeError,
     UnsupportedDocumentTypeError,
     DocumentNotFoundError,
@@ -50,6 +52,12 @@ def refusal_response(error: Exception) -> JSONResponse:
 
 def _describe(error: Exception) -> tuple[int, str, dict[str, Any]]:
     match error:
+        case InvalidFilenameError():
+            return (
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "INVALID_FILENAME",
+                {"reason": error.reason},
+            )
         case BlobTooLargeError():
             return (
                 status.HTTP_413_CONTENT_TOO_LARGE,

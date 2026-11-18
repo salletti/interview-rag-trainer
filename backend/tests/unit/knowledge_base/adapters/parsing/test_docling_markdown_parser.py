@@ -1,7 +1,7 @@
 """``DoclingMarkdownParser`` : Markdown -> ``StructuredDocument`` (ADR 0008 §2).
 
-Ne s'exécute que si ``docling`` est installé (la dépendance est ajoutée par
-l'implémentation de S3, extras ciblés) ; sans lui, tout le module est ignoré.
+``docling`` est une dépendance ferme du backend : importé directement, son
+absence fait échouer le module au lieu de l'ignorer.
 
 API figée (``knowledge_base.adapters.gateway.parsing.docling_markdown_parser``) :
 ``DoclingMarkdownParser().parse(content, media_type, filename)``, port
@@ -20,8 +20,6 @@ Contrat de traduction (couche anti-corruption : aucun type Docling en sortie) :
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip("docling")
 
 from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
     DoclingMarkdownParser,

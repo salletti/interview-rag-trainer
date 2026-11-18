@@ -29,6 +29,7 @@ from knowledge_base.domain.entities.knowledge_document import (
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
     ContentHashTakenError,
+    ContentOwner,
 )
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
@@ -72,16 +73,30 @@ class SqlAlchemyKnowledgeDocumentRepository:
             )
         ).all()
         document = _to_document(row, version_rows)
-        self._remember(document, document.version)
+        # La première lecture fait foi : la relecture d'un document déjà lu
+        # dans cette transaction ne doit pas avancer la version du verrou.
+        if document.document_id not in self._persisted:
+            self._remember(document, document.version)
         return document
 
     async def find_by_content_hash(
         self, content_hash: ContentHash
-    ) -> KnowledgeDocument | None:
-        document_id = await self._session.scalar(
-            select(_v.document_id).where(_v.content_hash == content_hash.value)
+    ) -> ContentOwner | None:
+        row = (
+            await self._session.execute(
+                select(_v.document_id, _d.status, _v.id, _v.number)
+                .join(documents, _d.id == _v.document_id)
+                .where(_v.content_hash == content_hash.value)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return ContentOwner(
+            document_id=row.document_id,
+            document_status=DocumentStatus(row.status),
+            version_id=row.id,
+            version_number=row.number,
         )
-        return None if document_id is None else await self.get(document_id)
 
     async def add(self, document: KnowledgeDocument) -> None:
         await self._session.execute(

@@ -11,15 +11,19 @@ from knowledge_base.domain.entities.knowledge_document import (
 )
 from knowledge_base.domain.exceptions.document_errors import DocumentWithdrawnError
 from knowledge_base.domain.providers.document_blob_store import DocumentBlobStore
+from knowledge_base.domain.providers.knowledge_document_repository import (
+    ContentOwner,
+)
 from knowledge_base.domain.providers.unit_of_work import UnitOfWork
 from knowledge_base.domain.value_objects.document_source import DocumentSource
 from knowledge_base.use_cases.import_document.import_document_command import (
     ImportDocument,
 )
-from knowledge_base.use_cases.import_document.import_document_result import (
+from knowledge_base.use_cases.import_result import (
     ImportDocumentResult,
 )
 from knowledge_base.use_cases.import_steps import (
+    accepted_filename,
     accepted_media_type,
     remember,
     replay,
@@ -27,7 +31,6 @@ from knowledge_base.use_cases.import_steps import (
     retry_once_after_race,
     schedule_extraction,
     utc_now,
-    version_with_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +56,13 @@ class ImportDocumentHandler:
         self._clock = clock
 
     async def handle(self, command: ImportDocument) -> ImportDocumentResult:
-        media_type = accepted_media_type(command.filename, command.media_type)
+        filename = accepted_filename(command.filename)
+        media_type = accepted_media_type(filename, command.media_type)
         blob = await self._blob_store.put(
             command.content, max_bytes=self._max_upload_bytes
         )
         source = DocumentSource(
-            filename=command.filename,
+            filename=filename,
             media_type=media_type,
             size_bytes=blob.size_bytes,
             content_hash=blob.content_hash,
@@ -72,7 +76,7 @@ class ImportDocumentHandler:
                 "kind": command.kind.value,
                 "topics": list(command.topics),
                 "language": command.language,
-                "filename": command.filename,
+                "filename": filename,
                 "media_type": media_type,
                 "content_hash": blob.content_hash.value,
             }
@@ -116,7 +120,7 @@ class ImportDocumentHandler:
                     created=True,
                 )
             else:
-                result = _known_content(existing, source)
+                result = _known_content(existing)
             await remember(uow, command.idempotency_key, fingerprint, result)
             await uow.commit()
         logger.info(
@@ -129,17 +133,14 @@ class ImportDocumentHandler:
         return result
 
 
-def _known_content(
-    document: KnowledgeDocument, source: DocumentSource
-) -> ImportDocumentResult:
+def _known_content(owner: ContentOwner) -> ImportDocumentResult:
     """Le contenu d'un document retiré ne peut pas être réimporté : le rendre
     tel quel ferait croire à un import réussi d'un document invisible (O11)."""
-    if document.status is DocumentStatus.WITHDRAWN:
-        raise DocumentWithdrawnError(document.document_id, "import de son contenu")
-    version = version_with_content(document, source.content_hash)
+    if owner.document_status is DocumentStatus.WITHDRAWN:
+        raise DocumentWithdrawnError(owner.document_id, "import de son contenu")
     return ImportDocumentResult(
-        document_id=document.document_id,
-        version_id=version.version_id,
-        number=version.number,
+        document_id=owner.document_id,
+        version_id=owner.version_id,
+        number=owner.version_number,
         created=False,
     )

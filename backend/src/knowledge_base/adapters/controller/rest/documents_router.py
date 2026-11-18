@@ -22,16 +22,9 @@ from knowledge_base.adapters.controller.rest.errors import (
     IMPORT_REFUSALS,
     refusal_response,
 )
-from knowledge_base.adapters.controller.rest.resources import KnowledgeBaseResources
 from knowledge_base.adapters.controller.rest.schemas import (
     ErrorResponse,
     ImportResponse,
-)
-from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
-    FileSystemBlobStore,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
-    SqlAlchemyUnitOfWork,
 )
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from knowledge_base.use_cases.import_document.import_document_command import (
@@ -40,21 +33,22 @@ from knowledge_base.use_cases.import_document.import_document_command import (
 from knowledge_base.use_cases.import_document.import_document_handler import (
     ImportDocumentHandler,
 )
-from knowledge_base.use_cases.import_document.import_document_result import (
-    ImportDocumentResult,
-)
 from knowledge_base.use_cases.import_document_version.import_document_version_command import (  # noqa: E501
     ImportDocumentVersion,
 )
 from knowledge_base.use_cases.import_document_version.import_document_version_handler import (  # noqa: E501
     ImportDocumentVersionHandler,
 )
+from knowledge_base.use_cases.import_result import (
+    ImportDocumentResult,
+)
 
 PREFIX: Final = "/api/v1/knowledge-base"
 TAGS: Final[list[str | Enum]] = ["knowledge-base"]
 UPLOAD_CHUNK_BYTES: Final = 64 * 1024
 
-ResourcesProvider = Callable[[], KnowledgeBaseResources]
+ImportDocumentHandlerFactory = Callable[[], ImportDocumentHandler]
+ImportVersionHandlerFactory = Callable[[], ImportDocumentVersionHandler]
 IdempotencyKey = Annotated[str | None, Header(min_length=1, max_length=255)]
 
 _RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
@@ -69,27 +63,17 @@ _RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
 }
 
 
-def add_document_routes(router: APIRouter, resources: ResourcesProvider) -> None:
+def add_document_routes(
+    router: APIRouter,
+    *,
+    import_document_handler: ImportDocumentHandlerFactory,
+    import_version_handler: ImportVersionHandlerFactory,
+) -> None:
     """Déclare les routes directement sur ``router`` (le routeur de
     l'application) : FastAPI ≥ 0.163 n'aplatit plus les routeurs inclus.
-    ``resources`` est appelé à chaque requête : les ressources n'existent
-    qu'une fois l'application démarrée."""
-
-    def import_document_handler() -> ImportDocumentHandler:
-        current = resources()
-        return ImportDocumentHandler(
-            unit_of_work=lambda: SqlAlchemyUnitOfWork(current.session_factory),
-            blob_store=FileSystemBlobStore(current.settings.blob_root),
-            max_upload_bytes=current.settings.max_upload_bytes,
-        )
-
-    def import_version_handler() -> ImportDocumentVersionHandler:
-        current = resources()
-        return ImportDocumentVersionHandler(
-            unit_of_work=lambda: SqlAlchemyUnitOfWork(current.session_factory),
-            blob_store=FileSystemBlobStore(current.settings.blob_root),
-            max_upload_bytes=current.settings.max_upload_bytes,
-        )
+    Les fabriques sont appelées à chaque requête (dépendances FastAPI) :
+    l'assemblage des handlers appartient à l'appelant, qui peut les
+    substituer."""
 
     @router.post(
         f"{PREFIX}/documents",

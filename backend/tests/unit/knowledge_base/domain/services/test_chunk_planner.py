@@ -23,9 +23,10 @@ API figée (``knowledge_base.domain.services.chunk_planner``) :
   tableau, ligne à ligne. Chaque fragment est un chunk avec l'en-tête ; tout
   fragment sauf le premier commence son corps par ``CONTINUATION_MARKER``,
   seul sur sa ligne.
-- ``chunk_hash`` = SHA-256 hexadécimal de ``contextual_text + policy.version``.
+- ``chunk_hash`` = SHA-256 hexadécimal de ``contextual_text + "\\x00" +
+  policy.identity`` (revue S3 : séparateur, identité version + tokenizer).
 - ``chunk_id`` : UUIDv5 déterministe de (``version_id`` de la citation,
-  ``policy.version``, ``unit.ordinal``, ``ordinal_in_unit``).
+  ``policy.identity``, ``unit.ordinal``, ``ordinal_in_unit``).
 - Non figé ici : paragraphe ou liste seuls plus grands que le budget ;
   ``overlap_tokens > 0`` ; en-tête seul plus grand que le budget.
 """
@@ -127,13 +128,13 @@ def test_a_unit_exactly_at_the_budget_is_one_chunk_and_one_token_less_is_two() -
     assert len(plan(unit, max_tokens=full - 1)) == 2
 
 
-def test_chunk_hash_is_the_sha256_of_the_text_followed_by_the_policy_version() -> None:
+def test_chunk_hash_is_the_sha256_of_the_text_a_nul_and_the_policy_identity() -> None:
     unit = make_unit(p("texte"))
 
-    (chunk,) = plan(unit, policy_version="politique-7")
+    (chunk,) = plan(unit, policy_version="politique-7", tokenizer="mots")
 
     digest = hashlib.sha256(
-        (chunk.contextual_text + "politique-7").encode()
+        f"{chunk.contextual_text}\x00politique-7+mots".encode()
     ).hexdigest()
     assert chunk.chunk_hash == digest
 
