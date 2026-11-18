@@ -16,52 +16,28 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_chunk_reader import 
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_idempotency_key_repository import (  # noqa: E501
     SqlAlchemyIdempotencyKeyRepository,
 )
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexation_repository import (  # noqa: E501
-    SqlAlchemyIndexationRepository,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_knowledge_corpus_repository import (  # noqa: E501
-    SqlAlchemyKnowledgeCorpusRepository,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_knowledge_document_repository import (  # noqa: E501
-    SqlAlchemyKnowledgeDocumentRepository,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
-    SqlAlchemyWorkQueue,
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexing_transaction import (  # noqa: E501
+    SqlAlchemyIndexingTransaction,
 )
 
 
-class SqlAlchemyUnitOfWork:
-    """À usage unique : un ``async with`` par instance. La session ne prend
+class SqlAlchemyUnitOfWork(SqlAlchemyIndexingTransaction):
+    """Les dépôts de ``SqlAlchemyIndexingTransaction`` (documents, work queue,
+    corpus, indexations) sur une session qu'elle ouvre et valide elle-même,
+    plus les clés d'idempotence et la lecture des chunks.
+
+    À usage unique : un ``async with`` par instance. La session ne prend
     une connexion qu'à la première requête."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session = session_factory()
-        self._documents = SqlAlchemyKnowledgeDocumentRepository(self._session)
-        self._work_queue = SqlAlchemyWorkQueue(self._session)
+        super().__init__(self._session)
         self._idempotency_keys = SqlAlchemyIdempotencyKeyRepository(self._session)
-        self._corpus = SqlAlchemyKnowledgeCorpusRepository(self._session)
-        self._indexations = SqlAlchemyIndexationRepository(self._session)
         self._chunks = SqlAlchemyChunkReader(self._session)
-
-    @property
-    def documents(self) -> SqlAlchemyKnowledgeDocumentRepository:
-        return self._documents
-
-    @property
-    def work_queue(self) -> SqlAlchemyWorkQueue:
-        return self._work_queue
 
     @property
     def idempotency_keys(self) -> SqlAlchemyIdempotencyKeyRepository:
         return self._idempotency_keys
-
-    @property
-    def corpus(self) -> SqlAlchemyKnowledgeCorpusRepository:
-        return self._corpus
-
-    @property
-    def indexations(self) -> SqlAlchemyIndexationRepository:
-        return self._indexations
 
     @property
     def chunks(self) -> SqlAlchemyChunkReader:

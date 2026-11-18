@@ -299,9 +299,9 @@ Index(
 
 # Corpus et générations d'index (S4, knowledge-base.md §3.2, §13). Le corpus
 # est un singleton en V1 ; sa ligne est la barrière blue/green (FOR SHARE /
-# FOR UPDATE). active_index_id n'a pas de clé étrangère (référence circulaire
-# avec search_indexes) : I10 est porté par l'agrégat et par l'index unique
-# partiel ci-dessous.
+# FOR UPDATE). I10 est porté par l'agrégat et par l'index unique partiel
+# ci-dessous ; active_index_id désigne un index de CE corpus (clé étrangère
+# composite, revue S4).
 knowledge_corpus = Table(
     "knowledge_corpus",
     metadata,
@@ -310,6 +310,18 @@ knowledge_corpus = Table(
     # Verrou optimiste du corpus.
     Column("version", Integer, nullable=False),
     CheckConstraint("version >= 0", name="version_non_negative"),
+    # Référence circulaire avec search_indexes.corpus_id : contrôlée au commit,
+    # le provisionnement écrit le corpus avant son premier index. use_alter :
+    # aucune dépendance de création entre les deux tables (Alembic seul crée
+    # le schéma, mais le tri des tables du MetaData doit rester possible).
+    ForeignKeyConstraint(
+        ["corpus_id", "active_index_id"],
+        ["search_indexes.corpus_id", "search_indexes.index_id"],
+        name="fk_knowledge_corpus_active_index",
+        deferrable=True,
+        initially="DEFERRED",
+        use_alter=True,
+    ),
 )
 
 # Profil et politique en JSON : ce sont des Value Objects figés à la création
@@ -326,6 +338,10 @@ search_indexes = Table(
     Column("activated_at", DateTime(timezone=True)),
     Column("retired_at", DateTime(timezone=True)),
     CheckConstraint(f"status IN ({_one_of(INDEX_STATUSES)})", name="status"),
+    # Cible de fk_knowledge_corpus_active_index (index_id est déjà unique).
+    UniqueConstraint(
+        "corpus_id", "index_id", name="uq_search_indexes_corpus_id_index_id"
+    ),
 )
 
 # I10 : au plus un index ACTIVE par corpus.

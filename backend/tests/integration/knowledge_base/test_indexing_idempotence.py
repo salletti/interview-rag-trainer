@@ -125,8 +125,14 @@ async def test_a_zombie_rewrite_after_the_finalization_leaves_one_point_per_chun
 
     assert await rig.point_ids(index_id) == before
     assert len(await rig.points(index_id)) == 3
-    # Le rejeu écrit ``visible=false`` : jamais renvoyé, corrigé par la
-    # synchronisation suivante (§7.3 point 6).
+    # Le rejeu écrase les points de la version publiée en ``visible=false`` :
+    # aucun doublon, mais le document manque des résultats (jamais l'inverse).
+    # Rien ne replanifie ``sync_visibility`` : aucune synchronisation
+    # « suivante » ne corrige cet état avant la réconciliation S8 (points d'une
+    # version PUBLISHED de document ACTIVE avec visible=false -> replanifier
+    # sync_visibility ; §7.3 condition 6). Depuis la revue S4, ``keeping_lease``
+    # annule le travail au premier heartbeat refusé : seule une fenêtre
+    # résiduelle (au plus un intervalle de heartbeat) permet ce rejeu.
     assert [payload(r)["visible"] for r in await rig.points(index_id)] == [False] * 3
 
 

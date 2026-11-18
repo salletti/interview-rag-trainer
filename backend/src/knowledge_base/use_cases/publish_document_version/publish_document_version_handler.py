@@ -22,7 +22,6 @@ from datetime import datetime
 from knowledge_base.domain.entities.indexation import IndexationStatus
 from knowledge_base.domain.providers.indexing_transaction import (
     IndexingTransaction,
-    IndexingUnitOfWork,
 )
 from knowledge_base.use_cases.errors import DocumentNotFoundError
 from knowledge_base.use_cases.indexing_steps import schedule_visibility_sync
@@ -38,23 +37,13 @@ logger = logging.getLogger(__name__)
 
 
 class PublishDocumentVersionHandler:
-    def __init__(
-        self,
-        *,
-        unit_of_work: Callable[[], IndexingUnitOfWork],
-        clock: Callable[[], datetime],
-    ) -> None:
-        self._unit_of_work = unit_of_work
+    """Toujours appelé dans une transaction ouverte par l'appelant : celle de
+    la finalisation de ``CompleteIndexation`` en S4."""
+
+    def __init__(self, *, clock: Callable[[], datetime]) -> None:
         # Horodatage du journal de publication : l'agrégat ne date pas ses
         # transitions (S1), la base n'a pas de colonne de date de publication.
         self._clock = clock
-
-    async def handle(self, command: PublishDocumentVersion) -> None:
-        """Publication dans sa propre transaction ; rien n'est validé si elle
-        est refusée."""
-        async with self._unit_of_work() as uow:
-            await self.apply(uow, command)
-            await uow.commit()
 
     async def apply(
         self, transaction: IndexingTransaction, command: PublishDocumentVersion

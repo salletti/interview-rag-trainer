@@ -72,7 +72,7 @@ Règles :
 - **Ressources explicites.** Un point d'entrée reçoit des types définis par le contexte (dataclass `KnowledgeBaseResources`, settings `KnowledgeBaseSettings` à préfixe d'environnement propre) ou des types de bibliothèque (`async_sessionmaker`, `AsyncQdrantClient`). Jamais un type de `runtime` : aucun contexte n'importe `runtime`.
 - **API et workers séparés.** `register` ne déclare aucune tâche ; `register_worker` ne monte aucune route. Les processus `api`, `worker`, `worker_ingestion` et `scheduler` partagent l'image mais pas leur composition.
 - **Ressources paresseuses côté worker.** Les tâches sont déclarées dans le processus maître Celery, alors que boucle asyncio, moteur SQLAlchemy et clients n'existent que dans les processus enfants (prefork) : `register_worker` reçoit un **fournisseur** (`Callable[[], <Contexte>WorkerResources]`), créé par `runtime` au signal `worker_process_init` ([knowledge-base-s0.md §9](bounded-contexts/knowledge-base-s0.md#9-ressources-asyncio-dans-un-worker-celery-prefork)).
-- **Un point d'entrée n'apparaît qu'avec son premier usage** : Knowledge Base n'expose que `register_worker` en S0, `register` en S2, `build_knowledge_search` en S5.
+- **Un point d'entrée n'apparaît qu'avec son premier usage** : Knowledge Base n'expose que `register_worker` en S0, `register` en S2, `build_work_handlers` en S3 (handlers de production des work items, construits par `runtime` dans chaque processus enfant du worker), `provision_search_index` en S4 (provisionnement idempotent de l'index initial, appelé par `runtime.provision`), `build_knowledge_search` en S5.
 
 ### Transmission d'un contrat public à un autre contexte
 

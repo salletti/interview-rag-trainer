@@ -582,9 +582,7 @@ def make_indexing_rig(
     def factory() -> IndexingUnitOfWork:
         return IndexingUnitOfWork(harness.state, store, indexing)
 
-    publish = PublishDocumentVersionHandler(
-        unit_of_work=factory, clock=lambda: INDEXED_AT
-    )
+    publish = PublishDocumentVersionHandler(clock=lambda: INDEXED_AT)
     return IndexingRig(
         harness=harness,
         store=store,

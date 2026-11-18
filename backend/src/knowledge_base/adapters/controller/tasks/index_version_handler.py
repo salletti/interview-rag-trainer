@@ -3,7 +3,8 @@
 
 1. ``use_case.prepare`` hors transaction : embeddings (dans un thread, par
    l'adapter), upserts ``visible=false`` et vérification du manifest ; la
-   boucle prolonge le lease toutes les ``heartbeat_interval``.
+   boucle prolonge le lease toutes les ``heartbeat_interval`` et un heartbeat
+   refusé interrompt ``prepare`` avant l'upsert suivant (``keeping_lease``).
 2. UN ``ctx.finalize`` dont le callback appelle ``use_case.apply`` (ou, s'il
    n'y a rien à indexer, annule l'indexation devenue sans objet) : l'item doit
    se terminer.
@@ -103,6 +104,10 @@ class IndexVersionWorkHandler:
         self._transaction = transaction
         self._heartbeat_interval = heartbeat_interval
 
+    @property
+    def heartbeat_interval(self) -> timedelta | None:
+        return self._heartbeat_interval
+
     async def execute(self, item: ClaimedWorkItem, ctx: WorkContext) -> None:
         command = _command(item.payload)
         try:
@@ -181,7 +186,7 @@ def build_index_version_handler(
         unit_of_work=unit_of_work,
         embedder=embedder,
         vector_index=vector_index,
-        publisher=PublishDocumentVersionHandler(unit_of_work=unit_of_work, clock=clock),
+        publisher=PublishDocumentVersionHandler(clock=clock),
         clock=clock,
         batch_size=batch_size,
     )

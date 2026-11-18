@@ -6,12 +6,12 @@ API figée (``knowledge_base.use_cases.publish_document_version``) :
 - ``publish_document_version_command.PublishDocumentVersion(document_id,
   version_id)``.
 - ``publish_document_version_handler.PublishDocumentVersionHandler(*,
-  unit_of_work, clock)`` :
-  - ``await handle(command)`` : ouvre sa transaction, publie, ``commit`` ;
-    sans ``commit`` si la publication est refusée.
-  - ``await apply(transaction, command)`` : même logique DANS la transaction
-    fournie (celle de la finalisation de ``CompleteIndexation``), sans jamais
-    de ``commit``.
+  clock)`` :
+  - ``await apply(transaction, command)`` : publie DANS la transaction fournie
+    (celle de la finalisation de ``CompleteIndexation``, seul appelant de
+    production), sans jamais de ``commit`` ; les refus sont levés avant toute
+    écriture. Les tests valident eux-mêmes cette transaction (``publish``),
+    comme le fait la finalisation.
   - Gardes : l'index actif est lu avec ``corpus.get_shared()`` (``FOR SHARE``,
     jamais ``get_for_update``) ; I9 : l'``Indexation`` de la version dans CET
     index doit être ``COMPLETED`` ; puis ``KnowledgeDocument.publish`` (version
@@ -65,6 +65,14 @@ def publish_command(command: RecordExtraction) -> PublishDocumentVersion:
     )
 
 
+async def publish(rig: IndexingRig, command: RecordExtraction) -> None:
+    """Publication dans une transaction validée, comme dans la finalisation
+    d'``index_version`` ; rien n'est validé si elle est refusée."""
+    async with rig.unit_of_work() as uow:
+        await rig.publish.apply(uow, publish_command(command))
+        await uow.commit()
+
+
 async def extracted(rig: IndexingRig) -> tuple[RecordExtraction, UUID]:
     index_id = await rig.provision()
     command = await rig.import_document(qa_sheet())
@@ -80,7 +88,7 @@ async def test_publication_is_refused_while_the_active_indexation_is_pending() -
     command, _ = await extracted(rig)
 
     with pytest.raises(IndexationNotCompletedError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     assert rig.status(command) is VersionStatus.EXTRACTED
     assert rig.document(command.document_id).published_version_id is None
@@ -93,7 +101,7 @@ async def test_publication_is_refused_after_a_failed_indexation() -> None:
     rig.indexation(command, index_id).fail(FailureReason("X", "y", retryable=True))
 
     with pytest.raises(IndexationNotCompletedError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     assert rig.status(command) is VersionStatus.EXTRACTED
 
@@ -107,7 +115,7 @@ async def test_publication_is_refused_when_only_a_building_index_is_completed() 
     rig.mark_completed(command, BUILDING)
 
     with pytest.raises(IndexationNotCompletedError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     assert rig.status(command) is VersionStatus.EXTRACTED
 
@@ -120,7 +128,7 @@ async def test_publication_is_refused_without_any_indexation() -> None:
     del rig.indexing.indexations[(command.version_id, index_id)]
 
     with pytest.raises(IndexationNotCompletedError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
 
 async def test_publication_is_refused_when_the_corpus_has_no_active_index() -> None:
@@ -129,7 +137,7 @@ async def test_publication_is_refused_when_the_corpus_has_no_active_index() -> N
     await rig.extract(command)  # pas de corpus du tout
 
     with pytest.raises(NoActiveIndexError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     assert rig.status(command) is VersionStatus.EXTRACTED
 
@@ -149,7 +157,7 @@ async def test_a_completed_indexation_in_the_active_index_publishes_the_version(
     command, index_id = await extracted(rig)
     rig.mark_completed(command, index_id)
 
-    await rig.publish.handle(publish_command(command))
+    await publish(rig, command)
 
     document = rig.document(command.document_id)
     assert rig.status(command) is VersionStatus.PUBLISHED
@@ -162,7 +170,7 @@ async def test_publication_schedules_the_visibility_synchronization() -> None:
     command, index_id = await extracted(rig)
     rig.mark_completed(command, index_id)
 
-    await rig.publish.handle(publish_command(command))
+    await publish(rig, command)
 
     key = f"sync_visibility:{command.document_id}:1"
     assert rig.sync_keys() == [key]
@@ -180,7 +188,7 @@ async def test_the_active_index_is_read_under_a_shared_lock_only() -> None:
     rig.mark_completed(command, index_id)
     rig.indexing.locks.clear()
 
-    await rig.publish.handle(publish_command(command))
+    await publish(rig, command)
 
     assert rig.indexing.locks == ["shared"]
 
@@ -189,12 +197,12 @@ async def test_publishing_a_newer_version_supersedes_the_published_one() -> None
     rig = make_indexing_rig()
     first, index_id = await extracted(rig)
     rig.mark_completed(first, index_id)
-    await rig.publish.handle(publish_command(first))
+    await publish(rig, first)
     second = await rig.import_next_version(first.document_id, qa_sheet(1, tag="n2-"))
     await rig.extract(second)
     rig.mark_completed(second, index_id)
 
-    await rig.publish.handle(publish_command(second))
+    await publish(rig, second)
 
     assert rig.status(first) is VersionStatus.SUPERSEDED
     assert rig.status(second) is VersionStatus.PUBLISHED
@@ -215,7 +223,7 @@ async def test_a_discarded_version_is_not_published_even_if_indexed() -> None:
     await rig.import_next_version(command.document_id, qa_sheet(1, tag="n2-"))
 
     with pytest.raises(InvalidVersionTransitionError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     assert rig.status(command) is VersionStatus.DISCARDED
     assert rig.sync_keys() == []
@@ -228,7 +236,7 @@ async def test_a_withdrawn_document_is_not_published() -> None:
     rig.document(command.document_id).withdraw()
 
     with pytest.raises(DocumentWithdrawnError):
-        await rig.publish.handle(publish_command(command))
+        await publish(rig, command)
 
     document = rig.document(command.document_id)
     assert document.status is DocumentStatus.WITHDRAWN
@@ -250,12 +258,17 @@ async def test_apply_writes_inside_the_given_transaction_and_never_commits() -> 
     assert rig.sync_keys() == []
 
 
-async def test_a_refused_handle_commits_nothing() -> None:
+async def test_a_refusal_is_raised_before_any_write_in_the_transaction() -> None:
+    """``CompleteIndexation`` valide sa transaction après un refus (l'indexation
+    reste ``COMPLETED``) : la publication refusée ne doit y avoir rien écrit."""
     rig = make_indexing_rig()
     command, _ = await extracted(rig)
-    commits = rig.store.commits
 
-    with pytest.raises(PublicationRefusedError):
-        await rig.publish.handle(publish_command(command))
+    async with rig.unit_of_work() as uow:
+        with pytest.raises(PublicationRefusedError):
+            await rig.publish.apply(uow, publish_command(command))
+        await uow.commit()
 
-    assert rig.store.commits == commits
+    assert rig.status(command) is VersionStatus.EXTRACTED
+    assert rig.document(command.document_id).visibility_revision == 0
+    assert rig.sync_keys() == []

@@ -13,16 +13,25 @@ transaction :
   un item ``index_version`` (dedup ``index_version:<version_id>:<index_id>``,
   payload ``document_id``, ``version_id``, ``index_id`` en texte) ;
 - aucun corpus, ou index ``RETIRED`` : aucune indexation, aucun item ;
+- une version ``EXTRACTED`` sans aucune indexation est journalisée en
+  ``WARNING`` avec le code ``EXTRACTED_WITHOUT_INDEXATION`` (message et
+  attribut ``code`` de l'enregistrement), repère de la réconciliation S8 ;
 - une extraction ignorée (version écartée, document retiré) ne crée rien.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from uuid import UUID
 
+import pytest
+
 from knowledge_base.domain.entities.indexation import IndexationStatus
 from knowledge_base.domain.entities.knowledge_document import VersionStatus
+from knowledge_base.use_cases.record_extraction.record_extraction_handler import (
+    EXTRACTED_WITHOUT_INDEXATION,
+)
 from tests.unit.knowledge_base.domain.services.support import POLICY_IDENTITY
 from tests.unit.knowledge_base.use_cases.fakes import NOW
 from tests.unit.knowledge_base.use_cases.indexing_fakes import (
@@ -116,6 +125,45 @@ async def test_without_a_corpus_the_extraction_still_succeeds_and_indexes_nothin
     assert rig.status(command) is VersionStatus.EXTRACTED
     assert rig.indexing.indexations == {}
     assert index_items(rig.harness.state.items) == []
+
+
+def unindexed_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if getattr(r, "code", None) == EXTRACTED_WITHOUT_INDEXATION
+    ]
+
+
+async def test_an_extraction_without_any_indexation_is_logged_with_its_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_indexing_rig()
+    command = await rig.import_document(qa_sheet())  # pas de corpus
+
+    with caplog.at_level(logging.WARNING):
+        await rig.extract(command)
+
+    (record,) = unindexed_records(caplog)
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert f"code={EXTRACTED_WITHOUT_INDEXATION}" in message
+    assert str(command.version_id) in message
+    assert getattr(record, "version_id", None) == str(command.version_id)
+    assert getattr(record, "document_id", None) == str(command.document_id)
+
+
+async def test_an_indexed_extraction_logs_no_missing_indexation_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_indexing_rig()
+    await rig.provision()
+    command = await rig.import_document(qa_sheet())
+
+    with caplog.at_level(logging.WARNING):
+        await rig.extract(command)
+
+    assert unindexed_records(caplog) == []
 
 
 async def test_the_corpus_is_read_under_a_shared_lock_only() -> None:

@@ -110,8 +110,23 @@ Faits de l'implémentation de S4, le corps de l'ADR est inchangé.
   Qdrant `kb_index_<index_id>` créée avant la transaction.
 - **Barrière** (point 5) : en place pour `RecordExtraction` (`FOR SHARE`) et
   `PublishDocumentVersion` (`FOR SHARE`) ; `ActivateSearchIndex` sous
-  `FOR UPDATE` arrive avec S9 (l'agrégat porte déjà I10 et le contrôle de
-  couverture). Le point reste Proposed jusqu'à S9.
+  `FOR UPDATE` arrive avec S9. Le point reste Proposed jusqu'à S9.
+- **Correction (revue S4, 2026-11-18)** de la formulation précédente, qui
+  écrivait « l'agrégat porte déjà I10 et le contrôle de couverture » :
+  l'agrégat porte I10 (au plus un index `ACTIVE`, l'ancien devient `RETIRED`),
+  mais **pas la preuve de couverture d'I11**. `KnowledgeCorpus.activate_index`
+  reçoit un booléen `coverage_complete` qu'il ne fait que vérifier ; le seul
+  appelant, le provisionnement initial, le passe à `True` en dur
+  (`provision_search_index_handler.py`), ce qui n'est juste que parce que le
+  corpus n'a encore aucun index, donc aucune version publiée (I9). Le calcul
+  réel de la couverture (toutes les versions publiées de documents `ACTIVE`
+  `COMPLETED` dans l'index candidat, sous `FOR UPDATE` du corpus) arrive avec
+  `ActivateSearchIndex` en S9.
+- **Clé étrangère de l'index actif** (revue S4) : `knowledge_corpus
+  (corpus_id, active_index_id)` référence `search_indexes(corpus_id,
+  index_id)`, `DEFERRABLE INITIALLY DEFERRED` (migration `c43c7e850745`) :
+  la base garantit que l'index actif existe et appartient au corpus ; I10
+  reste porté par l'agrégat et l'index unique partiel.
 - **Mesures** (CPU, `SentenceTransformer` en `device="cpu"`, lot de 32 chunks
   de 152 tokens en moyenne) :
 

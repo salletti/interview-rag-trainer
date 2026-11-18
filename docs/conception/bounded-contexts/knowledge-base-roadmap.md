@@ -254,7 +254,12 @@ flowchart LR
   le stockage.
 - **Périmètre :** `ReconcileKnowledgeBase` (indexations `COMPLETED` non
   publiées, versions sans indexation dans l'index actif, points en trop,
-  échantillonnage des manifests, blobs non référencés) ; `RetryIngestion`
+  échantillonnage des manifests, blobs non référencés ; points d'une version
+  `PUBLISHED` de document `ACTIVE` avec `visible=false` → replanifier
+  `sync_visibility` — fenêtre résiduelle d'une tentative zombie d'`index_version`,
+  [knowledge-base.md §7.3](knowledge-base.md#73-conditions-didempotence-des-effets-externes) ;
+  versions `EXTRACTED` sans aucune indexation, repérées par le code de journal
+  `EXTRACTED_WITHOUT_INDEXATION` de `RecordExtraction`) ; `RetryIngestion`
   (réouverture d'un item `FAILED`) ; catalogue des codes d'erreur ; consultation
   des échecs (endpoint de lecture) ; décision O10 (DLQ).
 - **Dépendances :** S7.

@@ -26,6 +26,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Final
 from uuid import UUID
 
 from knowledge_base.domain.entities.indexation import Indexation
@@ -59,6 +60,11 @@ from knowledge_base.use_cases.record_extraction.record_extraction_command import
 )
 
 logger = logging.getLogger(__name__)
+
+# Code de journal d'une version passée ``EXTRACTED`` sans aucune indexation
+# (aucun corpus, aucun index vivant, ou politique de chunking d'aucun index) :
+# elle ne sera jamais publiée seule. Repère stable pour la réconciliation S8.
+EXTRACTED_WITHOUT_INDEXATION: Final = "EXTRACTED_WITHOUT_INDEXATION"
 
 
 @dataclass(frozen=True)
@@ -139,12 +145,15 @@ class RecordExtractionHandler:
             prepared.units,
             prepared.chunks,
         )
-        await self._schedule_indexations(transaction, prepared)
+        if not await self._schedule_indexations(transaction, prepared):
+            _log_extracted_without_indexation(prepared)
         return True
 
     async def _schedule_indexations(
         self, transaction: ExtractionTransaction, prepared: PreparedExtraction
-    ) -> None:
+    ) -> int:
+        """Nombre d'indexations créées."""
+        scheduled = 0
         corpus = await transaction.corpus.get_shared()
         for index in () if corpus is None else corpus.live_indexes():
             if index.chunking_policy.identity != prepared.policy_version:
@@ -171,6 +180,8 @@ class RecordExtractionHandler:
                 prepared.version_id,
                 index.index_id,
             )
+            scheduled += 1
+        return scheduled
 
     async def fail(
         self,
@@ -232,6 +243,24 @@ def _version(
         return document.get_version(version_id)
     except VersionNotFoundError:
         return None
+
+
+def _log_extracted_without_indexation(prepared: PreparedExtraction) -> None:
+    # Le code figure dans le message (format texte du processus) et en
+    # attribut ``code`` de l'enregistrement (filtrage, futur export structuré).
+    logger.warning(
+        "code=%s document_id=%s version_id=%s policy_version=%s : version "
+        "EXTRACTED sans aucune indexation, elle ne sera pas publiée",
+        EXTRACTED_WITHOUT_INDEXATION,
+        prepared.document_id,
+        prepared.version_id,
+        prepared.policy_version,
+        extra={
+            "code": EXTRACTED_WITHOUT_INDEXATION,
+            "document_id": str(prepared.document_id),
+            "version_id": str(prepared.version_id),
+        },
+    )
 
 
 def _extractable_version(

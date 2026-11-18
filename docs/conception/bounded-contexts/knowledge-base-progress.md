@@ -107,3 +107,17 @@ appliquées le 2026-11-18 :
 - I-2 identité de politique `version+tokenizer` (précision ADR 0009, section Suivi). Fait.
 - Front-matter strict ; `DOCUMENT_TOO_COMPLEX` et `CHUNKING_FAILED` terminaux non rejouables ; goldens enrichis (empreinte des blocs), Docling importé directement ; UUID épinglés ; séparateur `\x00` dans `chunk_hash` ; ports dans `domain/providers/`, politique dans `frameworks/configuration/chunking.py`. Fait.
 - Reportés : FK composite chunks → units (migration S4) ; `BLOB_MISSING` terminal mais `retryable=True` alors que `RetryIngestion` n'arrive qu'en S8 (à traiter avec O14).
+
+Revue tech lead du commit S4 (`30f3f60`) : aucun bloquant, 2 importants, 8 mineurs.
+Corrections appliquées (2026-11-18) — 770 unitaires, 285 intégration, mutation du heartbeat tuée :
+
+- I1 — tentative zombie : `prepare` périmé poursuivait ses upserts `visible=false` après un heartbeat refusé → annulation du travail + réparation par la réconciliation S8 (périmètre S8 étendu). **Fait.**
+- I2 — heartbeat de `index_version` non testé. **Fait.**
+- M1 — barrière FOR SHARE / FOR UPDATE et provisionnement concurrent contre PostgreSQL réel. **Fait.**
+- M2 — version `EXTRACTED` sans indexation : code de log identifiable pour S8. **Fait.**
+- M3 — un seul `Embedder` (E5) par worker : un index d'un autre profil échouerait de façon terminale → fournisseur d'`Embedder` par profil à prévoir en **S9**. Reporté.
+- M4 — I11 par booléen `coverage_complete=True` au provisionnement initial : preuve de couverture réelle en **S9** ; Suivi ADR 0011 corrigé. **Fait.**
+- M5 — FK différée `active_index_id` → `search_indexes`. **Fait.**
+- M6 — surface publique dans 005. **Fait.**
+- M7 — composition unique des dépôts UoW / transaction d'indexation. **Fait.**
+- M8 — surface sans usage (`PublishDocumentVersionHandler.handle`, champ `visible`) : `handle` retiré, précision §3.6 ; champ `visible` d'`IndexedPoint` conservé jusqu'après S5 (utilisé par les doubles de test). **Partiel.**

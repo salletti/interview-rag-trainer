@@ -128,6 +128,13 @@ port technique vers le moteur vectoriel), `DocumentStatus` comme concept autonom
   et le verrou de sa ligne sert de barrière blue/green (§13).
 - Les noms de collections Qdrant sont calculés par l'adapter à partir de
   `index_id` ; ils n'appartiennent pas au domaine.
+- *Précision S4 (2026-11-18, revue) : en base, `active_index_id` est une clé
+  étrangère composite `(corpus_id, active_index_id) → search_indexes(corpus_id,
+  index_id)`, contrôlée au commit (`DEFERRABLE INITIALLY DEFERRED`, la
+  référence étant circulaire) : l'index actif existe et appartient au corpus.
+  La preuve de couverture d'I11 n'est pas portée par l'agrégat, qui reçoit
+  `coverage_complete` de l'appelant ; elle arrive avec `ActivateSearchIndex`
+  en S9 ([ADR 0011, suivi](../../decisions/0011-embedding-profile-search-index-blue-green.md#suivi-2026-11-18)).*
 
 ### 3.3 `Indexation` — Aggregate Root [Accepted]
 
@@ -168,6 +175,14 @@ blocs.
 
 `DoclingDocument`, tokenizer concret, noms de collections, identifiants et
 payloads Qdrant, chemins de blobs, messages Celery, lignes `work_items`.
+
+*Précision S4 (2026-11-18) : `IndexedPoint` et `PointSelector`
+(`domain/value_objects/indexed_point.py`) ne sont pas des Value Objects du
+domaine mais les DTO du port `VectorIndex` : ils décrivent un point et une
+sélection en termes du domaine (identifiants, empreinte, champs de filtrage),
+sans rien de Qdrant. Ils restent à côté du port qui les emploie ; la
+traduction en `PointStruct`, payload et filtres Qdrant appartient à l'adapter
+(`adapters/gateway/vector_store/`).*
 
 ## 4. Invariants
 
@@ -357,6 +372,20 @@ Un effet externe est acceptable si **toutes** ces conditions tiennent :
 6. **Convergence** : une tentative zombie qui réécrit des points après une
    purge crée des points `visible=false`, jamais renvoyés (§11) et supprimés
    par la réconciliation.
+   *Précision S4 (2026-11-18) : une tentative zombie d'`index_version` peut
+   aussi réécrire `visible=false` les points d'une version déjà publiée et
+   synchronisée par la tentative qui l'a remplacée : le document **manque**
+   alors des résultats (jamais l'inverse, §11), sans qu'aucune
+   synchronisation ne soit replanifiée. Pour réduire cette fenêtre, le
+   travail hors transaction tourne dans une tâche annulée dès le premier
+   heartbeat refusé (`keeping_lease`, `adapters/controller/tasks/lease.py`).
+   Il reste une fenêtre résiduelle : entre la reprise de l'item par une autre
+   tentative et le heartbeat suivant du zombie (au plus
+   `KB_WORK_HEARTBEAT_INTERVAL_SECONDS`), plus l'upsert déjà envoyé à Qdrant
+   au moment de l'annulation. Elle est réparée par la réconciliation S8
+   (points d'une version `PUBLISHED` de document `ACTIVE` avec
+   `visible=false` → replanifier `sync_visibility`) ; aucune garantie n'est
+   donnée avant S8.*
 
 ## 8. Prévention des publications obsolètes
 
@@ -439,6 +468,13 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
   par le contrôle SQL, la nouvelle n'est pas encore visible dans Qdrant). Il ne
   peut **jamais** apparaître à tort. Cette perte transitoire est acceptée et
   mesurée en S5/S7.
+  *Précision S4 (2026-11-18) : une tentative zombie d'`index_version` peut
+  réécrire `visible=false` les points d'une version déjà publiée et
+  synchronisée (§7.3, condition 6) ; la copie Qdrant n'est alors plus
+  convergente tant que la réconciliation S8 n'a pas replanifié
+  `sync_visibility`. La conséquence est la même perte de Recall (le document
+  manque), jamais une apparition à tort ; l'annulation du travail au premier
+  heartbeat refusé borne la fenêtre sans la fermer.*
 
 ## 12. Stratégie de recherche et limites de Recall
 
