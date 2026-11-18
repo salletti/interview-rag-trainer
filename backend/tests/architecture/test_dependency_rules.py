@@ -46,6 +46,7 @@ FRAMEWORKS = frozenset(
         "transformers",
         "torch",
         "numpy",
+        "pypdfium2",
     }
 )
 INTERNAL_LAYERS = ("domain", "use_cases", "adapters", "frameworks")
@@ -433,6 +434,7 @@ def test_ml_stack_is_listed_among_the_forbidden_frameworks() -> None:
         "transformers",
         "torch",
         "numpy",
+        "pypdfium2",
     } <= FRAMEWORKS
 
 

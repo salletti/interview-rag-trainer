@@ -14,9 +14,15 @@ dependencies = [
     "celery>=5.7,<6",
     "qdrant-client>=1.20,<2",
     "python-multipart>=0.0.34",
-    "docling-slim[format-markdown]==2.150.1",
+    "docling-slim[convert-core,format-docx,format-markdown,format-pdf,models-local]==2.150.1",
     "torch>=2.15,<3",
     "sentence-transformers>=6.3,<7",
+    # Requis par TableFormer (structure des tableaux PDF), absent des extras
+    # de docling-slim ; la variante headless évite les bibliothèques X11.
+    "opencv-python-headless>=5.1,<6",
+    # Requis par les modèles de layout et TableFormer de Docling (S6) ; direct
+    # pour que la source CPU ci-dessous s'applique.
+    "torchvision>=0.29,<1",
 ]
 
 [dependency-groups]
@@ -28,8 +34,9 @@ dev = [
     "mypy>=2.4",
 ]
 
-# torch vient de l'index CPU de PyTorch (ADR 0008, point 6) : la roue PyPI
-# Linux tire les bibliothèques CUDA (nvidia-*), inutiles sans GPU.
+# torch et torchvision viennent de l'index CPU de PyTorch (ADR 0008, point 6) :
+# les roues PyPI Linux tirent les bibliothèques CUDA (nvidia-*), inutiles sans
+# GPU.
 # ``explicit`` : cet index ne sert qu'aux paquets qui le désignent.
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -38,6 +45,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
 
 [build-system]
 requires = ["hatchling"]
@@ -104,8 +112,9 @@ module = ["docling_core.types.doc"]
 implicit_reexport = true
 
 [[tool.mypy.overrides]]
-# Celery n'embarque ni stubs ni marqueur py.typed.
-module = ["celery", "celery.*"]
+# Celery et pypdfium2 (comptage des pages et couche texte des PDF, S6)
+# n'embarquent ni stubs ni marqueur py.typed.
+module = ["celery", "celery.*", "pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -116,6 +125,6 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra -m 'not integration' --import-mode=importlib"
 markers = [
     "integration: nécessite les services de compose.test.yaml (PostgreSQL, Qdrant, RabbitMQ)",
-    "model: charge le vrai modèle d'embeddings (multilingual-e5-base, cache SENTENCE_TRANSFORMERS_HOME)",
+    "model: charge de vrais poids de modèles : embeddings multilingual-e5-base (cache SENTENCE_TRANSFORMERS_HOME) ou layout et TableFormer de Docling (cache HF_HOME)",
     "retrieval: évaluation de la récupération sur le jeu de référence S5 (Recall, MRR, intégrité ; rapport dans KB_RETRIEVAL_REPORT_DIR)",
 ]

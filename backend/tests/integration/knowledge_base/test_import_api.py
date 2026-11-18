@@ -209,7 +209,8 @@ async def test_a_file_over_the_limit_is_a_413_without_blob_or_row(
 @pytest.mark.parametrize(
     ("filename", "media_type"),
     [
-        ("cours.pdf", "application/pdf"),
+        # Word binaire historique : seul l'OOXML (.docx) est accepté (S6).
+        ("cours.doc", "application/msword"),
         ("cours.md", "application/pdf"),
         ("cours.pdf", "text/markdown"),
         ("cours.html", "text/html"),
@@ -413,7 +414,11 @@ async def test_a_refused_type_on_a_version_is_a_415_and_nothing_changes(
     first = (await rig.post_document(V1)).json()
 
     response = await rig.post_version(
-        first["document_id"], V2, filename="v2.pdf", media_type="application/pdf"
+        # PDF accepté depuis S6 : le Word binaire historique reste refusé.
+        first["document_id"],
+        V2,
+        filename="v2.doc",
+        media_type="application/msword",
     )
 
     assert response.status_code == 415

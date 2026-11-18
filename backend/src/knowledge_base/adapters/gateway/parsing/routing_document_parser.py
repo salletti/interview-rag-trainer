@@ -1,7 +1,8 @@
 """Aiguillage vers le parseur du type de média (ADR 0008).
 
-La composition de production y met Docling pour ``text/markdown`` et
-``PlainTextParser`` pour ``text/plain`` ; PDF et DOCX arrivent en S6.
+La composition de production (``default_parser``) y met Docling pour
+``text/markdown``, ``application/pdf`` et le DOCX, et ``PlainTextParser`` pour
+``text/plain``.
 """
 
 from __future__ import annotations

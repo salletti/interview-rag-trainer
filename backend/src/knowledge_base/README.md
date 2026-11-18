@@ -2,7 +2,7 @@
 
 Bounded Context ([ADR 0007](../../../docs/decisions/0007-knowledge-base-bounded-context.md)) chargé des documents de connaissances, de leur ingestion (extraction, chunking, embeddings) et de la recherche sémantique publiée vers les autres contextes. Conception : [knowledge-base.md](../../../docs/conception/bounded-contexts/knowledge-base.md) ; feuille de route : [S0–S9](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md).
 
-## État : slices S0 à S5
+## État : slices S0 à S6
 
 ### S0 — infrastructure de traitement durable
 
@@ -121,7 +121,7 @@ Une version `RECEIVED` devient `EXTRACTED` avec ses unités et chunks, par le ha
 2. Un seul `ctx.finalize` : `apply` relit l'agrégat **dans la transaction de finalisation** ; si la version est toujours `RECEIVED` et le document `ACTIVE` : `record_extraction`, `save` (verrou optimiste), puis le lot `(version_id, chunking_policy_version)` ; sinon rien n'est écrit et l'item se termine `SUCCEEDED` (version supplantée ou document retiré entre-temps : choix S3, ce n'est pas une erreur). Aucune `Indexation` en S3.
 3. Échec terminal : le hook `on_terminal_failure` passe la version `RECEIVED` → `FAILED` avec `FailureReason(code, message, retryable)` ; sans effet si la version a changé d'état.
 
-**Parseurs** (`adapters/gateway/parsing/`, port `DocumentParser`, synchrone) : `RoutingDocumentParser` aiguille sur le type de média (sans paramètre ni casse) ; `text/markdown` → `DoclingMarkdownParser`, `text/plain` → `PlainTextParser` (adapter natif, point O7). Docling n'est importé que par `docling_markdown_parser.py` (test d'architecture `test_docling_confinement`), et seulement à la première conversion : l'API compose le handler sans charger Docling.
+**Parseurs** (`adapters/gateway/parsing/`, port `DocumentParser`, synchrone) : `RoutingDocumentParser` aiguille sur le type de média (sans paramètre ni casse) ; `text/markdown` → `DoclingMarkdownParser`, `text/plain` → `PlainTextParser` (adapter natif, point O7). Docling n'est importé que par les modules `docling_*.py` de `parsing/` (test d'architecture `test_docling_confinement` ; depuis S6, mapping, parseurs Markdown, PDF et DOCX, pypdfium2 compris), et seulement à la première conversion : l'API compose le handler sans charger Docling.
 
 - Markdown : UTF-8 (BOM toléré) ; **front-matter lu avant Docling** (`---` / `clé: valeur` / `---`) → `metadata`, jamais en blocs ; le bloc n'est un front-matter que si chaque ligne est `clé: valeur` (clé `[\w.-]+`), vide ou commentaire `#`, sinon le document est rendu tel quel à Docling ; guillemets entourant une valeur retirés ; imbrication trop profonde (`RecursionError` de Docling) → `DOCUMENT_TOO_COMPLEX`, parcours de l'arbre Docling itératif ; niveaux de titres restitués (Docling rend `#` en `TitleItem`, `##` en `SectionHeaderItem(level=1)`) ; paragraphe à mise en forme recollé (code en ligne entre accents graves, retours à la ligne → espaces) ; code avec le langage reconnu par Docling en minuscules (`None` si inconnu) ; listes aplaties ; tableau → une ligne `| a | b |` par rangée ; pas de page.
 - TXT : une suite de lignes non vides = un bloc ; `CodeBlock` (indentation commune retirée) si toutes ses lignes sont indentées de 4 espaces ou d'une tabulation, `Paragraph` sinon ; ni titre, ni page, ni métadonnée.
@@ -347,6 +347,66 @@ Limites du jeu, à lire avec ces chiffres (revue S5, M1) : 12 documents indexés
 
 La latence de Qdrant ne dépend pas du facteur sur ce corpus (médiane 3,2 / 2,8 / 2,8 / 2,8 ms pour f = 1, 2, 4, 8). Concurrence : 320 encodages de requêtes lancés par lots de 64 en parallèle sur un même modèle (hôte) : aucune erreur, pas de verrou ajouté.
 
+### S6 — extraction PDF/DOCX avec Docling
+
+PDF natifs et DOCX rejoignent la liste blanche d'import et le pipeline d'extraction de S3, sans autre changement du domaine ni du schéma ([roadmap S6](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md#s6--extraction-pdfdocx-avec-docling), [knowledge-base.md, précisions S6](../../../docs/conception/bounded-contexts/knowledge-base.md#151-composants), [ADR 0008](../../../docs/decisions/0008-custom-pipeline-docling-extraction.md), [ADR 0012, suivi S6](../../../docs/decisions/0012-original-document-storage-and-purge.md)).
+
+**Import** (`use_cases/import_steps.py`) : `application/pdf` avec `.pdf`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` avec `.docx` ; le type doit concorder avec l'extension, comme pour Markdown et TXT ; le Word binaire historique (`application/msword`, `.doc`) reste refusé (415). Aucune limite de pages à l'import : la limite de 300 pages s'applique au parsing (ci-dessous) ; la limite d'octets (`KB_MAX_UPLOAD_BYTES`, 20 Mio) reste la seule limite HTTP.
+
+**Routage** (`default_parser()` d'`extract_version_handler.py`) : par type de média (`Document.source.media_type`), jamais par `DocumentKind` ni par extension : `application/pdf` → `DoclingPdfParser`, DOCX → `DoclingDocxParser`, en plus de Markdown et TXT.
+
+**Traduction commune** (`adapters/gateway/parsing/docling_mapping.py`, `structured_document_from_docling`) : la couche anti-corruption de S3, sortie du parseur Markdown pour servir aussi PDF et DOCX (le parseur Markdown l'appelle ; les golden tests de S3 n'ont pas bougé). Parcours en ordre de lecture de **tout** l'arbre (Docling imbrique le contenu d'un DOCX sous le titre qui le précède) ; `TitleItem` → titre 1, `SectionHeaderItem(n)` → titre `min(n + 1, 6)` ; code, tableaux, listes, paragraphes à mise en forme comme en S3 ; `page` = première page de provenance (pour une liste, celle de son premier élément), `None` sans provenance ; couche `furniture` (en-têtes et pieds de page) et images ignorées. Un PDF n'a aucune hiérarchie de titres (Docling met tout au niveau 1) : tous ses titres sont de niveau 2 et le chemin de section d'une unité PDF se réduit à son dernier titre. Le code d'un PDF perd retours à la ligne et indentation (limite de Docling).
+
+**PDF** (`docling_pdf_parser.py`, `DoclingPdfParser(*, max_pages=MAX_PDF_PAGES)`, `MAX_PDF_PAGES = 300`) :
+
+1. avant le pipeline de layout, ouverture par pypdfium2 (moteur PDF de Docling, sous son verrou `pypdfium2_lock`) : illisible, chiffré ou corrompu → `INVALID_DOCUMENT` (message avec le nom du fichier) ; plus de `max_pages` pages → `TOO_MANY_PAGES` (nombre de pages et limite dans le message) ; aucune page avec un caractère visible dans sa couche texte → `OCR_REQUIRED`. Quelques millisecondes pour 300 pages, sans modèle ;
+2. PDF partiellement scanné : extrait, ses pages sans texte sont ignorées et leur nombre journalisé (avertissement) ;
+3. pipeline PDF de Docling (`pdf_pipeline_options()`) : OCR désactivé, structure des tableaux (TableFormer) activée, CPU explicite, modèle de layout `docling-layout-heron` à la révision épinglée `LAYOUT_MODEL_REVISION` (Docling suit `main`), une page à la fois par modèle et quatre pages au plus en attente entre deux étapes (mesures ci-dessous) ;
+4. conversion impossible (`ConversionError`) → `INVALID_DOCUMENT` ; aucun bloc → `EMPTY_DOCUMENT`. Toute autre erreur (téléchargement des poids, par exemple) reste transitoire : retry avec backoff.
+
+**DOCX** (`docling_docx_parser.py`, `DoclingDocxParser()`) : backend Word de Docling, sans modèle ; le style « Titre » donne le niveau 1, « Titre n » le niveau n + 1 ; pas de pagination (`page = None`), donc **pas de limite de pages** ; contenu illisible (pas un ZIP, ZIP sans document Word, document chiffré) → `INVALID_DOCUMENT`.
+
+**Chargement** : Docling, pypdfium2 et les modèles sont importés à la première conversion, pas à la composition : l'API compose le handler d'extraction sans eux (vérifié : aucun de `docling`, `pypdfium2`, `cv2`, `torchvision` dans `sys.modules` après `default_parser()`). Chaque processus enfant du worker crée ses convertisseurs à sa première conversion. Le travail CPU tourne dans le thread de `RecordExtractionHandler.prepare` (`asyncio.to_thread`) pendant que la boucle envoie les heartbeats (`keeping_lease`, test `test_heartbeats_are_sent_while_the_pdf_is_being_extracted`).
+
+**Poids des modèles** : `docling-layout-heron` (Apache-2.0, 164 Mio) et `docling-models` v2.3.0 (TableFormer, CDLA-Permissive-2.0, 342 Mio ; Docling télécharge les variantes `fast` et `accurate`), téléchargés au premier PDF dans le cache du Hub : `HF_HOME` = `models_cache/huggingface` sous Compose (volume partagé avec le modèle d'embeddings), `backend/.cache/huggingface` pour `make test-integration`.
+
+**Polices de l'image** : docling-parse dessine lui-même les pages que lit le modèle de layout. Sans police système (image `python:3.13-slim`), les polices standard non embarquées (Helvetica, Courier…) sont rendues en rectangles : le modèle ne reconnaissait plus ni titres ni code (0 bloc de code sur les fixtures, confiance 0,6 à 0,8 au lieu de 0,94 à 0,99). L'image installe `fonts-urw-base35` (clones des 35 polices PostScript standard) et `fonts-dejavu-core` (repli) : sorties identiques à l'hôte sur les quatre PDF de fixtures (Liberation, essayée, classait encore un bloc de code en paragraphe). Les tests d'intégration tournent sur l'hôte : un écart de rendu propre au conteneur ne serait pas vu par eux.
+
+**Codes d'erreur ajoutés** (`ParseErrorCode`, donc terminaux et `failure_retryable` faux, comme tout code de parsing) :
+
+| Code | Cause |
+|---|---|
+| `OCR_REQUIRED` | PDF sans aucune couche texte (scan) ; l'OCR est désactivé en V1 (ADR 0008, point 5) |
+| `TOO_MANY_PAGES` | PDF de plus de 300 pages (ADR 0012, point 4) |
+| `INVALID_DOCUMENT` (élargi) | PDF chiffré, corrompu ou illisible ; DOCX illisible ou chiffré |
+
+**Mesures** : voir [ADR 0012, suivi S6](../../../docs/decisions/0012-original-document-storage-and-purge.md) (CPU, RSS, durée par page ; limites confirmées) et [ADR 0008, suivi S6](../../../docs/decisions/0008-custom-pipeline-docling-extraction.md) (paquets, image). Évaluation : [ci-dessous](#évaluation-s6).
+
+#### Évaluation S6
+
+- `test_retrieval_evaluation_office` : le jeu de S5 rejoué à l'identique, `qa_pytest_fr` importé en PDF et `cours_git_fr` en DOCX ; seuils de S5 inchangés.
+- `test_retrieval_long_units` (jeu propre à S6, `fixtures/knowledge_base/office/long_units_reference.json`) : le cours PDF `cours_concurrence_long_fr.pdf`, dont une section de ~1 300 tokens (pages 1 et 2) fait plusieurs chunks et dépasse `max_passage_tokens`, au milieu de quatre documents Python voisins (négatifs proches) ; 10 requêtes dont 4 à identifiant de code exact et une inter-langues ; rejouées pour des budgets de passage de 508 à 2 048 tokens.
+
+**Mesures** (2026-11-18, hôte macOS arm64, vrai E5 et vrai Docling ; deux exécutions identiques) :
+
+| Jeu | Recall@5 | MRR | Intégrité | Autres |
+|---|---|---|---|---|
+| S5 (Markdown), référence | 0,881 (37/42) | 0,853 | 1,000 (37/37) | inter-langues 0,750 ; avec filtres 0,975 |
+| S5 avec `qa_pytest_fr` en PDF et `cours_git_fr` en DOCX | 0,905 (38/42) | 0,857 | 1,000 (38/38) | inter-langues 0,750 ; avec filtres 1,000 ; 8 requêtes sur les documents convertis : Recall@5 au-dessus du seuil de S5 (test), citations PDF avec pages 1 à 2, DOCX sans page |
+| Unités longues, budget 1 024 (défaut) | 0,900 (9/10) | 0,833 | **0,875 (7/8) sur passages tronqués** | section longue dans les 5 premiers pour 8/8 requêtes, tronquée dans les 8 cas |
+
+Aucune régression des seuils de S5. Sur le jeu des unités longues, l'unité est reconnue à sa **provenance** (fichier et section) : la définition de S5, qui la reconnaît à l'extrait de réponse attendu, ne voit pas une fenêtre qui a perdu la réponse (l03 : comptée « non retrouvée », intégrité de S5 1,000) ; la provenance la compte comme un défaut d'intégrité (0,875). Seuils propres à ce jeu : `office/long_units_thresholds.json` (mesure moins une requête).
+
+Budget de passage (O12, même jeu) :
+
+| `max_passage_tokens` | Passages longs tronqués | Intégrité des tronqués | Recall@5 / MRR | Tokens du passage attendu (médiane / max) | Tokens des 5 premiers passages (médiane / max) |
+|---|---|---|---|---|---|
+| 508 et 768 (un chunk) | 8/8 | 0,625 (5/8) | 0,900 / 0,833 | 451 / 487 | 1 210 / 1 285 |
+| **1 024** (deux chunks) | 8/8 | 0,875 (7/8) | 0,900 / 0,833 | 843 / 938 | 1 661 / 1 772 |
+| 1 536 et 2 048 | 0/8 (unité entière : 1 294) | — | 1,000 / 0,883 | 1 294 / 1 294 | 2 052 / 2 128 |
+
+Le défaut restant à 1 024 (l03) : la fenêtre garde les deux chunks trouvés, la réponse est dans le troisième. 1 536 corrige ce cas parce que l'unité mesure 1 294 tokens : résultat propre à cette fixture, qui ne suffit pas à trancher O12 (voir [knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
+
 ## Surface publique
 
 `knowledge_base/__init__.py` réexporte, depuis `adapters/controller/dependencies.py` :
@@ -418,7 +478,7 @@ knowledge_base/
     sqlalchemy_extraction_repository.py, sqlalchemy_extraction_transaction.py  # lot d'unités et chunks (S3)
     sqlalchemy_knowledge_corpus_repository.py, sqlalchemy_indexation_repository.py, sqlalchemy_chunk_reader.py, sqlalchemy_indexing_transaction.py  # S4
   adapters/gateway/blob/filesystem_blob_store.py  # FileSystemBlobStore : put (S2), read (S3)
-  adapters/gateway/parsing/               # RoutingDocumentParser, DoclingMarkdownParser, PlainTextParser (S3)
+  adapters/gateway/parsing/               # RoutingDocumentParser, DoclingMarkdownParser, PlainTextParser (S3) ; docling_mapping, DoclingPdfParser, DoclingDocxParser (S6)
   adapters/gateway/embedding/approximate_token_counter.py  # TokenCounter provisoire (S3) ; hors production depuis S4 (tests de coût)
   adapters/gateway/embedding/sentence_transformers_embedder.py  # SentenceTransformersEmbedder : préfixes, normalisation, tokenizer (S4)
   adapters/gateway/vector_store/qdrant_vector_index.py  # QdrantVectorIndex : collection par index, payload, manifest (S4)
@@ -453,7 +513,7 @@ En S0, `finalize` et `on_terminal_failure` reçoivent une `AsyncSession` ; l'Uni
 - `FailureInfo` (`domain/providers/work_queue.py`, code stable + message tronqué à 2 000 caractères) décrit l'échec d'une **tentative** de work item : colonnes `last_error_*` et argument du hook `on_terminal_failure` (S0 §5) ;
 - `FailureReason` (`domain/value_objects/failure_reason.py`, `code`, `message`, `retryable`) est l'état **durable** d'une version `FAILED` ; `retryable` dit si `RetryIngestion` a un sens.
 
-Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` faux pour tout code de `ParseErrorCode` — `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX` — et pour `CHUNKING_FAILED`) ; une fusion ne sera envisagée que si les deux formes convergent.
+Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` faux pour tout code de `ParseErrorCode` — `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX`, `OCR_REQUIRED`, `TOO_MANY_PAGES` — et pour `CHUNKING_FAILED`) ; une fusion ne sera envisagée que si les deux formes convergent.
 
 ## Choix d'implémentation à connaître
 
@@ -472,4 +532,6 @@ Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` 
 - Unitaires S4 : `domain/test_{embedding_profile,index_manifest,indexation,knowledge_corpus}.py`, `use_cases/test_{record_extraction_indexations,complete_indexation,publish_document_version,sync_document_visibility,provision_search_index}.py` (doubles `indexing_fakes.py` : `HashEmbedder`, Qdrant en mémoire, garde « aucun appel externe dans une transaction »), `test_indexing_work_handlers.py`, `test_index_version_lease.py` (heartbeats pendant un `prepare` lent, heartbeat refusé → `prepare` interrompu sans upsert ni finalisation, intervalle de la composition de production), `test_lease.py` (`keeping_lease` : annulation au refus, aucune tâche survivante, annulation de l'appelant), `adapters/embedding/` (préfixes, normalisation, tokenizer, sans modèle), `adapters/vector_store/` ; `architecture/test_embedding_confinement.py`.
 - Unitaires S5 : `use_cases/test_search_knowledge.py` (contrôle SQL, complément, regroupement, score, provenance), `use_cases/test_search_knowledge_passages.py` (small-to-big), `use_cases/test_search_profile_and_contract.py` (profil de l'index, traduction et erreurs du contrat), `domain/services/test_passage_assembler.py` (chunks du vrai `ChunkPlanner`), `adapters/vector_store/test_search_filter.py`, `test_search_routes_http.py`, `test_search_routes_errors.py`, `test_build_knowledge_search.py`, `test_search_settings.py`, `test_retrieval_metrics.py`, `test_retrieval_reference_set.py` ; `architecture/test_knowledge_search_contract.py`. Doubles : `use_cases/search_fakes.py`.
 - Intégration S5 : `test_search_flow` (bout en bout, vrai E5 : citation complète, filtres, version non publiée, non synchronisée, supplantée, document retiré, `complete=false`, troncature, REST), `test_qdrant_chunk_search` (groupement, exclusion, `visible`, filtres sur Qdrant réel), `test_retrieval_evaluation` (marqueurs `model` et `retrieval`).
-- Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go.
+- Unitaires S6 : `adapters/parsing/test_docling_office_mapping.py` (traduction sur des sorties Docling **enregistrées** des fixtures PDF/DOCX, `fixtures/knowledge_base/office/recorded/`, et sur des documents construits à la main), `test_office_parser_failures.py` et `test_pdf_checks_before_layout.py` (chiffré, corrompu, limite de pages, `OCR_REQUIRED`, PDF partiellement scanné, sans modèle), `test_office_routing.py`, `test_docling_pdf_options.py` (OCR désactivé, CPU, révision épinglée, lots d'une page), `test_office_error_codes.py`, `test_office_import_http.py`. Fixtures : `generate_office_fixtures.py` (reportlab, python-docx, environnement éphémère `uv run --no-project`, sorties identiques octet pour octet) et `record_docling_documents.py`.
+- Intégration S6 : `test_office_extraction` (PDF et DOCX équivalents aux Markdown → mêmes unités, pages, tableaux, `OCR_REQUIRED`, chiffré/corrompu, plus de 300 pages, heartbeats pendant l'extraction), `test_office_parsers_live` (parseur vivant = sorties enregistrées, limite incluse, mesures d'extraction), `test_retrieval_evaluation_office`, `test_retrieval_long_units`.
+- Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go. Depuis S6, poids de Docling PDF dans `HF_HOME` (`backend/.cache/huggingface`, ~506 Mio au premier lancement).

@@ -209,6 +209,8 @@ flowchart LR
 
 ## S6 — Extraction PDF/DOCX avec Docling
 
+> **Statut : implémentée (2026-11-18)** — Docling PDF (OCR désactivé, vérifications pypdfium2 avant layout : chiffré/corrompu → `INVALID_DOCUMENT`, > 300 pages → `TOO_MANY_PAGES`, sans couche texte → `OCR_REQUIRED`) et DOCX ; mapping Docling commun aux trois formats ; limites 20 Mio / 300 pages confirmées (PDF de 300 pages : 15 min jusqu'à `PUBLISHED`, pic RSS worker 2,6 Gio) ; aucune régression S5 (Recall@5 0,905 avec PDF/DOCX) ; intégrité sur passages tronqués 0,875 au budget 1024 ; 1 196 unitaires et 364 tests d'intégration verts.
+
 - **Objectif :** importer des PDF natifs et des DOCX avec la même qualité
   d'unités que le Markdown.
 - **Périmètre :** pipelines Docling PDF (layout, tableaux) et DOCX, OCR

@@ -28,7 +28,7 @@ review prêt.
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | **Terminée** | voir journal | Ruff, mypy (180 fichiers), 529 unit./archi., 192 intégration, extraction réelle sur la stack de dev (3 unités QA, 3 chunks) |
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | **Terminée** | voir journal | Ruff, mypy (252 fichiers), 759 unit./archi., 273 intégration (18 `model`), 3/3 mutations, import réel jusqu'à PUBLISHED (3 points visibles) |
 | S5 | Recherche sémantique, provenance, évaluation | S4 | **Terminée** | voir journal | Ruff, mypy (299 fichiers), 1 115 unit./archi., 321 intégration (dont `retrieval`), 4 mutations tuées, recherche réelle sur la stack de dev (citation complète) |
-| S6 | PDF et DOCX avec Docling | S3, S5 | À faire | | |
+| S6 | PDF et DOCX avec Docling | S3, S5 | **Terminée** | voir journal | Ruff, mypy (316 fichiers), 1 196 unit./archi., 364 intégration, 3/3 mutations, import réel PDF et DOCX jusqu'à PUBLISHED, recherche avec pages |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | À faire | | |
 | S8 | Réconciliation et gestion des erreurs | S7 | À faire | | |
 | S9 | Benchmark embeddings, blue/green | S5, S8 | À faire | | |
@@ -66,6 +66,11 @@ périmètre.
   recherche HTTP médiane 69 ms ; RSS de l'API 146 → 1 267 Mio après le
   premier appel (modèle chargé paresseusement).
 
+- 2026-11-18 — S6 terminée : tests rouges (sorties Docling réelles
+  enregistrées) → implémentation → revalidation : 1 196 unitaires,
+  364 intégration. PDF 300 pages : 15 min 13 s jusqu'à PUBLISHED, pic RSS
+  2 645 Mio ; image `production` 480 → 558 Mo ; base de dev reconstruite.
+
 ## Écarts et décisions en cours de route
 
 - S0 — `create_celery_app` dans `runtime/worker_factory.py` (précision d'implémentation balisée en S0 §10).
@@ -93,6 +98,13 @@ périmètre.
 - S5 — question comptée par le compteur approximatif (majorant) dans le budget de passage.
 - S5 — le jeu de référence n'exerce pas la troncature (toutes les unités tiennent en un chunk) : `max_passage_tokens` reste Proposed, à remesurer en S6.
 - S5 — l'API charge E5 (≈ 1,1 Gio de RSS supplémentaire) : risque mémoire à suivre avec O5.
+
+- S6 — limite de 300 pages appliquée au parsing (FAILED `TOO_MANY_PAGES`, non rejouable), pas à l'import ; pas de limite de pages pour DOCX ; volume de texte DOCX non borné → O16 [Open] (S8).
+- S6 — PDF partiellement scanné extrait, pages sans texte journalisées ; `OCR_REQUIRED` seulement sans aucune couche texte.
+- S6 — `huggingface-hub` rétrogradé 2.4.0 → 1.33.0 (contrainte `<2` de docling-ibm-models) ; tests E5 verts.
+- S6 — polices URW base35 dans l'image : sans police, docling-parse rendait le texte en rectangles dans le conteneur (0 bloc de code). Les tests d'intégration tournent sur l'hôte et ne verraient pas cette régression.
+- S6 — CPU par page 7 à 19 × plus élevé en conteneur que sur l'hôte, cause non identifiée.
+- S6 — `max_passage_tokens` = 1024 reste Proposed (une seule unité longue mesurée) ; `CHUNKS_PER_UNIT` non mesuré.
 
 ## Corrections en attente
 

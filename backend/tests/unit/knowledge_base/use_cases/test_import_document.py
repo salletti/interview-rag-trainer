@@ -240,7 +240,8 @@ async def test_a_different_content_creates_a_distinct_document() -> None:
 @pytest.mark.parametrize(
     ("filename", "media_type"),
     [
-        ("cours.pdf", "application/pdf"),
+        # Word binaire historique : seul l'OOXML (.docx) est accepté (S6).
+        ("cours.doc", "application/msword"),
         ("cours.md", "application/pdf"),
         ("cours.pdf", "text/markdown"),
         ("cours.html", "text/html"),

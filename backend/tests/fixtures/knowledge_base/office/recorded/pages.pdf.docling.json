@@ -1,0 +1,299 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "1.11.0",
+  "name": "pages",
+  "origin": {
+    "mimetype": "application/pdf",
+    "binary_hash": 5654837498205507898,
+    "filename": "pages.pdf"
+  },
+  "furniture": {
+    "self_ref": "#/furniture",
+    "children": [],
+    "content_layer": "furniture",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {
+        "$ref": "#/texts/0"
+      },
+      {
+        "$ref": "#/texts/1"
+      },
+      {
+        "$ref": "#/texts/2"
+      },
+      {
+        "$ref": "#/texts/3"
+      },
+      {
+        "$ref": "#/texts/4"
+      },
+      {
+        "$ref": "#/texts/5"
+      },
+      {
+        "$ref": "#/texts/6"
+      },
+      {
+        "$ref": "#/texts/7"
+      }
+    ],
+    "content_layer": "body",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "groups": [],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 757.6858000000001,
+            "r": 223.464,
+            "b": 737.3358000000001,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            12
+          ]
+        }
+      ],
+      "orig": "Cours pagin\u00e9",
+      "text": "Cours pagin\u00e9",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/1",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 717.3778,
+            "r": 207.824,
+            "b": 702.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            16
+          ]
+        }
+      ],
+      "orig": "Premi\u00e8re section",
+      "text": "Premi\u00e8re section",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/2",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 690.7878000000001,
+            "r": 209.45,
+            "b": 680.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            26
+          ]
+        }
+      ],
+      "orig": "Texte de la premi\u00e8re page.",
+      "text": "Texte de la premi\u00e8re page."
+    },
+    {
+      "self_ref": "#/texts/3",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 2,
+          "bbox": {
+            "l": 78.0,
+            "t": 759.3778,
+            "r": 214.928,
+            "b": 744.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            16
+          ]
+        }
+      ],
+      "orig": "Deuxi\u00e8me section",
+      "text": "Deuxi\u00e8me section",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/4",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 2,
+          "bbox": {
+            "l": 78.0,
+            "t": 732.7878000000001,
+            "r": 339.67900000000014,
+            "b": 722.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            51
+          ]
+        }
+      ],
+      "orig": "D\u00e9but de la deuxi\u00e8me section, sur la deuxi\u00e8me page.",
+      "text": "D\u00e9but de la deuxi\u00e8me section, sur la deuxi\u00e8me page."
+    },
+    {
+      "self_ref": "#/texts/5",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 3,
+          "bbox": {
+            "l": 78.0,
+            "t": 760.7878000000001,
+            "r": 320.09900000000016,
+            "b": 750.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            50
+          ]
+        }
+      ],
+      "orig": "Fin de la deuxi\u00e8me section, sur la troisi\u00e8me page.",
+      "text": "Fin de la deuxi\u00e8me section, sur la troisi\u00e8me page."
+    },
+    {
+      "self_ref": "#/texts/6",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 3,
+          "bbox": {
+            "l": 78.0,
+            "t": 730.3778,
+            "r": 214.928,
+            "b": 715.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            17
+          ]
+        }
+      ],
+      "orig": "Troisi\u00e8me section",
+      "text": "Troisi\u00e8me section",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/7",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 3,
+          "bbox": {
+            "l": 78.0,
+            "t": 703.7878000000001,
+            "r": 221.05500000000004,
+            "b": 693.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            30
+          ]
+        }
+      ],
+      "orig": "Texte de la troisi\u00e8me section.",
+      "text": "Texte de la troisi\u00e8me section."
+    }
+  ],
+  "pictures": [],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {
+    "1": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 1
+    },
+    "2": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 2
+    },
+    "3": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 3
+    }
+  }
+}

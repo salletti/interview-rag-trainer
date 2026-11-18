@@ -11,12 +11,14 @@ INTEGRATION_ENV := ENVIRONMENT=test POSTGRES_HOST=localhost POSTGRES_PORT=5441 \
 	QDRANT_HOST=localhost QDRANT_PORT=6343 \
 	RABBITMQ_HOST=localhost RABBITMQ_PORT=5682 RABBITMQ_USER=irt_test RABBITMQ_PASSWORD=irt_test \
 	KB_TEST_CONSUMER_TIMEOUT_SECONDS=5 \
-	SENTENCE_TRANSFORMERS_HOME=$(CURDIR)/backend/.cache/models
+	SENTENCE_TRANSFORMERS_HOME=$(CURDIR)/backend/.cache/models \
+	HF_HOME=$(CURDIR)/backend/.cache/huggingface HF_HUB_DISABLE_XET=1
 # KB_TEST_CONSUMER_TIMEOUT_SECONDS active le scénario 14 de S0 : il doit
 # valoir le consumer_timeout de backend/tests/integration/rabbitmq_test/
 # 20-consumer-timeout.conf (en secondes).
 # SENTENCE_TRANSFORMERS_HOME : cache local (ignoré par git) des poids du
 # modèle des tests `model` (S4), téléchargés une fois au premier lancement.
+# HF_HOME : idem pour les poids de Docling PDF (S6 : layout, TableFormer).
 
 help: ## Liste des cibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'

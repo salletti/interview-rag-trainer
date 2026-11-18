@@ -329,8 +329,8 @@ async def test_a_non_whitelisted_type_is_refused_before_any_write() -> None:
             version_command(
                 first.document_id,
                 V2,
-                filename="cours.pdf",
-                media_type="application/pdf",
+                filename="cours.doc",
+                media_type="application/msword",
             )
         )
 

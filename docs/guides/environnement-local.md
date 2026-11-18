@@ -20,7 +20,7 @@ docker compose up --build -d
 | Qdrant | http://localhost:6333 (REST), 6334 (gRPC) | moteur vectoriel principal |
 | RabbitMQ | `localhost:5672`, management http://localhost:15672 | broker Celery |
 | Worker Celery (`worker`) | — | file `interview_rag_trainer.default` : `runtime.ping`, tâches `dispatch` et `recover` de Knowledge Base |
-| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility` ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) |
+| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility` ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) et Docling PDF à son premier PDF (pic de RSS mesuré : 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) |
 | Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` |
 | migrate | — | `alembic upgrade head`, s'arrête une fois terminé |
 | kb_provision | — | `python -m runtime.provision` : crée la collection Qdrant et active l'index initial de Knowledge Base s'il n'existe pas (idempotent), s'arrête une fois terminé |
@@ -35,7 +35,7 @@ Ordre de démarrage garanti par Compose : PostgreSQL sain → `migrate` terminé
 |---|---|---|---|
 | `postgres_data`, `qdrant_data`, `rabbitmq_data` | services d'infrastructure | — | données |
 | `kb_blobs` | `api`, `worker`, `worker_ingestion` | `/var/lib/interview-rag-trainer/blobs` (`KB_BLOB_ROOT`) | originaux des documents de Knowledge Base (S2) : `sha256/<aa>/<bb>/<empreinte>`, temporaires d'upload sous `tmp/` |
-| `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` (`KB_MODELS_CACHE_DIR`) | poids du modèle d'embeddings (S4, ~1,1 Go), téléchargés une fois puis relus |
+| `models_cache` | `api`, `worker_ingestion` | `/var/cache/interview-rag-trainer/models` (`KB_MODELS_CACHE_DIR`) | poids du modèle d'embeddings (S4, ~1,1 Go), téléchargés une fois puis relus ; depuis S6, poids de Docling PDF (layout et TableFormer, ~506 Mio) sous `huggingface/` (`HF_HOME`), téléchargés par `worker_ingestion` au premier PDF |
 
 Les répertoires de montage sont créés dans l'image avec le propriétaire `app` : un volume nommé neuf en hérite les droits.
 
@@ -57,6 +57,7 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_BLOB_ROOT` | `/var/lib/interview-rag-trainer/blobs` | racine du volume des blobs ; fixée par `compose.yaml` au point de montage de `kb_blobs` (non surchargeable par `.env`) ; hors Docker, à pointer vers un répertoire inscriptible |
 | `KB_MODELS_CACHE_DIR` | `/var/cache/interview-rag-trainer/models` | cache des poids du modèle (S4) ; fixé par `compose.yaml` au point de montage de `models_cache` ; hors Docker, à pointer vers un répertoire inscriptible (ex. `backend/.cache/models`) |
 | `KB_EMBEDDING_BATCH_SIZE` | 32 | chunks encodés par appel au modèle, donc par upsert Qdrant |
+| `HF_HOME` (non `KB_`) | `/var/cache/interview-rag-trainer/models/huggingface` | cache du Hub pour les poids de Docling PDF (S6) ; fixé par `compose.yaml` dans le volume `models_cache` (non surchargeable par `.env`) |
 | `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
 
 ### Premier démarrage : le modèle d'embeddings
@@ -90,7 +91,7 @@ curl -s -X POST localhost:8010/api/v1/knowledge-base/documents/<document_id>/ver
   -F 'file=@cours-v2.md;type=text/markdown'      # 202, number = 2
 ```
 
-`;type=text/markdown` est nécessaire : sans lui, curl envoie `application/octet-stream` pour un `.md` et l'API répond 415 (`UNSUPPORTED_MEDIA_TYPE`). Types acceptés : `text/markdown` (`.md`, `.markdown`) et `text/plain` (`.txt`). Codes d'erreur et contrat complet : [README de Knowledge Base](../../backend/src/knowledge_base/README.md). Vérifications :
+`;type=text/markdown` est nécessaire : sans lui, curl envoie `application/octet-stream` pour un `.md` et l'API répond 415 (`UNSUPPORTED_MEDIA_TYPE`). Types acceptés : `text/markdown` (`.md`, `.markdown`), `text/plain` (`.txt`) et, depuis S6, `application/pdf` (`.pdf`) et `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (`.docx`) ; le type doit concorder avec l'extension, le Word binaire (`.doc`) est refusé. Codes d'erreur et contrat complet : [README de Knowledge Base](../../backend/src/knowledge_base/README.md). Vérifications :
 
 ```bash
 docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer \
@@ -111,6 +112,19 @@ curl -s -X POST localhost:6333/collections/kb_index_<index_id>/points/count \
   -H 'Content-Type: application/json' \
   -d '{"exact": true, "filter": {"must": [{"key": "visible", "match": {"value": true}}]}}'
 ```
+
+### Importer un PDF ou un DOCX (Knowledge Base, S6)
+
+```bash
+curl -s -X POST localhost:8010/api/v1/knowledge-base/documents \
+  -F 'file=@backend/tests/fixtures/knowledge_base/office/cours_concurrence_long_fr.pdf;type=application/pdf' \
+  -F title='Concurrence en Python' -F kind=COURSE -F language=fr -F topics=python
+curl -s -X POST localhost:8010/api/v1/knowledge-base/documents \
+  -F 'file=@backend/tests/fixtures/knowledge_base/office/cours_git_fr.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document' \
+  -F title='Cours Git' -F kind=COURSE -F language=fr -F topics=git
+```
+
+Le **premier PDF** télécharge les poids de Docling (layout `docling-layout-heron`, TableFormer : ~506 Mio) dans `models_cache/huggingface` : compter environ trois minutes de plus, pendant lesquelles le worker prolonge le lease ; suivi par `docker compose logs -f worker_ingestion` (« Downloaded model … », puis « … page(s) converties par Docling en … s »). Les suivants relisent le cache. Ordres de grandeur dans `worker_ingestion` (Linux arm64, 18 CPU) : de 1 à 3 s par page à chaud (2,0 s/page pour un PDF de 300 pages, 15 min de l'import à `PUBLISHED` en comptant l'encodage de ses 682 chunks) ; un DOCX ne charge aucun modèle (quelques millisecondes par page équivalente). Échecs terminaux visibles dans `document_versions.failure_code` : `OCR_REQUIRED` (PDF scanné, sans couche texte), `TOO_MANY_PAGES` (plus de 300 pages), `INVALID_DOCUMENT` (chiffré, corrompu, DOCX illisible). Les passages issus d'un PDF portent `page_start` / `page_end` dans leur citation ; ceux d'un DOCX, `null`.
 
 ### Rechercher (Knowledge Base, S5)
 
@@ -140,7 +154,7 @@ make test-integration                    # stack compose.test.yaml éphémère +
 
 L'évaluation de la recherche (marqueur `retrieval`, inclus dans `make test-integration`) écrit sa mesure dans `backend/.cache/retrieval/retrieval_report.json` (ou `KB_RETRIEVAL_REPORT_DIR`) et la compare aux seuils de `backend/tests/fixtures/knowledge_base/retrieval/retrieval_thresholds.json`.
 
-Les tests d'intégration incluent les tests marqués `model` (vrai `multilingual-e5-base`) : le Makefile pointe `SENTENCE_TRANSFORMERS_HOME` vers `backend/.cache/models` (ignoré par git), rempli au premier lancement (1,1 Go ; `HF_HUB_DISABLE_XET=1` si le téléchargement reste bloqué à 0 octet). Pour les exclure : `cd backend && uv run pytest -m "integration and not model"` avec l'environnement de `INTEGRATION_ENV`. Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
+Les tests d'intégration incluent les tests marqués `model` (vrai `multilingual-e5-base` ; depuis S6, vrais modèles de layout et TableFormer de Docling) : le Makefile pointe `SENTENCE_TRANSFORMERS_HOME` vers `backend/.cache/models` et `HF_HOME` vers `backend/.cache/huggingface` (ignorés par git), remplis au premier lancement (1,1 Go et ~506 Mio ; `HF_HUB_DISABLE_XET=1`). Les mesures d'extraction PDF du test `test_office_parsers_live` sont écrites dans `backend/.cache/extraction/office_extraction_report.json` (ou `KB_EXTRACTION_REPORT_DIR`), celles de l'évaluation S6 dans `retrieval_report_office.json` et `retrieval_report_long_units.json`, à côté du rapport de S5. Pour les exclure : `cd backend && uv run pytest -m "integration and not model"` avec l'environnement de `INTEGRATION_ENV`. Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
 
 ## Migrations
 

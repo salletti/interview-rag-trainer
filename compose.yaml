@@ -44,6 +44,11 @@ x-backend-env: &backend-env
   KB_SEARCH_OVERSAMPLING_FACTOR: ${KB_SEARCH_OVERSAMPLING_FACTOR:-2}
   KB_SEARCH_COMPLEMENT_PASSES: ${KB_SEARCH_COMPLEMENT_PASSES:-1}
   KB_MAX_PASSAGE_TOKENS: ${KB_MAX_PASSAGE_TOKENS:-1024}
+  # Poids de Docling PDF (S6 : layout et TableFormer, ~530 Mio) : cache du Hub
+  # dans un sous-dossier du volume models_cache, téléchargés à la première
+  # extraction d'un PDF par worker_ingestion. Non surchargeable par .env, comme
+  # KB_MODELS_CACHE_DIR ; l'API ne convertit jamais de PDF.
+  HF_HOME: /var/cache/interview-rag-trainer/models/huggingface
   # Premier téléchargement du modèle par HTTPS simple : le protocole xet du
   # Hub est resté bloqué à 0 octet dans cet environnement (2026-11-18, hôte
   # et conteneur), le téléchargement HTTP aboutit. 0 pour réactiver xet.
@@ -139,7 +144,9 @@ services:
     networks: [backend]
 
   # Traitements CPU de Knowledge Base (file knowledge_base.ingestion) : un seul
-  # enfant, un seul message préchargé (S0 §8.1, §9).
+  # enfant, un seul message préchargé (S0 §8.1, §9). Seul service à charger
+  # Docling PDF et ses modèles (S6), dans le processus enfant, à la première
+  # extraction d'un PDF.
   worker_ingestion:
     build: *backend-build
     command: ["celery", "-A", "runtime.worker:celery_app", "worker", "-Q", "knowledge_base.ingestion", "--loglevel=INFO", "--concurrency=1", "--prefetch-multiplier=1"]
@@ -252,7 +259,8 @@ volumes:
   postgres_data:
   qdrant_data:
   rabbitmq_data:
-  # Knowledge Base : blobs des documents (S2) et cache des modèles (S3/S4).
+  # Knowledge Base : blobs des documents (S2) et cache des modèles (S4 : E5 ;
+  # S6 : poids Docling sous huggingface/).
   kb_blobs:
   models_cache:
 

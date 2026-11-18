@@ -1,0 +1,11 @@
+{
+  "_regle": "Même règle que retrieval/retrieval_thresholds.json : minimum = valeur mesurée moins une marge documentée, jamais abaissé pour faire passer une régression sans l'écrire dans la conception.",
+  "_statut": "MESURE_2026-11-18",
+  "_mesure": "Mesure de référence du 2026-11-18 (S6), budget de passage 1024 (défaut), 10 requêtes dont 8 visent la section longue, 5 documents, profil intfloat/multilingual-e5-base@d1287505, politique kb-chunking-v1+xlmr-d1287505, Docling PDF (hôte macOS arm64). Section longue : 1 294 tokens, 3 chunks, pages 1-2. Valeurs : long_unit_found_at_5 1.000 (8/8, unité reconnue à sa provenance) ; truncated_unit_integrity 0.875 (7/8 passages tronqués intègres : la fenêtre de l03 garde les deux chunks trouvés, la réponse de l03 est dans le troisième) ; recall_at_5 0.900 (9/10, définition de S5 : l03 n'est pas compté comme retrouvé, sa fenêtre ayant perdu la réponse). Deux exécutions identiques.",
+  "_marge": "Une requête du dénominateur, comme l'inter-langues de S5 (petits dénominateurs), arrondi vers le bas au centième : long_unit_found_at_5 1.000 - 1/8 = 0.87 ; truncated_unit_integrity 0.875 - 1/8 = 0.75 ; recall_at_5 0.900 - 1/10 = 0.80.",
+  "metrics": {
+    "long_unit_found_at_5": {"minimum": 0.87},
+    "recall_at_5": {"minimum": 0.80},
+    "truncated_unit_integrity": {"minimum": 0.75}
+  }
+}

@@ -45,10 +45,15 @@ logger = logging.getLogger(__name__)
 EXTRACT_VERSION: Final = "extract_version"
 MAX_FILENAME_LENGTH: Final = 255
 
-# Liste blanche de S2 : le type de média ET l'extension doivent concorder.
+# Liste blanche (S2, S6) : le type de média ET l'extension doivent concorder.
+# Le Word binaire historique (``application/msword``, ``.doc``) n'y figure pas.
 _SUPPORTED_TYPES: Final[Mapping[str, frozenset[str]]] = {
     "text/markdown": frozenset({".md", ".markdown"}),
     "text/plain": frozenset({".txt"}),
+    "application/pdf": frozenset({".pdf"}),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        frozenset({".docx"})
+    ),
 }
 
 

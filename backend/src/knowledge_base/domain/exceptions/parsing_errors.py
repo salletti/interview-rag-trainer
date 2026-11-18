@@ -17,18 +17,24 @@ class ParseErrorCode(StrEnum):
     EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
     INVALID_DOCUMENT = "INVALID_DOCUMENT"
     DOCUMENT_TOO_COMPLEX = "DOCUMENT_TOO_COMPLEX"
+    OCR_REQUIRED = "OCR_REQUIRED"
+    TOO_MANY_PAGES = "TOO_MANY_PAGES"
 
 
 EMPTY_DOCUMENT: Final = ParseErrorCode.EMPTY_DOCUMENT
 INVALID_DOCUMENT: Final = ParseErrorCode.INVALID_DOCUMENT
 DOCUMENT_TOO_COMPLEX: Final = ParseErrorCode.DOCUMENT_TOO_COMPLEX
+OCR_REQUIRED: Final = ParseErrorCode.OCR_REQUIRED
+TOO_MANY_PAGES: Final = ParseErrorCode.TOO_MANY_PAGES
 PARSE_ERROR_CODES: Final = frozenset(ParseErrorCode)
 
 
 class DocumentParseError(Exception):
     """``code`` : ``EMPTY_DOCUMENT`` (aucun contenu), ``INVALID_DOCUMENT``
-    (contenu illisible ou format non pris en charge) ou ``DOCUMENT_TOO_COMPLEX``
-    (imbrication trop profonde pour le parseur)."""
+    (contenu illisible, chiffré ou format non pris en charge),
+    ``DOCUMENT_TOO_COMPLEX`` (imbrication trop profonde pour le parseur),
+    ``OCR_REQUIRED`` (PDF sans couche texte : l'OCR est désactivé en V1) ou
+    ``TOO_MANY_PAGES`` (PDF au-delà de la limite de pages, ADR 0012)."""
 
     def __init__(self, code: ParseErrorCode, message: str = "") -> None:
         super().__init__(f"{code}: {message}" if message else code)

@@ -7,17 +7,11 @@ anti-corruption, aucun type Docling ne sort de ce module.
   vide ou commentaire ``#`` : sinon (une règle horizontale suivie de prose,
   par exemple) le document est rendu tel quel à Docling. Les guillemets
   simples ou doubles qui entourent une valeur sont retirés.
-- Titres : Docling rend le ``#`` en ``TitleItem`` et ``##``… en
-  ``SectionHeaderItem(level=n-1)`` ; les niveaux Markdown sont restitués.
-- Paragraphe à mise en forme (gras, lien, code en ligne) : Docling le découpe
-  en ``InlineGroup`` ; ses morceaux sont recollés, le code en ligne entre
-  accents graves. Les retours à la ligne d'un paragraphe deviennent des espaces.
-- Code : ``CodeItem`` -> ``CodeBlock`` ; le langage est celui que Docling
-  reconnaît (barrière ou détection), en minuscules, ``None`` si inconnu.
-- Liste : un ``ListBlock`` par liste de premier niveau, sous-listes aplaties
-  dans l'ordre.
-- Tableau : une ligne ``| a | b |`` par rangée (en-tête compris).
-- Markdown n'a pas de pages : ``page`` vaut toujours ``None``.
+- Traduction des blocs (titres, code, listes, tableaux, paragraphes à mise en
+  forme) : ``docling_mapping``, commune à PDF et DOCX. Les retours à la ligne
+  d'un paragraphe deviennent des espaces ; le langage d'un bloc de code est
+  celui que Docling reconnaît (barrière ou détection). Markdown n'a pas de
+  pages : ``page`` vaut toujours ``None``.
 - Imbrication trop profonde (listes, citations) : Docling échoue sur une
   ``RecursionError`` ; l'échec est déterministe, rendu en
   ``DOCUMENT_TOO_COMPLEX``. Le parcours de l'arbre Docling, lui, est itératif.
@@ -29,11 +23,13 @@ compose le handler d'extraction sans payer le chargement de Docling.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
 from io import BytesIO
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Final
 
+from knowledge_base.adapters.gateway.parsing.docling_mapping import (
+    structured_document_from_docling,
+)
 from knowledge_base.adapters.gateway.parsing.plain_text_parser import decode_utf8
 from knowledge_base.domain.exceptions.parsing_errors import (
     DOCUMENT_TOO_COMPLEX,
@@ -42,21 +38,14 @@ from knowledge_base.domain.exceptions.parsing_errors import (
     DocumentParseError,
 )
 from knowledge_base.domain.value_objects.structured_document import (
-    Block,
-    CodeBlock,
-    Heading,
-    ListBlock,
-    Paragraph,
     StructuredDocument,
-    Table,
 )
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
-    from docling_core.types.doc import DoclingDocument, NodeItem, TableItem
+    from docling_core.types.doc import DoclingDocument
 
 FRONT_MATTER_FENCE: Final = "---"
-MAX_HEADING_LEVEL: Final = 6
 _FRONT_MATTER_ENTRY: Final = re.compile(r"\s*(?P<key>[\w.-]+)\s*:(?P<value>.*)")
 _QUOTES: Final = ('"', "'")
 
@@ -75,7 +64,9 @@ class DoclingMarkdownParser:
                 EMPTY_DOCUMENT, f"{filename} ne contient aucun texte"
             )
         try:
-            blocks = tuple(_blocks(self._convert(body, filename)))
+            blocks = structured_document_from_docling(
+                self._convert(body, filename)
+            ).blocks
         except RecursionError as error:
             raise _too_complex(filename) from error
         if not blocks:
@@ -152,99 +143,3 @@ def _unquoted(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTES:
         return value[1:-1]
     return value
-
-
-# --- traduction DoclingDocument -> blocs ------------------------------------------
-
-
-def _blocks(document: DoclingDocument) -> Iterator[Block]:
-    from docling_core.types.doc import (
-        CodeItem,
-        GroupItem,
-        InlineGroup,
-        ListGroup,
-        SectionHeaderItem,
-        TableItem,
-        TextItem,
-        TitleItem,
-    )
-
-    def walk(root: NodeItem) -> Iterator[Block]:
-        # Pile d'itérateurs plutôt que récursion : la profondeur des groupes
-        # ne dépend que du document.
-        pending = [iter(root.children)]
-        while pending:
-            reference = next(pending[-1], None)
-            if reference is None:
-                pending.pop()
-                continue
-            item = reference.resolve(document)
-            if isinstance(item, TitleItem):
-                yield Heading(level=1, text=item.text)
-            elif isinstance(item, SectionHeaderItem):
-                yield Heading(
-                    level=min(item.level + 1, MAX_HEADING_LEVEL), text=item.text
-                )
-            elif isinstance(item, CodeItem):
-                yield CodeBlock(
-                    text=item.text, language=_language(item.code_language.value)
-                )
-            elif isinstance(item, TableItem):
-                yield Table(text=_table_text(item))
-            elif isinstance(item, ListGroup):
-                yield ListBlock(items=tuple(_list_items(item)))
-            elif isinstance(item, InlineGroup):
-                yield from _paragraph(_inline_text(item))
-            elif isinstance(item, TextItem):
-                yield from _paragraph(item.text)
-            elif isinstance(item, GroupItem):
-                pending.append(iter(item.children))
-
-    def _inline_text(group: NodeItem) -> str:
-        parts: list[str] = []
-        for reference in group.children:
-            piece = reference.resolve(document)
-            if isinstance(piece, CodeItem):
-                parts.append(f"`{piece.text}`")
-            elif isinstance(piece, TextItem):
-                parts.append(piece.text)
-        return "".join(parts)
-
-    def _list_items(group: NodeItem) -> Iterator[str]:
-        """Éléments d'une liste et de ses sous-listes, dans l'ordre. Chaque
-        niveau de la pile énumère soit les éléments d'une liste, soit les
-        enfants d'un élément (texte à mise en forme, sous-liste)."""
-        pending = [(True, iter(group.children))]
-        while pending:
-            in_list, references = pending[-1]
-            reference = next(references, None)
-            if reference is None:
-                pending.pop()
-                continue
-            item = reference.resolve(document)
-            if in_list:
-                if isinstance(item, TextItem) and item.text.strip():
-                    yield item.text.strip()
-                pending.append((False, iter(item.children)))
-            elif isinstance(item, InlineGroup):
-                yield _inline_text(item).strip()
-            elif isinstance(item, ListGroup):
-                pending.append((True, iter(item.children)))
-
-    yield from walk(document.body)
-
-
-def _paragraph(text: str) -> Iterator[Paragraph]:
-    if text.strip():
-        yield Paragraph(text=text.strip())
-
-
-def _language(label: str) -> str | None:
-    return None if label.lower() == "unknown" else label.lower()
-
-
-def _table_text(table: TableItem) -> str:
-    return "\n".join(
-        "| " + " | ".join(cell.text.strip() for cell in row) + " |"
-        for row in table.data.grid
-    )

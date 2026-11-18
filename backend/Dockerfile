@@ -8,6 +8,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 RUN groupadd --system app && useradd --system --gid app --no-create-home --home-dir /app app
+# Polices pour le rendu des pages PDF par docling-parse (S6) : sans elles, les
+# polices standard non embarquées (Helvetica, Courier…) sont rendues en
+# rectangles et le modèle de layout ne reconnaît plus titres ni code (mesuré :
+# 0 bloc de code sur les fixtures). URW base35 : clones des 35 polices
+# PostScript standard (sorties identiques à l'hôte macOS sur les fixtures ;
+# Liberation, essayée, classait encore un bloc de code en paragraphe) ;
+# DejaVu : repli de docling-parse.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends fonts-urw-base35 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # --- development : dépendances de dev, code monté en volume, rechargement ---
@@ -43,6 +53,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- production : image minimale, utilisateur non-root -----------------------
 FROM python:3.13-slim AS production
 RUN groupadd --system app && useradd --system --gid app --no-create-home --home-dir /app app
+# Mêmes polices que l'étape base (rendu des pages PDF, S6).
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends fonts-urw-base35 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
 RUN mkdir -p /var/lib/interview-rag-trainer/blobs /var/cache/interview-rag-trainer/models \

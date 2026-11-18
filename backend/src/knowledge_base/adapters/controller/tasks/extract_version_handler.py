@@ -12,8 +12,10 @@ Erreurs terminales (sans retry) :
 | code | cause | ``retryable`` de la version ``FAILED`` |
 |---|---|---|
 | ``EMPTY_DOCUMENT`` | aucun contenu | faux |
-| ``INVALID_DOCUMENT`` | non UTF-8, type inconnu, conversion impossible | faux |
+| ``INVALID_DOCUMENT`` | illisible (non UTF-8, chiffré, corrompu), type inconnu | faux |
 | ``DOCUMENT_TOO_COMPLEX`` | imbrication trop profonde pour le parseur | faux |
+| ``OCR_REQUIRED`` | PDF sans couche texte (scan), OCR désactivé | faux |
+| ``TOO_MANY_PAGES`` | PDF de plus de 300 pages (ADR 0012) | faux |
 | ``CHUNKING_FAILED`` | ``ChunkBudgetError`` (budget sans place) | faux |
 | ``BLOB_MISSING`` | original absent du volume | vrai (après restauration) |
 | ``INVALID_PAYLOAD`` | payload de l'item illisible | — (aucune version désignée) |
@@ -40,8 +42,14 @@ from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
 from knowledge_base.adapters.gateway.embedding.sentence_transformers_embedder import (
     SentenceTransformersEmbedder,
 )
+from knowledge_base.adapters.gateway.parsing.docling_docx_parser import (
+    DoclingDocxParser,
+)
 from knowledge_base.adapters.gateway.parsing.docling_markdown_parser import (
     DoclingMarkdownParser,
+)
+from knowledge_base.adapters.gateway.parsing.docling_pdf_parser import (
+    DoclingPdfParser,
 )
 from knowledge_base.adapters.gateway.parsing.plain_text_parser import PlainTextParser
 from knowledge_base.adapters.gateway.parsing.routing_document_parser import (
@@ -91,6 +99,9 @@ INGESTION_QUEUE: Final = "knowledge_base.ingestion"
 BLOB_MISSING: Final = "BLOB_MISSING"
 INVALID_PAYLOAD: Final = "INVALID_PAYLOAD"
 CHUNKING_FAILED: Final = "CHUNKING_FAILED"
+DOCX_MEDIA_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 # Échecs déterministes : relancer l'extraction du même contenu n'a pas de sens.
 # Tout code d'une DocumentParseError en fait partie.
 NOT_RETRYABLE_CODES: Final = PARSE_ERROR_CODES | {CHUNKING_FAILED}
@@ -215,6 +226,13 @@ def build_extract_version_handler(
 
 
 def default_parser() -> RoutingDocumentParser:
+    """Un parseur par type de média de la liste blanche d'import ; aucun ne
+    charge Docling ni ses modèles avant sa première conversion."""
     return RoutingDocumentParser(
-        {"text/markdown": DoclingMarkdownParser(), "text/plain": PlainTextParser()}
+        {
+            "text/markdown": DoclingMarkdownParser(),
+            "text/plain": PlainTextParser(),
+            "application/pdf": DoclingPdfParser(),
+            DOCX_MEDIA_TYPE: DoclingDocxParser(),
+        }
     )
