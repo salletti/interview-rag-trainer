@@ -3,7 +3,8 @@
 API figée : ``FileSystemBlobStore(root: Path)`` (module
 ``knowledge_base.adapters.gateway.blob.filesystem_blob_store``) ;
 ``await store.put(chunks, *, max_bytes) -> StoredBlob(content_hash,
-size_bytes)`` ; ``await store.exists(content_hash)``.
+size_bytes)`` ; ``await store.exists(content_hash)`` ; depuis S3, ``await
+store.read(content_hash) -> bytes`` (``BlobMissingError`` si absent).
 
 Contrat : le flux est écrit dans un fichier temporaire situé SOUS ``root``
 (même volume), l'empreinte SHA-256 est calculée au fil des morceaux, puis le
@@ -26,6 +27,7 @@ import pytest
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
 )
+from knowledge_base.domain.providers.document_blob_reader import BlobMissingError
 from knowledge_base.domain.providers.document_blob_store import BlobTooLargeError
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 
@@ -226,3 +228,23 @@ async def test_the_root_is_created_when_missing(tmp_path: Path) -> None:
     await FileSystemBlobStore(root).put(chunked(b"data", 2), max_bytes=LIMIT)
 
     assert final_path(root, b"data").read_bytes() == b"data"
+
+
+# --- lecture (DocumentBlobReader, S3) ---------------------------------------------
+
+
+async def test_read_returns_the_stored_content(tmp_path: Path) -> None:
+    store = FileSystemBlobStore(tmp_path)
+    stored = await store.put(chunked(b"# Fiche\n\ncontenu", 4), max_bytes=LIMIT)
+
+    assert await store.read(stored.content_hash) == b"# Fiche\n\ncontenu"
+
+
+async def test_reading_an_absent_blob_raises_blob_missing(tmp_path: Path) -> None:
+    store = FileSystemBlobStore(tmp_path)
+    absent = ContentHash(hashlib.sha256(b"jamais depose").hexdigest())
+
+    with pytest.raises(BlobMissingError) as raised:
+        await store.read(absent)
+
+    assert raised.value.content_hash == absent

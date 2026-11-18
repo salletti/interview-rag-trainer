@@ -25,7 +25,7 @@ review prêt.
 | S0 | Infrastructure de traitement durable | — | **Terminée** | voir journal | Ruff, mypy (68 fichiers), 130 unit./archi., 109 intégration, Compose (9 services) |
 | S1 | `KnowledgeDocument` et `DocumentVersion` | S0 | **Terminée** | voir journal | Ruff, mypy (86 fichiers), 233 unit./archi., 8/8 mutations détectées |
 | S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | **Terminée** | voir journal | Ruff, mypy (125 fichiers), 309 unit./archi., 162 intégration, import réel sur la stack de dev (202 puis 200) |
-| S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | À faire | | |
+| S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | **Terminée** | voir journal | Ruff, mypy (180 fichiers), 529 unit./archi., 192 intégration, extraction réelle sur la stack de dev (3 unités QA, 3 chunks) |
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | À faire | | |
 | S5 | Recherche sémantique, provenance, évaluation | S4 | À faire | | |
 | S6 | PDF et DOCX avec Docling | S3, S5 | À faire | | |
@@ -67,6 +67,10 @@ périmètre.
 - S2 — O2 tranché : 409 `DUPLICATE_CONTENT` pour un import ciblé ; import sans cible d'un contenu connu → 200 ; contenu d'un document retiré → 409 `DOCUMENT_WITHDRAWN` (`UNIQUE(content_hash)` global, cohérent avec O11).
 - S2 — le corps multipart est mis en tampon par Starlette (disque au-delà de 1 Mio) avant la limite de 20 Mo : borner la taille du corps relève du serveur/proxy.
 - S2 — dépendance ajoutée : `python-multipart`.
+- S3 — compteur de tokens approximatif (majorant, chunks ~30 % plus courts que nécessaire) jusqu'au tokenizer réel de S4.
+- S3 — `RecordExtraction` définit ses propres ports (`DocumentReader`, `ExtractionTransaction`) au lieu d'étendre `UnitOfWork`.
+- S3 — en-tête contextuel redondant (titre du document répété dans le chemin) : à mesurer en S5.
+- S3 — blob manquant = `BLOB_MISSING` terminal.
 
 ## Corrections en attente
 

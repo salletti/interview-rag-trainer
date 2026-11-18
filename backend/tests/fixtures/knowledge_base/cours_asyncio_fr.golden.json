@@ -1,0 +1,69 @@
+{
+  "title": "Cours asyncio",
+  "kind": "COURSE",
+  "language": "fr",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Introduction"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Coroutines"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Créer une tâche"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Annuler une tâche"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Groupes de tâches"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Boucle d'événements"
+      ],
+      "chunks": 3
+    }
+  ]
+}

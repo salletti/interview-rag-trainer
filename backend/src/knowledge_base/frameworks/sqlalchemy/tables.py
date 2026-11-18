@@ -1,5 +1,6 @@
 """Tables du schéma PostgreSQL ``knowledge_base`` : ``work_items`` (S0 §2),
-``documents``, ``document_versions`` et ``idempotency_keys`` (S2).
+``documents``, ``document_versions`` et ``idempotency_keys`` (S2),
+``knowledge_units`` et ``document_chunks`` (S3).
 
 Ce ``MetaData`` est importé par ``alembic/env.py`` (``target_metadata``) ;
 Alembic reste l'unique mécanisme de création du schéma.
@@ -35,6 +36,7 @@ WORK_STATUSES: Final = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"
 # demande une migration.
 DOCUMENT_STATUSES: Final = ("ACTIVE", "WITHDRAWN")
 DOCUMENT_KINDS: Final = ("COURSE", "QA_SHEET", "REVISION_SHEET", "TECHNICAL")
+UNIT_TYPES: Final = ("QA", "SECTION", "DEFINITION")
 VERSION_STATUSES: Final = (
     "RECEIVED",
     "EXTRACTED",
@@ -198,4 +200,76 @@ idempotency_keys = Table(
     Column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     ),
+)
+
+# Unités et chunks (S3, knowledge-base.md §3.4) : données dérivées immuables,
+# écrites par lot dans la transaction qui passe la version à EXTRACTED (I7).
+# Pas d'updated_at : rien n'est jamais modifié. Identité d'un lot :
+# (version_id, chunking_policy_version) ; identifiants déterministes (UUIDv5).
+_PAGES_CHECK: Final = (
+    "(page_start IS NULL) = (page_end IS NULL) "
+    "AND (page_start IS NULL OR (page_start >= 1 AND page_start <= page_end))"
+)
+
+knowledge_units = Table(
+    "knowledge_units",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("version_id", Uuid, ForeignKey(document_versions.c.id), nullable=False),
+    Column("chunking_policy_version", Text, nullable=False),
+    Column("ordinal", Integer, nullable=False),
+    Column("unit_type", Text, nullable=False),
+    Column("question_text", Text),
+    Column("section_path", ARRAY(Text), nullable=False),
+    Column("page_start", Integer),
+    Column("page_end", Integer),
+    Column("token_count", Integer, nullable=False),
+    # Blocs rendus de l'unité : la reconstruction small-to-big (S5) les relit.
+    Column("text", Text, nullable=False),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    # Sert aussi d'index aux lectures par version.
+    UniqueConstraint(
+        "version_id",
+        "chunking_policy_version",
+        "ordinal",
+        name="uq_knowledge_units_batch_ordinal",
+    ),
+    CheckConstraint(f"unit_type IN ({_one_of(UNIT_TYPES)})", name="unit_type"),
+    CheckConstraint(
+        "(unit_type = 'QA') = (question_text IS NOT NULL)", name="question_only_for_qa"
+    ),
+    CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+    CheckConstraint("token_count >= 0", name="token_count_non_negative"),
+    CheckConstraint(_PAGES_CHECK, name="pages"),
+)
+
+document_chunks = Table(
+    "document_chunks",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("unit_id", Uuid, ForeignKey(knowledge_units.c.id), nullable=False),
+    # Dénormalisé depuis l'unité : lectures et purges par version (S4, S7).
+    Column("version_id", Uuid, ForeignKey(document_versions.c.id), nullable=False),
+    Column("chunking_policy_version", Text, nullable=False),
+    Column("ordinal_in_unit", Integer, nullable=False),
+    Column("contextual_text", Text, nullable=False),
+    Column("chunk_hash", Text, nullable=False),
+    Column("token_count", Integer, nullable=False),
+    Column("citation", JSONB, nullable=False),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    UniqueConstraint(
+        "unit_id", "ordinal_in_unit", name="uq_document_chunks_unit_ordinal"
+    ),
+    CheckConstraint("ordinal_in_unit >= 0", name="ordinal_in_unit_non_negative"),
+    CheckConstraint("token_count >= 0", name="token_count_non_negative"),
+)
+
+Index(
+    "ix_document_chunks_version_policy",
+    document_chunks.c.version_id,
+    document_chunks.c.chunking_policy_version,
 )

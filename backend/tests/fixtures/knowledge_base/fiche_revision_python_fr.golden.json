@@ -1,0 +1,39 @@
+{
+  "title": "Fiche de révision Python",
+  "kind": "REVISION_SHEET",
+  "language": "fr",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "GIL"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "Décorateur"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "Générateur"
+      ],
+      "chunks": 1
+    }
+  ]
+}

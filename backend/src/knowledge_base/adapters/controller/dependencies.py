@@ -10,6 +10,7 @@ from uuid import UUID
 
 from celery import Celery
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from knowledge_base.adapters.controller.rest.documents_router import (
     add_document_routes,
@@ -23,6 +24,9 @@ from knowledge_base.adapters.controller.tasks.execution import (
     WorkOutcome,
     execute_work_item,
 )
+from knowledge_base.adapters.controller.tasks.extract_version_handler import (
+    build_extract_version_handler,
+)
 from knowledge_base.adapters.controller.tasks.registry import WorkHandler
 from knowledge_base.adapters.controller.tasks.resources import (
     KnowledgeBaseWorkerResources,
@@ -34,6 +38,7 @@ __all__ = [
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "build_work_handlers",
     "register",
     "register_worker",
 ]
@@ -54,6 +59,17 @@ def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> N
     ``resources`` n'est appelé qu'au traitement d'une requête : la fabrique de
     sessions n'existe qu'après le démarrage (``lifespan``)."""
     add_document_routes(app.router, resources)
+
+
+def build_work_handlers(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: KnowledgeBaseSettings | None = None,
+) -> tuple[WorkHandler, ...]:
+    """Handlers de production des work items (S3 : ``extract_version`` sur la
+    file ``knowledge_base.ingestion``). Appelé dans chaque processus enfant, sur
+    sa fabrique de sessions ; ne se connecte à rien."""
+    settings = settings or KnowledgeBaseSettings()
+    return (build_extract_version_handler(session_factory, settings),)
 
 
 def register_worker(

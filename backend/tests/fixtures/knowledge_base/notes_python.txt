@@ -1,0 +1,10 @@
+Les listes en compréhension construisent une nouvelle liste à partir d'un itérable en appliquant une expression à chaque élément, avec une condition facultative qui filtre les éléments retenus avant leur transformation. Elles sont plus concises qu'une boucle for avec append et souvent un peu plus rapides, mais elles deviennent illisibles quand on les imbrique trop.
+
+Les dictionnaires conservent l'ordre d'insertion depuis Python 3.7, ce qui permet de s'appuyer sur cet ordre pour sérialiser ou parcourir leurs clés de manière prévisible. La recherche, l'insertion et la suppression d'une clé se font en temps constant amorti grâce à la table de hachage sous-jacente utilisée par l'implémentation.
+
+Un contexte with garantit la libération d'une ressource même en cas d'exception. Il repose sur les méthodes spéciales __enter__ et __exit__, et le module contextlib propose le décorateur contextmanager pour écrire un gestionnaire de contexte à partir d'un simple générateur.
+
+    with open("notes.txt") as fichier:
+        contenu = fichier.read()
+
+Les exceptions se propagent dans la pile d'appels jusqu'à un bloc except qui les attrape. On préfère attraper des exceptions précises plutôt qu'Exception, et relancer avec raise from pour conserver la cause d'origine dans la trace affichée à la personne qui diagnostique le problème.

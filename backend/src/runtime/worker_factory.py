@@ -17,7 +17,7 @@ applications du processus et la première enregistrée sous un nom l'emporte.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from celery import Celery
@@ -25,8 +25,10 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import knowledge_base
-from runtime.database import create_engine, create_session_factory
+from runtime.database import SessionFactory, create_engine, create_session_factory
 from runtime.settings import Settings, get_settings
+
+HandlersFactory = Callable[[SessionFactory], tuple[knowledge_base.WorkHandler, ...]]
 
 # Un enfant n'exécute qu'une tâche à la fois : deux connexions suffisent.
 WORKER_CHILD_POOL_SIZE = 2
@@ -46,7 +48,7 @@ class _ChildProcessResources:
     def __init__(
         self,
         settings: Settings,
-        handlers: tuple[knowledge_base.WorkHandler, ...],
+        handlers: HandlersFactory = knowledge_base.build_work_handlers,
     ) -> None:
         self._settings = settings
         self._handlers = handlers
@@ -71,10 +73,11 @@ class _ChildProcessResources:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._engine = create_engine(self._settings, pool_size=WORKER_CHILD_POOL_SIZE)
+        session_factory = create_session_factory(self._engine)
         self._resources = knowledge_base.KnowledgeBaseWorkerResources(
-            session_factory=create_session_factory(self._engine),
+            session_factory=session_factory,
             loop=loop,
-            handlers=self._handlers,
+            handlers=self._handlers(session_factory),
         )
 
     def stop(self, **_: Any) -> None:
@@ -92,10 +95,11 @@ class _ChildProcessResources:
 def create_celery_app(
     settings: Settings | None = None,
     *,
-    work_handlers: Sequence[knowledge_base.WorkHandler] = (),
+    work_handlers: Sequence[knowledge_base.WorkHandler] | None = None,
 ) -> Celery:
-    """``work_handlers`` : registre de Knowledge Base, vide en production en
-    S0 ; les tests y injectent leurs handlers."""
+    """``work_handlers`` : ``None`` (production) = ``knowledge_base.
+    build_work_handlers``, construits dans chaque enfant sur sa fabrique de
+    sessions ; une séquence (tests) remplace ce registre."""
     settings = settings or get_settings()
     app = Celery(
         "interview_rag_trainer",
@@ -117,7 +121,11 @@ def create_celery_app(
         worker_prefetch_multiplier=1,
     )
 
-    child = _ChildProcessResources(settings, tuple(work_handlers))
+    if work_handlers is None:
+        child = _ChildProcessResources(settings)
+    else:
+        injected = tuple(work_handlers)
+        child = _ChildProcessResources(settings, lambda _sessions: injected)
     knowledge_base.register_worker(app, child.get)
     worker_process_init.connect(child.start, weak=False)
     worker_process_shutdown.connect(child.stop, weak=False)

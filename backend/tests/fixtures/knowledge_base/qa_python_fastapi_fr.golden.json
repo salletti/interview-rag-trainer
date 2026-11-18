@@ -1,0 +1,36 @@
+{
+  "title": "Fiche de révision FastAPI",
+  "kind": "QA_SHEET",
+  "language": "fr",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "QA",
+      "question": "Qu'est-ce que Depends dans FastAPI ?",
+      "section_path": [
+        "Fiche de révision FastAPI"
+      ],
+      "chunks": 1
+    },
+    {
+      "type": "QA",
+      "question": "Comment tester un endpoint qui dépend d'une base de données ?",
+      "section_path": [
+        "Fiche de révision FastAPI"
+      ],
+      "chunks": 2
+    },
+    {
+      "type": "QA",
+      "question": "Quelle différence entre async def et def pour un endpoint ?",
+      "section_path": [
+        "Fiche de révision FastAPI"
+      ],
+      "chunks": 1
+    }
+  ]
+}

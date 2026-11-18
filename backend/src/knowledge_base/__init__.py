@@ -10,6 +10,7 @@ from knowledge_base.adapters.controller.dependencies import (
     KnowledgeBaseSettings,
     KnowledgeBaseWorkerResources,
     WorkHandler,
+    build_work_handlers,
     register,
     register_worker,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "build_work_handlers",
     "register",
     "register_worker",
 ]

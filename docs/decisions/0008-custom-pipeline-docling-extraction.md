@@ -83,3 +83,29 @@ installés (point 6).
   [0009](0009-pedagogical-chunking-knowledge-units.md),
   [0011](0011-embedding-profile-search-index-blue-green.md).
 - Conception : [knowledge-base.md §15](../conception/bounded-contexts/knowledge-base.md#15-pipeline-structure-du-code-et-feuille-de-route).
+
+## Suivi (2026-11-18)
+
+Faits d'installation mesurés en S3 (point 6, Proposed). Le corps de l'ADR est
+inchangé.
+
+- **Paquet** : `docling-slim[format-markdown]==2.150.1`, épinglé dans
+  `backend/pyproject.toml` et `uv.lock` (ajouté par `uv add`). L'extra
+  `format-markdown` ne tire que `marko` en plus du socle de `docling-slim` ;
+  `docling-core` 2.107.1 apporte `pandas`, `pillow`, `lxml`, `jsonschema`,
+  `typer`, `rich`. **Aucun `torch`** (ni `transformers`, ni modèle de layout)
+  dans le lock : l'index CPU de PyTorch n'est pas configuré en S3, il le sera
+  quand S4 (SentenceTransformers) ou S6 (PDF) le requerront.
+- **Poids** : 26 paquets ajoutés (`numpy` était déjà présent) ; venv de
+  développement 239,6 Mo → 333,0 Mo (+93,4 Mo, `du -sk`) ; image backend : voir
+  le rapport de S3 (mesure `docker image inspect`, cible `development`).
+- **Temps d'import** de `docling.document_converter` : 0,40 s à chaud
+  (`python -X importtime`, macOS arm64, trois mesures 0,40 à 0,41 s), 17 s au
+  premier import (compilation du bytecode). Conversion de la fixture
+  `qa_python_fastapi_fr.md` (1,8 Ko) : 0,017 s. Docling n'est importé qu'à la
+  première conversion d'un Markdown, dans le worker d'ingestion : l'API ne le
+  charge pas.
+- **TXT** : adapter natif (O7 tranché, [knowledge-base.md §16](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
+- Reste à confirmer au lock de S6 : extras `format-pdf` / `format-docx`, poids
+  de torch et licences des modèles de layout.
+

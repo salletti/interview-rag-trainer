@@ -1,11 +1,13 @@
 """Migration S2 : ``documents``, ``document_versions``, ``idempotency_keys``.
 
-``downgrade -1`` depuis ``head`` doit retirer exactement les tables de S2 et
-laisser ``work_items`` (S0) intacte ; ``upgrade head`` les recrée. Le schéma
-est figé ici (noms, types, nullabilité, contraintes).
+Redescendre sous la révision de S2 (``downgrade`` vers la révision de S0)
+doit retirer exactement les tables de S2 et laisser ``work_items`` (S0)
+intacte ; ``upgrade head`` les recrée. Le schéma est figé ici (noms, types,
+nullabilité, contraintes).
 
-``test_migration.py`` (S0) ancre son aller-retour sur la révision de S0, pas
-sur ``head`` : il reste valable avec la migration S2.
+L'aller-retour est ancré sur les révisions (comme ``test_migration.py`` pour
+S0), pas sur ``downgrade -1`` : depuis S3, ``head`` n'est plus la migration de
+S2.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ pytestmark = pytest.mark.integration
 
 BACKEND = Path(__file__).resolve().parents[3]
 S2_TABLES = ("documents", "document_versions", "idempotency_keys")
+BEFORE_S2_REVISION = "f35542284e25"  # migration S0 (work_items)
 
 # colonne -> (type PostgreSQL, nullable)
 EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, bool]]] = {
@@ -106,7 +109,7 @@ async def test_downgrade_removes_the_s2_tables_and_keeps_work_items(
     for table in (*S2_TABLES, "work_items"):
         assert await existing(session_factory, table)
 
-    alembic_ok("downgrade", "-1")
+    alembic_ok("downgrade", BEFORE_S2_REVISION)
 
     for table in S2_TABLES:
         assert not await existing(session_factory, table)

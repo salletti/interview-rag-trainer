@@ -14,6 +14,7 @@ dependencies = [
     "celery>=5.7,<6",
     "qdrant-client>=1.20,<2",
     "python-multipart>=0.0.34",
+    "docling-slim[format-markdown]==2.150.1",
 ]
 
 [dependency-groups]
@@ -39,6 +40,9 @@ packages = ["src/runtime", "src/knowledge_base"]
 target-version = "py313"
 src = ["src", "."]
 line-length = 88
+# Données d'entrée des golden tests, comparées octet pour octet : ruff (qui
+# formate aussi les blocs de code du Markdown) ne doit jamais les réécrire.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "N", "C4", "SIM", "ASYNC", "RUF", "T20"]
@@ -77,6 +81,14 @@ disallow_untyped_decorators = false
 module = ["tests.integration.knowledge_base.*"]
 disallow_untyped_calls = false
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# docling_core expose ses types publics par ``docling_core.types.doc`` sans
+# ``__all__`` : sans cela, mypy strict obligerait à importer leurs modules
+# internes (``items.text``, ``items.code``…), moins stables d'une version à
+# l'autre.
+module = ["docling_core.types.doc"]
+implicit_reexport = true
 
 [[tool.mypy.overrides]]
 # Celery n'embarque ni stubs ni marqueur py.typed.

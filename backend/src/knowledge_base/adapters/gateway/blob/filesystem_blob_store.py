@@ -1,4 +1,5 @@
-"""``DocumentBlobStore`` sur un volume local adressé par contenu (ADR 0012).
+"""``DocumentBlobStore`` et ``DocumentBlobReader`` sur un volume local adressé
+par contenu (ADR 0012).
 
 Le flux est écrit dans ``<root>/tmp/`` (même volume que la destination, pour
 que le renommage soit atomique), haché au fil des morceaux, puis renommé vers
@@ -19,6 +20,7 @@ from collections.abc import AsyncIterable
 from pathlib import Path
 from typing import IO
 
+from knowledge_base.domain.providers.document_blob_reader import BlobMissingError
 from knowledge_base.domain.providers.document_blob_store import (
     BlobTooLargeError,
     StoredBlob,
@@ -27,6 +29,8 @@ from knowledge_base.domain.value_objects.content_hash import ContentHash
 
 
 class FileSystemBlobStore:
+    """``DocumentBlobStore`` (import) et ``DocumentBlobReader`` (extraction)."""
+
     def __init__(self, root: Path) -> None:
         self._root = root
         # Les temporaires orphelins (crash pendant un upload) restent
@@ -55,6 +59,14 @@ class FileSystemBlobStore:
 
     async def exists(self, content_hash: ContentHash) -> bool:
         return await asyncio.to_thread(self._path_of(content_hash).is_file)
+
+    async def read(self, content_hash: ContentHash) -> bytes:
+        """Lu en entier : 20 Mo au plus (ADR 0012), et le parseur a besoin du
+        document complet."""
+        try:
+            return await asyncio.to_thread(self._path_of(content_hash).read_bytes)
+        except FileNotFoundError as error:
+            raise BlobMissingError(content_hash) from error
 
     def _open_staging_file(self) -> IO[bytes]:
         self._staging.mkdir(parents=True, exist_ok=True)

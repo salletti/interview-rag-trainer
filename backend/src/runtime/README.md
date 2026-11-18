@@ -10,7 +10,7 @@ Composition root technique du monolithe. Aucune règle métier.
 | `vector_store.py` | client `AsyncQdrantClient` et sonde |
 | `messaging.py` | sonde RabbitMQ (Kombu dans un thread, bornée) |
 | `worker.py` | application Celery de production (`celery -A runtime.worker:celery_app worker` / `beat`), tâche technique `runtime.ping` |
-| `worker_factory.py` | `create_celery_app(settings=None, *, work_handlers=())` : configuration Celery (dont `worker_prefetch_multiplier=1`), `knowledge_base.register_worker`, ressources des processus enfants (signaux) |
+| `worker_factory.py` | `create_celery_app(settings=None, *, work_handlers=None)` : configuration Celery (dont `worker_prefetch_multiplier=1`), `knowledge_base.register_worker`, ressources des processus enfants (signaux) ; `work_handlers=None` = handlers de production (`knowledge_base.build_work_handlers`), une séquence les remplace (tests) |
 | `health.py` | `/health/live`, `/health/ready` (PostgreSQL requis, Qdrant/RabbitMQ informatifs) |
 | `system.py` | `/api/v1/system/info` (données non sensibles) |
 | `logging_config.py` | logging standard, format unique |
@@ -22,7 +22,7 @@ Détail : [knowledge-base-s0.md §9](../../../docs/conception/bounded-contexts/k
 | Moment | Processus | Ce que fait `runtime.worker_factory` |
 |---|---|---|
 | construction de l'application (import de `runtime.worker`) | maître | `knowledge_base.register_worker(app, fournisseur)` : tâches, routes (`dispatch` et `recover` sur `interview_rag_trainer.default`), `beat_schedule`. Aucune connexion, aucune boucle. |
-| `worker_process_init` | chaque enfant prefork (et le processus d'un pool solo) | une boucle `asyncio.new_event_loop()` persistante, puis le moteur asyncpg (`pool_size=2`) et `KnowledgeBaseWorkerResources` |
+| `worker_process_init` | chaque enfant prefork (et le processus d'un pool solo) | une boucle `asyncio.new_event_loop()` persistante, puis le moteur asyncpg (`pool_size=2`), les handlers de production construits sur sa fabrique de sessions (`knowledge_base.build_work_handlers`, S3 : `extract_version`) et `KnowledgeBaseWorkerResources` |
 | exécution d'une tâche | enfant | `loop.run_until_complete(...)` sur cette boucle ; jamais `asyncio.run()` par tâche |
 | `worker_process_shutdown` | enfant | `engine.dispose()`, fermeture de la boucle |
 

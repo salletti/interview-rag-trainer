@@ -117,6 +117,8 @@ flowchart LR
 
 ## S3 — Docling Markdown, `KnowledgeUnit` et chunking
 
+> **Statut : implémentée (2026-11-18)** — `docling-slim[format-markdown]==2.150.1` (sans torch, +93 Mo), segmentation par `DocumentKind`, `ChunkPlanner` avec fallbacks, politique `kb-chunking-v1` (508 tokens, compteur approximatif majorant), handler `extract_version` câblé ; 5 goldens rejoués avec Docling ; 529 unitaires et 192 tests d'intégration verts.
+
 - **Objectif :** transformer une version `RECEIVED` en unités et chunks
   persistés, avec provenance complète.
 - **Périmètre :** adapter Docling Markdown → `StructuredDocument` ; adapter TXT

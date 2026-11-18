@@ -1,6 +1,7 @@
 """Registre ``kind`` → handler de travail (S0 §8.2).
 
-Vide en production en S0 : les handlers métier arrivent avec leurs slices.
+Les handlers de production sont composés par ``build_work_handlers``
+(``adapters/controller/dependencies.py``) ; depuis S3 : ``extract_version``.
 Les handlers de test sont injectés par les tests, jamais déclarés ici.
 """
 
