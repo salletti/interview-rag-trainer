@@ -200,7 +200,6 @@ class CompleteIndexationHandler:
                 document_id=document.document_id,
                 chunk_hash=chunk.chunk_hash,
                 index_id=index.index_id,
-                visible=False,
                 topics=document.topics,
                 kind=document.kind.value,
                 language=document.language,

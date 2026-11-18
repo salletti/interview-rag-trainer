@@ -1,9 +1,9 @@
 """Compteur de tokens provisoire (S3). Depuis S4, la production découpe avec
 le tokenizer réel du profil (``SentenceTransformersEmbedder.token_counter``,
-ADR 0009 §3) ; ce compteur, sans dépendance ni modèle, sert aux tests de coût
-du ``ChunkPlanner`` et, depuis S5, à compter la question d'un passage dans le
-budget ``max_passage_tokens`` (``SqlAlchemyPublishedUnitReader``), où un
-majorant suffit (mesuré : +3 à +16 tokens par question, médiane +10).
+ADR 0009 §3) ; depuis la revue S5, elle compte aussi avec lui la question d'un
+passage dans le budget ``max_passage_tokens`` (``passage_assembler``). Ce
+compteur, sans dépendance ni modèle, ne sert plus qu'aux tests de coût du
+``ChunkPlanner``.
 
 Le profil initial, ``intfloat/multilingual-e5-base``, utilise le tokenizer
 SentencePiece de XLM-R. Le tirer en S3 imposerait le téléchargement du modèle ;

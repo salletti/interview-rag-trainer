@@ -32,9 +32,11 @@ Ports et types NOUVEAUX figés par ces doubles (S5 ; knowledge-base.md §12, §1
   dans le résultat ; les autres sont absentes (jamais ``None``).
 - ``knowledge_base.domain.value_objects.published_unit`` : ``PublishedUnit(
   unit_id, unit_type: UnitType, question_text: str | None, text: str,
-  token_count: int, chunks: tuple[UnitChunk, ...], citation: Citation)`` ;
-  ``text`` = blocs rendus de l'unité SANS la question (colonne
-  ``knowledge_units.text``) ; ``chunks`` dans l'ordre de rang ; ``citation`` =
+  blocks_token_count: int, chunks: tuple[UnitChunk, ...], citation:
+  Citation)`` ; ``text`` = blocs rendus de l'unité SANS la question (colonne
+  ``knowledge_units.text``) et ``blocks_token_count`` leur taille (la question
+  est comptée par le domaine, avec le ``token_counter`` du handler, ici
+  ``COUNTER``, un mot = un token) ; ``chunks`` dans l'ordre de rang ; ``citation`` =
   citation du domaine (``section_path`` et pages de l'UNITÉ). ``UnitChunk(
   chunk_id, ordinal_in_unit: int, text: str, token_count: int)`` où ``text`` est
   le ``contextual_text`` du chunk (en-tête + contenu).
@@ -45,9 +47,9 @@ Cas d'usage (``knowledge_base.use_cases.search_knowledge``) :
   topics=(), kinds=(), document_ids=())`` ; ``text`` vide ou blanc et
   ``limit < 1`` lèvent ``ValueError`` à la construction.
 - ``search_knowledge_handler.SearchKnowledgeHandler(*, embedder,
-  chunk_searcher, published_units, active_indexes, max_passage_tokens,
-  oversampling_factor=2, complement_passes=1)`` ; ``await handle(command) ->
-  SearchKnowledgeResult``.
+  chunk_searcher, published_units, active_indexes, token_counter,
+  max_passage_tokens, oversampling_factor=2, complement_passes=1)`` ; ``await
+  handle(command) -> SearchKnowledgeResult``.
 - ``search_knowledge_result.SearchKnowledgeResult(passages: tuple[FoundPassage,
   ...], complete: bool, index_id: UUID)`` et ``FoundPassage(unit_id, unit_type,
   question, text, truncated, matched_chunk_ids, score, citation)`` : les champs
@@ -77,7 +79,7 @@ from knowledge_base.domain.value_objects.section_path import SectionPath
 from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
-from tests.unit.knowledge_base.domain.services.support import policy
+from tests.unit.knowledge_base.domain.services.support import COUNTER, policy
 from tests.unit.knowledge_base.use_cases.indexing_fakes import PROFILE
 
 INDEX_ID = UUID(int=9_001)
@@ -124,7 +126,8 @@ def whole_unit(
     unit_type: UnitType | None = None,
     section: bool = False,
 ) -> PublishedUnit:
-    """Unité de ``chunk_count`` chunks de ``token_count // chunk_count`` tokens.
+    """Unité de ``chunk_count`` chunks de ``token_count // chunk_count`` tokens ;
+    ``token_count`` est la taille des blocs, question non comprise.
 
     Chaque chunk reprend l'en-tête contextuel réel du ``ChunkPlanner`` (titre,
     chemin, ``Question : …``) puis un marqueur unique ``<BODY-n-rang>``."""
@@ -142,7 +145,7 @@ def whole_unit(
         unit_type=unit_type,
         question_text=question_text,
         text=body,
-        token_count=token_count,
+        blocks_token_count=token_count,
         chunks=tuple(
             UnitChunk(
                 chunk_id=chunk_uid(n, rank),
@@ -154,6 +157,12 @@ def whole_unit(
         ),
         citation=citation_of(n),
     )
+
+
+def question_tokens(unit: PublishedUnit) -> int:
+    """Tokens de la ligne ``Question : …`` comptés par ``COUNTER``."""
+    assert unit.question_text is not None
+    return COUNTER.count(f"Question : {unit.question_text}")
 
 
 def hit(unit: int, score: float, rank: int = 0) -> ChunkHit:
@@ -283,6 +292,7 @@ def make_rig(
         active_indexes=FakeActiveIndexes(
             (index or active_index()) if with_index else None
         ),
+        token_counter=COUNTER,
         max_passage_tokens=max_passage_tokens,
         oversampling_factor=oversampling_factor,
         complement_passes=complement_passes,

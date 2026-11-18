@@ -10,7 +10,9 @@
    unités écartées ET déjà retenues. Arrêt anticipé si une passe rend moins
    d'unités que demandé (plus rien à trouver).
 6. Passages reconstruits (small-to-big, ``passage_assembler``), classés par
-   meilleur score de leurs chunks, au plus ``limit``.
+   meilleur score de leurs chunks, au plus ``limit``. ``token_counter`` compte
+   la question dans le budget : le tokenizer du profil de l'embedder, que
+   l'encodage de l'étape 2 a déjà chargé.
 
 ``complete`` est faux si et seulement si des unités ont été écartées et qu'il
 reste moins de ``limit`` passages : un corpus simplement trop petit pour la
@@ -32,6 +34,7 @@ from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.published_unit_reader import (
     PublishedUnitReader,
 )
+from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.services.passage_assembler import assemble_passage
 from knowledge_base.domain.value_objects.chunk_hit import ChunkHit
 from knowledge_base.domain.value_objects.published_unit import PublishedUnit
@@ -66,6 +69,7 @@ class SearchKnowledgeHandler:
         chunk_searcher: ChunkSearcher,
         published_units: PublishedUnitReader,
         active_indexes: ActiveIndexReader,
+        token_counter: TokenCounter,
         max_passage_tokens: int,
         oversampling_factor: int = 2,
         complement_passes: int = 1,
@@ -80,6 +84,7 @@ class SearchKnowledgeHandler:
         self._searcher = chunk_searcher
         self._published = published_units
         self._indexes = active_indexes
+        self._token_counter = token_counter
         self._max_passage_tokens = max_passage_tokens
         self._factor = oversampling_factor
         self._complement_passes = complement_passes
@@ -127,7 +132,12 @@ class SearchKnowledgeHandler:
 
     def _passage(self, retained: _Retained) -> FoundPassage:
         unit = retained.unit
-        assembled = assemble_passage(unit, retained.hits, self._max_passage_tokens)
+        assembled = assemble_passage(
+            unit,
+            retained.hits,
+            max_tokens=self._max_passage_tokens,
+            token_counter=self._token_counter,
+        )
         return FoundPassage(
             unit_id=unit.unit_id,
             unit_type=unit.unit_type,

@@ -61,7 +61,6 @@ def point(
     version_id: UUID,
     n: int,
     *,
-    visible: bool = False,
     chunk_hash: str | None = None,
 ) -> IndexedPoint:
     # Le document entre dans l'identifiant : deux documents ont des chunks
@@ -77,7 +76,6 @@ def point(
         document_id=document_id,
         chunk_hash=chunk_hash or f"hash-{version_id.int}-{n}",
         index_id=index_id,
-        visible=visible,
         topics=("python", "asyncio"),
         kind="COURSE",
         language="fr",
@@ -265,14 +263,35 @@ async def test_set_visibility_can_hide_points_again(
     adapter: QdrantVectorIndex, qdrant: AsyncQdrantClient, index_id: UUID
 ) -> None:
     await adapter.ensure_collection(index_id, PROFILE)
-    shown = point(index_id, DOC_A, V1, 0, visible=True)
+    shown = point(index_id, DOC_A, V1, 0)
     await adapter.upsert(index_id, [shown])
+    await adapter.set_visibility(
+        index_id, document_id=DOC_A, version_id=V1, visible=True
+    )
+    assert (await visible_flags(qdrant, index_id))[shown.point_id] is True
 
     await adapter.set_visibility(
         index_id, document_id=DOC_A, version_id=V1, visible=False
     )
 
     assert (await visible_flags(qdrant, index_id))[shown.point_id] is False
+
+
+async def test_rewriting_a_visible_point_hides_it(
+    adapter: QdrantVectorIndex, qdrant: AsyncQdrantClient, index_id: UUID
+) -> None:
+    """Un upsert écrit toujours ``visible=false`` (§11) : un rejeu
+    d'indexation masque le point jusqu'à la synchronisation suivante."""
+    await adapter.ensure_collection(index_id, PROFILE)
+    stored = point(index_id, DOC_A, V1, 0)
+    await adapter.upsert(index_id, [stored])
+    await adapter.set_visibility(
+        index_id, document_id=DOC_A, version_id=V1, visible=True
+    )
+
+    await adapter.upsert(index_id, [stored])
+
+    assert await visible_flags(qdrant, index_id) == {stored.point_id: False}
 
 
 async def test_set_visibility_is_idempotent(

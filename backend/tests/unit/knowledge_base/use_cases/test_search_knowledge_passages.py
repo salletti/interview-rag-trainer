@@ -1,8 +1,9 @@
 """Reconstruction small-to-big d'un passage (S5 ; knowledge-base.md §12 étape 6 ;
 ADR 0009 §6 ; O12).
 
-- Une unité qui tient dans ``max_passage_tokens`` (``token_count`` de l'unité
-  <= budget) est rendue COMPLÈTE : question puis blocs, ``truncated=False``.
+- Une unité qui tient dans ``max_passage_tokens`` (taille des blocs plus
+  ligne de question <= budget) est rendue COMPLÈTE : question puis blocs,
+  ``truncated=False``.
 - Sinon, une fenêtre de chunks contiguë qui contient le meilleur chunk trouvé,
   dont la somme des ``token_count`` ne dépasse pas le budget, dans l'ordre de
   lecture, et qui garde la question racine, ``truncated=True``.
@@ -10,7 +11,8 @@ ADR 0009 §6 ; O12).
 Hypothèses (à confirmer par l'implémentation) : la question racine est dans le
 ``text`` du passage (en tête pour l'unité complète ; portée par l'en-tête
 contextuel des chunks pour une fenêtre, comme le fait ``ChunkPlanner`` S3) ; le
-budget d'une unité complète est mesuré sur ``PublishedUnit.token_count``.
+budget d'une unité complète est mesuré sur ``PublishedUnit.blocks_token_count``
+plus la ligne de question (``question_tokens``).
 
 Non figé : la fenêtre quand plusieurs chunks trouvés sont éloignés, et le
 contenu de ``matched_chunk_ids`` quand certains ne tiennent pas dans la fenêtre.
@@ -33,6 +35,7 @@ from tests.unit.knowledge_base.use_cases.search_fakes import (
     chunk_uid,
     hit,
     make_rig,
+    question_tokens,
     whole_unit,
 )
 
@@ -79,17 +82,19 @@ async def test_a_whole_unit_returns_all_its_blocks_even_when_one_chunk_matched()
 
 
 async def test_a_unit_exactly_at_the_budget_is_not_truncated() -> None:
-    unit = whole_unit(1, token_count=100, chunk_count=2)
+    unit = whole_unit(1, token_count=90, chunk_count=2)
 
-    result = await search([unit], [hit(1, 0.9)], budget=100)
+    result = await search([unit], [hit(1, 0.9)], budget=90 + question_tokens(unit))
 
     assert result.passages[0].truncated is False
 
 
 async def test_a_unit_one_token_over_the_budget_is_truncated() -> None:
-    unit = whole_unit(1, token_count=101, chunk_count=3)
+    unit = whole_unit(1, token_count=90, chunk_count=3)
 
-    result = await search([unit], [hit(1, 0.9, rank=1)], budget=100)
+    result = await search(
+        [unit], [hit(1, 0.9, rank=1)], budget=90 + question_tokens(unit) - 1
+    )
 
     assert result.passages[0].truncated is True
 

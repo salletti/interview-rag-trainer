@@ -4,9 +4,10 @@ ADR 0010, ADR 0011 §2).
 - Une collection par ``SearchIndex``, nommée d'après ``index_id`` : jamais deux
   profils dans une même collection.
 - Payload : les champs de ``IndexedPoint`` hors ``point_id`` et ``vector``
-  (UUID en texte, ``topics`` en liste). Index de payload sur les champs filtrés
-  par la recherche et la synchronisation (``visible`` booléen, les autres
-  ``keyword``).
+  (UUID en texte, ``topics`` en liste), plus ``visible``, toujours faux à
+  l'écriture (seul ``set_visibility`` le rend vrai, §11). Index de payload sur
+  les champs filtrés par la recherche et la synchronisation (``visible``
+  booléen, les autres ``keyword``).
 - Toutes les écritures attendent leur application (``wait=True``) et exigent
   le statut ``completed`` : une écriture non confirmée lève, la tentative est
   rejouée (les écritures sont idempotentes, §7.3).
@@ -263,7 +264,9 @@ def _payload(point: IndexedPoint) -> dict[str, Any]:
         "document_id": str(point.document_id),
         "chunk_hash": point.chunk_hash,
         "index_id": str(point.index_id),
-        "visible": point.visible,
+        # Un upsert remplace tout le payload : réécrire un point le masque
+        # jusqu'à la prochaine synchronisation, jamais l'inverse (§11).
+        "visible": False,
         "topics": list(point.topics),
         "kind": point.kind,
         "language": point.language,

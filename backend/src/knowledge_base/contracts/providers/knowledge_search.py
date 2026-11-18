@@ -4,8 +4,8 @@
 L'implémentation est injectée par ``runtime`` (fabrique
 ``knowledge_base.build_knowledge_search``). Erreurs rendues au consommateur :
 
-- ``ValueError`` : requête invalide (texte vide, ``limit < 1``, type de
-  document inconnu) ;
+- ``ValueError`` : requête invalide (texte vide ou de plus de 2 000
+  caractères, ``limit`` hors de 1 à 50, type de document inconnu) ;
 - ``KnowledgeSearchUnavailableError`` : la recherche ne peut pas répondre
   correctement (pas d'index actif, profil d'embeddings incompatible) ;
 - les erreurs d'accès à PostgreSQL ou Qdrant sont propagées telles quelles :

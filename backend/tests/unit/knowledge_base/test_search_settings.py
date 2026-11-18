@@ -4,10 +4,11 @@ Champs figés de ``KnowledgeBaseSettings`` (préfixe ``KB_``) :
 
 - ``search_oversampling_factor`` : ``int >= 1``, défaut 2 (O12, Proposed) ;
 - ``search_complement_passes`` : ``int >= 0``, défaut 1 (O12, Proposed) ;
-- ``max_passage_tokens`` : ``int > 0``, budget d'un passage (small-to-big),
-  « à mesurer » (O12) : le défaut n'est pas figé, mais il doit au moins
-  contenir un chunk entier de la politique de production, sans quoi le meilleur
-  chunk d'une unité ne tiendrait jamais dans sa fenêtre.
+- ``max_passage_tokens`` : budget d'un passage (small-to-big), « à mesurer »
+  (O12) : le défaut n'est pas figé, mais toute valeur doit contenir au moins un
+  chunk entier de la politique de production (``ge=DEFAULT_CHUNKING_POLICY.
+  max_tokens``), sans quoi le meilleur chunk d'une unité longue dépasserait sa
+  fenêtre.
 """
 
 from __future__ import annotations
@@ -52,10 +53,20 @@ def test_zero_complement_passes_is_allowed() -> None:
     assert make(search_complement_passes=0).search_complement_passes == 0
 
 
-@pytest.mark.parametrize("field", ["search_oversampling_factor", "max_passage_tokens"])
-def test_a_non_positive_factor_or_budget_is_refused(field: str) -> None:
+def test_a_non_positive_oversampling_factor_is_refused() -> None:
     with pytest.raises(ValidationError):
-        make(**{field: 0})
+        make(search_oversampling_factor=0)
+
+
+def test_a_budget_smaller_than_one_production_chunk_is_refused() -> None:
+    with pytest.raises(ValidationError, match="max_passage_tokens"):
+        make(max_passage_tokens=DEFAULT_CHUNKING_POLICY.max_tokens - 1)
+
+
+def test_a_budget_of_exactly_one_production_chunk_is_allowed() -> None:
+    budget = DEFAULT_CHUNKING_POLICY.max_tokens
+
+    assert make(max_passage_tokens=budget).max_passage_tokens == budget
 
 
 def test_a_negative_number_of_complement_passes_is_refused() -> None:

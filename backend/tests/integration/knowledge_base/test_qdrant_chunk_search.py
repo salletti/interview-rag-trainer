@@ -55,7 +55,6 @@ def chunk(
     rank: int,
     *,
     document_id: UUID = DOC_FR,
-    visible: bool = True,
     topics: tuple[str, ...] = ("python",),
     kind: str = "QA_SHEET",
     language: str = "fr",
@@ -70,11 +69,22 @@ def chunk(
         document_id=document_id,
         chunk_hash=f"h{unit}-{rank}",
         index_id=index_id,
-        visible=visible,
         topics=topics,
         kind=kind,
         language=language,
     )
+
+
+async def store_visible(
+    adapter: QdrantVectorIndex, index_id: UUID, points: list[IndexedPoint]
+) -> None:
+    """Écrit les points (toujours invisibles) puis les rend visibles, version
+    par version, comme ``sync_visibility``."""
+    await adapter.upsert(index_id, points)
+    for document_id, version_id in {(p.document_id, p.version_id) for p in points}:
+        await adapter.set_visibility(
+            index_id, document_id=document_id, version_id=version_id, visible=True
+        )
 
 
 def query(unit: int, rank: int = 0) -> list[float]:
@@ -104,8 +114,10 @@ async def test_hits_are_grouped_by_unit_and_limited_in_distinct_units(
     qdrant: AsyncQdrantClient, index_id: UUID
 ) -> None:
     adapter = QdrantVectorIndex(qdrant)
-    await adapter.upsert(
-        index_id, [chunk(index_id, u, r) for u in range(1, 6) for r in range(4)]
+    await store_visible(
+        adapter,
+        index_id,
+        [chunk(index_id, u, r) for u in range(1, 6) for r in range(4)],
     )
 
     found = await search(adapter, index_id, query(2, 1), unit_limit=3)
@@ -126,7 +138,7 @@ async def test_excluded_units_are_never_returned(
     qdrant: AsyncQdrantClient, index_id: UUID
 ) -> None:
     adapter = QdrantVectorIndex(qdrant)
-    await adapter.upsert(index_id, [chunk(index_id, u, 0) for u in range(1, 6)])
+    await store_visible(adapter, index_id, [chunk(index_id, u, 0) for u in range(1, 6)])
 
     found = await search(adapter, index_id, query(1), excluded=(unit_id(1), unit_id(3)))
 
@@ -137,10 +149,10 @@ async def test_invisible_points_are_never_returned_even_as_best_match(
     qdrant: AsyncQdrantClient, index_id: UUID
 ) -> None:
     adapter = QdrantVectorIndex(qdrant)
-    await adapter.upsert(
-        index_id,
-        [chunk(index_id, 1, 0, visible=False), chunk(index_id, 2, 0)],
-    )
+    await store_visible(adapter, index_id, [chunk(index_id, 2, 0)])
+    # Même document et même version, écrit APRÈS la synchronisation : un upsert
+    # écrit toujours invisible, ce point le reste.
+    await adapter.upsert(index_id, [chunk(index_id, 1, 0)])
 
     found = await search(adapter, index_id, query(1))
 
@@ -151,7 +163,8 @@ async def test_metadata_filters_select_documents(
     qdrant: AsyncQdrantClient, index_id: UUID
 ) -> None:
     adapter = QdrantVectorIndex(qdrant)
-    await adapter.upsert(
+    await store_visible(
+        adapter,
         index_id,
         [
             chunk(index_id, 1, 0, topics=("python", "asyncio"), kind="COURSE"),

@@ -108,3 +108,10 @@ sur eux :
   scheduler, frontend, postgres, qdrant, rabbitmq) ; aucun nouveau service
   d'infrastructure, les exclusions de cet ADR (Redis, pgvector actif) sont
   inchangées.
+- Readiness (point 7), revue S5 de Knowledge Base (2026-11-18), décision
+  inchangée, motif actualisé : la recherche (`POST
+  /api/v1/knowledge-base/search`) est le premier cas d'usage synchrone qui
+  dépend de Qdrant. Qdrant reste **non bloquant** : l'API sert aussi l'import
+  de documents, qui n'en dépend pas ; la rendre `not_ready` sans Qdrant
+  couperait l'import sans rendre la recherche possible. La recherche échoue
+  alors en 500, jamais en résultat vide (`backend/src/runtime/health.py`).

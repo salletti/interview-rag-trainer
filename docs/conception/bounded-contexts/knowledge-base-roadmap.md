@@ -182,7 +182,7 @@ flowchart LR
 
 ## S5 — Recherche sémantique, provenance et évaluation RAG
 
-> **Statut : implémentée (2026-11-18)** — contrat public `KnowledgeSearch` et `build_knowledge_search`, `POST /api/v1/knowledge-base/search`, contrôle SQL après Qdrant (`visible=true`), complément f = 2 / 1 passe (O12 tranché, `max_passage_tokens` = 1024 Proposed), small-to-big ; jeu de 42 requêtes : Recall@5 0,881, MRR 0,853, intégrité 1,00, inter-langues 0,75 ; seuils de non-régression fixés ; 1 115 unitaires et 321 tests d'intégration verts.
+> **Statut : implémentée (2026-11-18)** — contrat public `KnowledgeSearch` et `build_knowledge_search`, `POST /api/v1/knowledge-base/search`, contrôle SQL après Qdrant (`visible=true`), complément f = 2 / 1 passe (O12 tranché, `max_passage_tokens` = 1024 Proposed), small-to-big ; jeu de 42 requêtes : Recall@5 0,881, MRR 0,853, intégrité 1,00 non exercée (unités mono-chunk), inter-langues 0,75 ; seuils de non-régression fixés ; 1 115 unitaires et 321 tests d'intégration verts.
 
 - **Objectif :** rechercher des passages traçables et mesurer la qualité de
   récupération.
@@ -222,9 +222,12 @@ flowchart LR
 - **Tests d'intégration :** PDF et DOCX de fixtures équivalents à un Markdown
   existant → unités équivalentes ; PDF scanné → `FAILED` `OCR_REQUIRED` sans
   retry ; PDF chiffré ou corrompu → échec terminal ; PDF de plus de 300 pages
-  refusé ; évaluation S5 étendue aux nouveaux formats.
+  refusé ; évaluation S5 étendue aux nouveaux formats, avec des unités
+  multi-chunks (pour que l'intégrité d'unité soit exercée), des négatifs
+  proches et des requêtes à identifiants de code (revue S5).
 - **Critères d'acceptation :** mesures consignées ; limites de taille et de
-  pages confirmées ou révisées (ADR 0012) ; aucune régression des métriques S5.
+  pages confirmées ou révisées (ADR 0012) ; aucune régression des métriques S5 ;
+  intégrité d'unité mesurée sur au moins une unité tronquée.
 - **Risques :** qualité du layout PDF sur le code ; durée d'extraction et
   lease ; licences des poids de modèles à revérifier au lock.
 
@@ -280,8 +283,10 @@ flowchart LR
 - **Objectif :** choisir le profil définitif sur mesures et migrer sans
   interruption.
 - **Périmètre :** benchmark `multilingual-e5-small`, `multilingual-e5-base`,
-  `bge-m3`, éventuellement `Qwen3-Embedding-0.6B`, sur le jeu de S5 (qualité,
-  RAM, CPU, latence de requête, durée d'indexation) ; `ProvisionSearchIndex`,
+  `bge-m3`, éventuellement `Qwen3-Embedding-0.6B`, sur le jeu de S5 étendu en
+  S6 (qualité, RAM, CPU, latence de requête, durée d'indexation), y compris
+  négatifs proches et requêtes à identifiants de code (O6, recherche
+  hybride) ; `ProvisionSearchIndex`,
   backfill, `ActivateSearchIndex` avec barrière (I10, I11) ; retrait de l'ancien
   index ; rechunking si la `ChunkingPolicy` diffère ; décisions O1, O4, O6.
 - **Dépendances :** S5, S8.

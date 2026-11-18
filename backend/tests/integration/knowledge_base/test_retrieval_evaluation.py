@@ -40,7 +40,7 @@ from uuid import UUID
 import pytest
 import pytest_asyncio
 
-from knowledge_base import build_knowledge_search
+from knowledge_base.adapters.controller.composition import compose_knowledge_search
 from knowledge_base.adapters.controller.tasks.extract_version_handler import (
     build_extract_version_handler,
 )
@@ -269,8 +269,12 @@ async def evaluation(
             embedder,
         ) as rig:
             index_id, imported = await build_corpus(rig, reference)
-            search = build_knowledge_search(
-                session_factory, rig.qdrant, kb_settings(), embedder=embedder
+            search = compose_knowledge_search(
+                session_factory,
+                rig.qdrant,
+                kb_settings(),
+                embedder=embedder,
+                token_counter=embedder.token_counter,
             )
             outcomes = await search_all(search, reference)
             evaluation = Evaluation(reference, outcomes, imported, rig, index_id)

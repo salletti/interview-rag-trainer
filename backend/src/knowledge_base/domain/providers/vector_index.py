@@ -34,8 +34,9 @@ class VectorIndex(Protocol):
     async def upsert(
         self, index_id: UUID, points: Sequence[IndexedPoint], *, wait: bool = True
     ) -> None:
-        """``wait`` : rend la main une fois l'écriture appliquée et lisible ;
-        lève si elle n'a pas abouti."""
+        """Écrit les points **invisibles** (``visible=false``), y compris ceux
+        qui existaient et étaient visibles. ``wait`` : rend la main une fois
+        l'écriture appliquée et lisible ; lève si elle n'a pas abouti."""
         ...
 
     async def retrieve(

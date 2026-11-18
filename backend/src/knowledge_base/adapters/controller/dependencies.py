@@ -15,9 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from knowledge_base.adapters.controller.composition import (
     build_provision_search_index_handler,
-)
-from knowledge_base.adapters.controller.contracts.knowledge_search_adapter import (
-    KnowledgeSearchAdapter,
+    compose_knowledge_search,
 )
 from knowledge_base.adapters.controller.rest.documents_router import (
     add_document_routes,
@@ -48,17 +46,8 @@ from knowledge_base.adapters.controller.tasks.sync_visibility_handler import (
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
 )
-from knowledge_base.adapters.gateway.embedding.approximate_token_counter import (
-    ApproximateTokenCounter,
-)
 from knowledge_base.adapters.gateway.embedding.sentence_transformers_embedder import (
     SentenceTransformersEmbedder,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_active_index_reader import (
-    SqlAlchemyActiveIndexReader,
-)
-from knowledge_base.adapters.gateway.persistence.sqlalchemy_published_unit_reader import (  # noqa: E501
-    SqlAlchemyPublishedUnitReader,
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
     SqlAlchemyUnitOfWork,
@@ -67,7 +56,6 @@ from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
 from knowledge_base.contracts.providers import KnowledgeSearch
-from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
@@ -79,9 +67,6 @@ from knowledge_base.use_cases.import_document_version.import_document_version_ha
 )
 from knowledge_base.use_cases.provision_search_index.provision_search_index_command import (  # noqa: E501
     ProvisionSearchIndex,
-)
-from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
-    SearchKnowledgeHandler,
 )
 
 __all__ = [
@@ -107,68 +92,36 @@ CONTROL_QUEUE: Final = "interview_rag_trainer.default"
 ResourcesProvider = Callable[[], KnowledgeBaseWorkerResources]
 
 
-def register(
-    app: FastAPI,
-    resources: Callable[[], KnowledgeBaseResources],
-    settings: KnowledgeBaseSettings | None = None,
-) -> None:
+def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> None:
     """Monte les routes de Knowledge Base, à la construction de l'application.
     ``resources`` n'est appelé qu'au traitement d'une requête : la fabrique de
     sessions n'existe qu'après le démarrage (``lifespan``).
 
-    Un seul modèle d'embeddings par application, chargé à la première
-    recherche (jamais au démarrage : ``/health/ready`` n'en dépend pas) puis
-    gardé pour les suivantes ; ``settings`` en donne le cache."""
-    settings = settings or KnowledgeBaseSettings()
-    embedder = SentenceTransformersEmbedder.lazy(
-        MULTILINGUAL_E5_BASE, cache_dir=settings.models_cache_dir
-    )
-
-    def knowledge_search() -> KnowledgeSearch:
-        current = resources()
-        return build_knowledge_search(
-            current.session_factory,
-            current.qdrant_client,
-            current.settings,
-            embedder=embedder,
-        )
-
+    La recherche est reconstruite à chaque requête sur l'embedder des
+    ressources : un seul modèle par jeu de ressources, partagé avec
+    ``build_knowledge_search``."""
     add_document_routes(
         app.router,
         import_document_handler=lambda: build_import_document_handler(resources()),
         import_version_handler=lambda: build_import_version_handler(resources()),
     )
-    add_search_routes(app.router, knowledge_search=knowledge_search)
-
-
-def build_knowledge_search(
-    session_factory: async_sessionmaker[AsyncSession],
-    qdrant_client: AsyncQdrantClient,
-    settings: KnowledgeBaseSettings | None = None,
-    *,
-    embedder: Embedder | None = None,
-) -> KnowledgeSearch:
-    """Implémentation du contrat public ``KnowledgeSearch`` (knowledge-base.md
-    §14), sur l'index actif du corpus. Ne se connecte à rien. Sans
-    ``embedder``, le modèle du profil initial est chargé au premier usage
-    (cache ``settings.models_cache_dir``) ; l'appelant qui construit plusieurs
-    recherches leur passe le même embedder pour ne le charger qu'une fois."""
-    settings = settings or KnowledgeBaseSettings()
-    embedder = embedder or SentenceTransformersEmbedder.lazy(
-        MULTILINGUAL_E5_BASE, cache_dir=settings.models_cache_dir
+    add_search_routes(
+        app.router, knowledge_search=lambda: build_knowledge_search(resources())
     )
-    return KnowledgeSearchAdapter(
-        SearchKnowledgeHandler(
-            embedder=embedder,
-            chunk_searcher=QdrantVectorIndex(qdrant_client),
-            published_units=SqlAlchemyPublishedUnitReader(
-                session_factory, ApproximateTokenCounter()
-            ),
-            active_indexes=SqlAlchemyActiveIndexReader(session_factory),
-            max_passage_tokens=settings.max_passage_tokens,
-            oversampling_factor=settings.search_oversampling_factor,
-            complement_passes=settings.search_complement_passes,
-        )
+
+
+def build_knowledge_search(resources: KnowledgeBaseResources) -> KnowledgeSearch:
+    """Implémentation du contrat public ``KnowledgeSearch`` (knowledge-base.md
+    §14), sur l'index actif du corpus. Ne se connecte à rien. Le modèle
+    d'embeddings est celui des ressources (chargé au premier usage, cache
+    ``resources.settings.models_cache_dir``) : la route de recherche et tout
+    consommateur composé sur les mêmes ressources le partagent."""
+    return compose_knowledge_search(
+        resources.session_factory,
+        resources.qdrant_client,
+        resources.settings,
+        embedder=resources.embedder,
+        token_counter=resources.embedder.token_counter,
     )
 
 

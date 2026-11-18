@@ -509,9 +509,18 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
   incomparables (ADR 0011 §2). Le choix du modèle d'après l'index arrive avec
   S9.*
 - *Étape 3 : Qdrant `query_points_groups` groupé par `unit_id`, au plus
-  3 chunks par unité ; `visible=true` est ajouté par l'adapter, jamais par
+  3 chunks par unité (constante `CHUNKS_PER_UNIT` de l'adapter, non mesurée :
+  le jeu S5 n'a que des unités d'un chunk ; à mesurer avec les unités
+  multi-chunks de S6) ; `visible=true` est ajouté par l'adapter, jamais par
   l'appelant. Filtres : `topics` = tous requis, `kinds` et `document_ids` =
   l'un d'eux, `language` = langue du document.*
+- *Les filtres sont évalués sur le payload Qdrant, copie des métadonnées du
+  document (`topics`, `kind`, `language`) écrite à l'indexation ; le contrôle
+  SQL de l'étape 4 ne les revérifie pas. C'est correct parce que ces
+  métadonnées sont immuables en V1 (aucune opération ne les modifie après
+  l'import). Une édition de métadonnées devra soit réécrire le payload des
+  points du document, soit revérifier les filtres en SQL : à revoir si elle
+  apparaît.*
 - *Étape 5 : passe de complément tant que des unités ont été écartées, qu'il
   manque des passages et qu'il reste des passes ; elle demande
   `manquantes × f` unités et exclut les unités écartées **et** déjà retenues.
@@ -523,13 +532,17 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
   `complete = true` : le drapeau signale une perte due à la visibilité, pas
   l'absence de résultats.*
 - *Étape 6 : le budget d'une unité complète compte la question
-  (`token_count` des blocs + ligne `Question : …`, comptée par un majorant du
-  tokenizer). Au-delà, fenêtre contiguë de chunks autour du meilleur chunk
+  (`token_count` des blocs + ligne `Question : …`). La règle est dans le
+  domaine (`passage_assembler`), qui compte la question avec le tokenizer du
+  profil (celui de l'embedder, déjà chargé par l'encodage de la requête) ;
+  revue S5 : elle était dans l'adapter SQL, avec un majorant, et non testée.
+  Au-delà, fenêtre contiguë de chunks autour du meilleur chunk
   trouvé, étendue vers un autre chunk trouvé, sinon vers la suite, sinon vers
   le début, tant que la somme de leurs `token_count` tient ; un chunk seul
   plus gros que le budget est rendu seul ; `truncated=true` dès qu'il s'agit
   d'une fenêtre. Le texte d'un passage commence par la question (unités
-  `QA`) ; la fenêtre ne répète pas l'en-tête contextuel de chaque chunk.
+  `QA`) ; la fenêtre ne répète pas l'en-tête contextuel de chaque chunk,
+  qu'il soit entier ou tronqué par le `ChunkPlanner` (préfixe suivi de ` …`).
   `matched_chunk_ids` : chunks trouvés présents dans le passage, le meilleur
   d'abord.*
 - *Contrôle SQL : deux requêtes par passe, quel que soit le nombre d'unités
@@ -638,15 +651,24 @@ le contrôle SQL a écarté des unités » (précision du §12). Le contrat publ
 aussi `KnowledgeSearchUnavailableError(reason)` et `UnavailabilityReason`
 (`NO_ACTIVE_SEARCH_INDEX`, `SEARCH_PROFILE_MISMATCH`) : un consommateur ne
 peut pas importer les erreurs internes du contexte. Une requête invalide
-(texte blanc, `limit < 1`, `kind` inconnu) lève `ValueError` ; une panne de
+(texte blanc ou de plus de 2 000 caractères, `limit` hors de 1 à 50, `kind`
+inconnu) lève `ValueError` ; une panne de
 PostgreSQL ou de Qdrant est propagée, jamais convertie en résultat vide.
 L'API REST sert le même contrat : `POST /api/v1/knowledge-base/search`
-(`limit` de 1 à 50), 200, 422 ou 503.*
+(`limit` de 1 à 50, `text` de 1 à 2 000 caractères), 200, 422 ou 503. Les
+deux bornes (revue S5) sont celles de la query `SearchKnowledge`
+(`MAX_SEARCH_LIMIT`, `MAX_SEARCH_TEXT_LENGTH`), reprises par le schéma REST :
+le contrat et l'API refusent les mêmes requêtes. Au-delà de 50 passages
+(jusqu'à `max_passage_tokens` chacun), le résultat n'est plus un contexte
+exploitable ; 2 000 caractères font plus de vingt fois la plus longue requête
+du jeu de référence (90).*
 
 - Aucun objet Qdrant, ORM ou Docling dans le contrat.
 - Le consommateur reçoit l'implémentation par injection depuis `runtime`
-  (fabrique publique `build_knowledge_search`, voir
-  [005](../005-project-structure.md#surface-publique-dun-contexte-et-composition-root)).
+  (fabrique publique `build_knowledge_search(resources)`, voir
+  [005](../005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)) ;
+  elle partage le modèle d'embeddings des ressources avec la route de
+  recherche (un seul chargement par processus).
 - Toute évolution incompatible crée une nouvelle version du contrat.
 
 ## 15. Pipeline, structure du code et feuille de route
@@ -754,7 +776,7 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O9 | Accès et documents privés (multi-utilisateur) | Hors V1 ; `KnowledgeQuery` extensible sans rupture | — |
 | O10 | DLQ RabbitMQ | Non en V1 ; réexaminer avec les consommateurs d'Integration Events | ADR 0004 |
 | O11 | Réactivation d'un document retiré | Non prévue en V1 | — |
-| O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 — **Tranché en S5 (2026-11-18) pour f et les passes, budget Proposed.** Mesures sur le jeu de référence (42 requêtes, 10 documents, vrai E5) : sans rejet, f et les passes ne changent aucun résultat (le contrôle SQL n'écarte rien) et la latence de Qdrant ne dépend pas de f (médiane 2,8 à 3,2 ms pour f = 1 à 8). Rejets simulés (3 documents sur 10 retirés en SQL, points encore visibles ; 24 requêtes) : Recall@5 0,917 dès f = 2 ou une passe, `complete=false` sur 66,7 % des résultats à f = 1 sans passe, 12,5 % à **f = 2, 1 passe** (retenu : 19,5 ms médians), 0 % à f = 2 / 2 passes ou f ≥ 3. f = 2 et 1 passe sont conservés : le cas simulé (30 % du corpus en fenêtre de synchronisation à la fois) dépasse de loin une republication ordinaire, et les deux leviers sans coût mesuré (f = 3, 2 passes) restent réglables (`KB_SEARCH_OVERSAMPLING_FACTOR`, `KB_SEARCH_COMPLEMENT_PASSES`). **`max_passage_tokens` = 1024 reste Proposed** : le jeu de référence ne l'exerce pas (49 unités, toutes en un chunk, 427 tokens au plus, question comprise ; 0 passage tronqué sur 210 pour des budgets de 508 à 1 536). 1024 contient deux chunks entiers (508) et borne 5 passages à environ 5 000 tokens ; à remesurer sur des cours longs (S6, PDF/DOCX). Détail : [README du contexte](../../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation) |
+| O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 — **Tranché en S5 (2026-11-18) pour f et les passes, budget Proposed.** Mesures sur le jeu de référence (42 requêtes, 10 documents, vrai E5) : sans rejet, f et les passes ne changent aucun résultat (le contrôle SQL n'écarte rien) et la latence de Qdrant ne dépend pas de f (médiane 2,8 à 3,2 ms pour f = 1 à 8). Rejets simulés (3 documents sur 10 retirés en SQL, points encore visibles ; 24 requêtes) : Recall@5 0,917 dès f = 2 ou une passe, `complete=false` sur 66,7 % des résultats à f = 1 sans passe, 12,5 % à **f = 2, 1 passe** (retenu : 19,5 ms médians), 0 % à f = 2 / 2 passes ou f ≥ 3. f = 2 et 1 passe sont conservés : le cas simulé (30 % du corpus en fenêtre de synchronisation à la fois) dépasse de loin une republication ordinaire, et les deux leviers sans coût mesuré (f = 3, 2 passes) restent réglables (`KB_SEARCH_OVERSAMPLING_FACTOR`, `KB_SEARCH_COMPLEMENT_PASSES`). **`max_passage_tokens` = 1024 reste Proposed** : le jeu de référence ne l'exerce pas (49 unités, toutes en un chunk, 427 tokens au plus, question comprise ; 0 passage tronqué sur 210 pour des budgets de 508 à 1 536). 1024 contient deux chunks entiers (508) et borne 5 passages à environ 5 000 tokens ; à remesurer sur des cours longs (S6, PDF/DOCX). Depuis la revue S5, une valeur inférieure à un chunk entier de la politique de production (508) est refusée au démarrage. **Intégrité d'unité 1,00 non exercée en S5** : aucune unité multi-chunks, aucune troncature ; le seuil de non-régression est conservé mais ne protège rien avant S6. **Limites du jeu** (revue S5) : 12 documents indexés (10 visés, 2 distracteurs) aux thèmes largement disjoints (hors des cinq documents Python, un document par sujet : aucun négatif proche) ; 40 requêtes sur 42 filtrées ; requêtes inter-langues pour la plupart traduites ou reformulées de requêtes de même langue ; aucune requête à identifiant de code exact. Négatifs proches et identifiants de code : S6/S9. Détail : [README du contexte](../../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation) |
 | O13 | Heuristiques Q/R sans front-matter | Couvrir les formats rencontrés, mesurés par golden tests | S3 — **Heuristiques retenues en S3 (2026-11-18), Proposed jusqu'aux mesures de S5 :** un titre est une question s'il commence par `Question` ou `Q` (casse indifférente, numéro facultatif) suivi de `:`, ou s'il se termine par `?` ; l'unité `QA` court jusqu'à la question suivante ou un titre de niveau strictement inférieur, les titres du corps (« Réponse », « Explication ») restent des blocs ; le contenu hors question forme des unités `SECTION` ; une fiche sans aucune question est découpée comme un cours. Le front-matter `kind: qa_sheet` l'emporte : tout titre de niveau 2 est alors une question. Couverture : golden files du corpus FR/EN (`backend/tests/fixtures/knowledge_base/`) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s3--docling-markdown-knowledgeunit-et-chunking) |
 | O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 |
 | O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 |

@@ -113,3 +113,12 @@ Première mesure des conditions de réévaluation : intégrité d'unité 1,000
 Le jeu n'exerce ni les unités multi-chunks ni la troncature (49 unités, toutes
 en un chunk) : `max_passage_tokens` et l'overlap (point 5) restent à mesurer
 sur des cours longs (S6, S9).
+
+Revue S5 (2026-11-18), requalification sans changement de décision :
+l'intégrité d'unité 1,000 est **non exercée** en S5. Avec des unités d'un seul
+chunk, retrouver l'unité suffit à rendre l'unité entière : la mesure ne peut
+pas échouer et ne dit rien du point 6 (small-to-big). Le seuil (0,94) est
+conservé ; la condition de réévaluation qui en dépend ne sera significative
+qu'avec les unités multi-chunks de S6. Le budget compte désormais la question
+avec le tokenizer du profil, dans le domaine (`passage_assembler`), et la
+fenêtre retire aussi un en-tête contextuel tronqué par le `ChunkPlanner`.

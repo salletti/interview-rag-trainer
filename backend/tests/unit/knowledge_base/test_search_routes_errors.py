@@ -9,12 +9,15 @@ from httpx import ASGITransport, AsyncClient
 
 from knowledge_base.adapters.controller.rest.documents_router import PREFIX
 from knowledge_base.adapters.controller.rest.search_router import add_search_routes
-from knowledge_base.adapters.controller.rest.search_schemas import MAX_LIMIT
 from knowledge_base.contracts.providers import (
     KnowledgeSearchUnavailableError,
     UnavailabilityReason,
 )
 from knowledge_base.contracts.result import KnowledgeQuery, KnowledgeSearchResult
+from knowledge_base.use_cases.search_knowledge.search_knowledge_command import (
+    MAX_SEARCH_LIMIT,
+    MAX_SEARCH_TEXT_LENGTH,
+)
 
 
 class FailingSearch:
@@ -57,11 +60,12 @@ async def test_an_infrastructure_failure_is_not_turned_into_an_empty_result() ->
 @pytest.mark.parametrize(
     "body",
     [
-        {"text": "x", "limit": MAX_LIMIT + 1},
+        {"text": "x", "limit": MAX_SEARCH_LIMIT + 1},
+        {"text": "x" * (MAX_SEARCH_TEXT_LENGTH + 1)},
         {"text": "x", "kinds": ["POEM"]},
         {"text": "x", "unknown": 1},
     ],
-    ids=["limit-cap", "unknown-kind", "unknown-field"],
+    ids=["limit-cap", "text-cap", "unknown-kind", "unknown-field"],
 )
 async def test_an_out_of_contract_body_is_a_422(body: dict[str, object]) -> None:
     search = FailingSearch(AssertionError("jamais appelée"))
@@ -71,6 +75,26 @@ async def test_an_out_of_contract_body_is_a_422(body: dict[str, object]) -> None
 
     assert response.status_code == 422
     assert search.queries == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"text": "x", "limit": MAX_SEARCH_LIMIT},
+        {"text": "x" * MAX_SEARCH_TEXT_LENGTH},
+    ],
+    ids=["limit-cap", "text-cap"],
+)
+async def test_a_body_at_the_bounds_reaches_the_search(body: dict[str, object]) -> None:
+    search = FailingSearch(
+        KnowledgeSearchUnavailableError(UnavailabilityReason.NO_ACTIVE_SEARCH_INDEX, "")
+    )
+
+    async with client_for(search) as http:
+        response = await http.post(f"{PREFIX}/search", json=body)
+
+    assert response.status_code == 503
+    assert len(search.queries) == 1
 
 
 def test_the_503_is_documented_in_the_openapi_schema() -> None:

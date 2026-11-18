@@ -26,8 +26,11 @@ API figée par ces tests (ports du domaine, ``knowledge_base.domain.providers``)
   delete_points(index_id, selector: PointSelector)``.
 - ``knowledge_base.domain.value_objects.indexed_point`` : ``IndexedPoint(point_id,
   vector: tuple[float, ...], chunk_id, unit_id, version_id, document_id,
-  chunk_hash, index_id, visible, topics: tuple[str, ...], kind: str, language)``
-  (le payload Qdrant porte ces mêmes noms, UUID en texte) ;
+  chunk_hash, index_id, topics: tuple[str, ...], kind: str, language)`` (le
+  payload Qdrant porte ces mêmes noms, UUID en texte, plus ``visible``, que
+  l'adapter fixe à faux à l'écriture) ; ``FakeVectorIndex`` stocke chaque point
+  comme ``StoredPoint`` (le point et son ``visible``), l'état que lisent les
+  tests ;
   ``PointSelector(document_id, version_id: UUID | None = None)`` : les points
   d'une version, ou de tout le document si ``version_id`` est ``None``.
 - ``chunk_reader.ChunkReader`` : ``await list_chunks(version_id, policy_version)
@@ -56,7 +59,7 @@ import copy
 import hashlib
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
@@ -203,6 +206,18 @@ class BrokenEmbedder(HashEmbedder):
         raise RuntimeError("modèle indisponible")
 
 
+@dataclass(frozen=True)
+class StoredPoint(IndexedPoint):
+    """Point tel que stocké par le faux index : celui reçu, plus ``visible``
+    du payload (faux à chaque upsert, comme dans l'adapter Qdrant)."""
+
+    visible: bool = False
+
+    @classmethod
+    def written(cls, point: IndexedPoint) -> StoredPoint:
+        return cls(**{f.name: getattr(point, f.name) for f in fields(IndexedPoint)})
+
+
 class FakeVectorIndex:
     """Qdrant en mémoire, contrat de ``VectorIndex``. Pannes et altérations
     injectables : ``conforming``, ``after_upsert`` (altère le contenu des
@@ -211,17 +226,17 @@ class FakeVectorIndex:
 
     def __init__(self, guard: Guard = no_guard) -> None:
         self.guard = guard
-        self.collections: dict[UUID, dict[UUID, IndexedPoint]] = {}
+        self.collections: dict[UUID, dict[UUID, StoredPoint]] = {}
         self.profiles: dict[UUID, EmbeddingProfile] = {}
         self.conforming = True
         self.fail_ensure = False
         self.fail_upsert_on: int | None = None
-        self.after_upsert: Callable[[dict[UUID, IndexedPoint]], None] | None = None
+        self.after_upsert: Callable[[dict[UUID, StoredPoint]], None] | None = None
         self.calls: list[str] = []
         self.upsert_sizes: list[int] = []
         self.upsert_waits: list[bool] = []
 
-    def points(self, index_id: UUID) -> dict[UUID, IndexedPoint]:
+    def points(self, index_id: UUID) -> dict[UUID, StoredPoint]:
         return self.collections.get(index_id, {})
 
     async def ensure_collection(
@@ -250,7 +265,7 @@ class FakeVectorIndex:
             raise RuntimeError("Qdrant : connexion perdue pendant l'upsert")
         collection = self.collections.setdefault(index_id, {})
         for point in points:
-            collection[point.point_id] = point
+            collection[point.point_id] = StoredPoint.written(point)
         if self.after_upsert is not None:
             self.after_upsert(collection)
 
@@ -284,11 +299,11 @@ class FakeVectorIndex:
                 del collection[key]
 
 
-def drop_first(collection: dict[UUID, IndexedPoint]) -> None:
+def drop_first(collection: dict[UUID, StoredPoint]) -> None:
     del collection[next(iter(collection))]
 
 
-def corrupt_first_hash(collection: dict[UUID, IndexedPoint]) -> None:
+def corrupt_first_hash(collection: dict[UUID, StoredPoint]) -> None:
     key = next(iter(collection))
     collection[key] = replace(collection[key], chunk_hash="0" * 64)
 
@@ -537,9 +552,7 @@ class IndexingRig:
     def expected_points(self, command: RecordExtraction, index_id: UUID) -> set[UUID]:
         return {point_id(index_id, c.chunk_id) for c in self.chunks_of(command)}
 
-    def points_of(
-        self, command: RecordExtraction, index_id: UUID
-    ) -> list[IndexedPoint]:
+    def points_of(self, command: RecordExtraction, index_id: UUID) -> list[StoredPoint]:
         return [
             p
             for p in self.vector.points(index_id).values()

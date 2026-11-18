@@ -254,6 +254,29 @@ def contextual_header(
     return "\n".join(lines)
 
 
+def strip_contextual_header(contextual_text: str, header: str) -> str:
+    """Contenu d'un ``contextual_text`` sans son en-tête, ``header`` étant
+    l'en-tête complet (``contextual_header``). L'en-tête du texte est entier,
+    ou tronqué par ``_truncate`` : un préfixe de ``header`` sans ses blancs
+    finaux suivi de `` …``, ou ``…`` seul. Texte inchangé si aucune de ces
+    formes n'est reconnue."""
+    whole = f"{header}{HEADER_SEPARATOR}"
+    if contextual_text.startswith(whole):
+        return contextual_text[len(whole) :]
+    bare = f"{TRUNCATION_MARK}{HEADER_SEPARATOR}"
+    if contextual_text.startswith(bare):
+        return contextual_text[len(bare) :]
+    end = f" {TRUNCATION_MARK}{HEADER_SEPARATOR}"
+    # Un en-tête tronqué n'est jamais plus long que ``header`` : la recherche
+    # du marqueur s'arrête là, le corps n'est jamais pris pour un en-tête.
+    position = contextual_text.find(end, 0, len(header) + len(end))
+    while position != -1:
+        if header.startswith(contextual_text[:position]):
+            return contextual_text[position + len(end) :]
+        position = contextual_text.find(end, position + 1, len(header) + len(end))
+    return contextual_text
+
+
 def _chunk_hash(contextual_text: str, policy_identity: str) -> str:
     """SHA-256 de ``contextual_text``, ``\\x00``, ``policy_identity`` : sans le
     séparateur, un texte et une identité différents pourraient se concaténer

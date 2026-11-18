@@ -103,3 +103,7 @@ async def test_an_invalid_query_is_a_value_error_for_the_consumer() -> None:
         await KnowledgeSearchAdapter(rig.handler).search(
             KnowledgeQuery(text="x", kinds=("POEM",))
         )
+    with pytest.raises(ValueError):
+        await KnowledgeSearchAdapter(rig.handler).search(
+            KnowledgeQuery(text="x", limit=51)
+        )

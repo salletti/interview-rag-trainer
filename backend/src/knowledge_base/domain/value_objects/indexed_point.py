@@ -3,7 +3,10 @@
 
 Les champs de ``IndexedPoint`` (hors ``point_id`` et ``vector``) sont ceux du
 payload : identité et empreinte du chunk pour la vérification du manifest,
-``visible`` et champs de filtrage pour la recherche.
+champs de filtrage pour la recherche. Le payload porte aussi ``visible``, qui
+n'est pas un champ : un point est toujours écrit invisible (l'adapter fixe
+``visible=false``), seul ``VectorIndex.set_visibility`` le rend visible, après
+la publication SQL (§11).
 """
 
 from __future__ import annotations
@@ -22,9 +25,6 @@ class IndexedPoint:
     document_id: UUID
     chunk_hash: str
     index_id: UUID
-    # Toujours faux à l'écriture : seul ``sync_visibility`` rend un point
-    # visible, après la publication SQL (§11).
-    visible: bool
     topics: tuple[str, ...]
     kind: str
     language: str

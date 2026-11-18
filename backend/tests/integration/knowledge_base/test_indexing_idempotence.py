@@ -153,7 +153,6 @@ def zombie_point(
         document_id=document_id,
         chunk_hash=chunk["chunk_hash"],
         index_id=index_id,
-        visible=False,
         topics=("python", "asyncio"),
         kind="QA_SHEET",
         language="fr",

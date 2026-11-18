@@ -15,6 +15,8 @@ from typing import Self
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
+
 
 class KnowledgeBaseSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -52,12 +54,13 @@ class KnowledgeBaseSettings(BaseSettings):
     # Recherche (S5, O12) : suréchantillonnage de la première passe
     # (``limit x f`` unités demandées à Qdrant), passes de complément après
     # le contrôle SQL, budget en tokens d'un passage reconstruit
-    # (small-to-big). Le budget doit contenir au moins un chunk entier de la
-    # politique (508 tokens), sinon le meilleur chunk d'une unité longue ne
-    # tiendrait jamais dans sa fenêtre.
+    # (small-to-big). Le budget contient au moins un chunk entier de la
+    # politique de production (``DEFAULT_CHUNKING_POLICY.max_tokens``, 508) :
+    # en dessous, le meilleur chunk d'une unité longue dépasserait sa fenêtre
+    # (il serait alors rendu seul, hors budget).
     search_oversampling_factor: int = Field(default=2, ge=1)
     search_complement_passes: int = Field(default=1, ge=0)
-    max_passage_tokens: int = Field(default=1024, gt=0)
+    max_passage_tokens: int = Field(default=1024, ge=DEFAULT_CHUNKING_POLICY.max_tokens)
 
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:

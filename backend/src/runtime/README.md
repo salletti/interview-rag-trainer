@@ -5,14 +5,14 @@ Composition root technique du monolithe. Aucune règle métier.
 | Module | Rôle |
 |---|---|
 | `settings.py` | Pydantic Settings : hôtes, ports, secrets (`SecretStr`), délais |
-| `app.py` | `create_app()` : FastAPI, `lifespan` (moteur SQLAlchemy, client Qdrant), routeurs ; `knowledge_base.register(app, ressources, settings)` monte les routes d'import et de recherche, `KnowledgeBaseResources` reçoit la fabrique de sessions, les réglages `KB_*` et le client Qdrant du processus |
+| `app.py` | `create_app()` : FastAPI, `lifespan` (moteur SQLAlchemy, client Qdrant), routeurs ; `knowledge_base.register(app, ressources)` monte les routes d'import et de recherche, `KnowledgeBaseResources` reçoit la fabrique de sessions, les réglages `KB_*` (seule source de réglages de Knowledge Base dans l'API) et le client Qdrant du processus, et porte le modèle d'embeddings paresseux de la recherche |
 | `database.py` | `AsyncEngine`, fabrique de sessions, dépendance « une `AsyncSession` par requête », sonde |
 | `vector_store.py` | client `AsyncQdrantClient` et sonde |
 | `messaging.py` | sonde RabbitMQ (Kombu dans un thread, bornée) |
 | `worker.py` | application Celery de production (`celery -A runtime.worker:celery_app worker` / `beat`), tâche technique `runtime.ping` |
 | `worker_factory.py` | `create_celery_app(settings=None, *, work_handlers=None)` : configuration Celery (dont `worker_prefetch_multiplier=1`), `knowledge_base.register_worker`, ressources des processus enfants (signaux) ; `work_handlers=None` = handlers de production (`knowledge_base.build_work_handlers`), une séquence les remplace (tests) |
 | `provision.py` | `python -m runtime.provision` : provisionne l'index initial de Knowledge Base (`knowledge_base.provision_search_index`), idempotent ; service Compose `kb_provision`, avant l'API et les workers ; code de sortie non nul si PostgreSQL ou Qdrant manquent |
-| `health.py` | `/health/live`, `/health/ready` (PostgreSQL requis, Qdrant/RabbitMQ informatifs) ; ni l'un ni l'autre ne charge le modèle d'embeddings |
+| `health.py` | `/health/live`, `/health/ready` (PostgreSQL requis, Qdrant/RabbitMQ informatifs : sans Qdrant, l'API sert encore l'import, seule la recherche échoue, en 500) ; ni l'un ni l'autre ne charge le modèle d'embeddings |
 | `system.py` | `/api/v1/system/info` (données non sensibles) |
 | `logging_config.py` | logging standard, format unique |
 
@@ -35,4 +35,4 @@ Les Bounded Contexts sont enregistrés ici par leur surface publique uniquement 
 ## Recherche de Knowledge Base dans l'API (S5)
 
 - Le modèle d'embeddings (`intfloat/multilingual-e5-base`) est chargé par l'API à la **première recherche**, dans un thread, puis gardé par le processus : le démarrage et `/health/ready` n'en dépendent pas. Mesuré le 2026-11-18 sur la stack de dev : premier appel 4,3 s, RSS du processus serveur 146 → 1 267 Mio. Volume `models_cache` monté dans `api` ; `HF_HUB_DISABLE_XET=1` vient de l'environnement commun de `compose.yaml`.
-- Pour fournir le contrat `KnowledgeSearch` à un autre contexte, `runtime` appellera `knowledge_base.build_knowledge_search(session_factory, qdrant_client, settings)` une fois, à la composition, et passera la même instance au consommateur ([005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)) ; aucun consommateur n'existe en S5.
+- Pour fournir le contrat `KnowledgeSearch` à un autre contexte, `runtime` appellera `knowledge_base.build_knowledge_search(app.state.knowledge_base)` une fois, dans le `lifespan` après la création des ressources, et passera la même instance au consommateur ([005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)) ; aucun consommateur n'existe en S5. Le modèle est celui des ressources, déjà partagé avec la route de recherche : il n'est chargé qu'une fois par processus (vérifié par `tests/unit/knowledge_base/test_build_knowledge_search.py`).

@@ -4,12 +4,16 @@ et Qdrant réels, avec le VRAI modèle ``multilingual-e5-base`` (marqueur
 
 Composition figée (en plus de celles de S3 et S4, ``indexing_support``) :
 
-- ``knowledge_base.build_knowledge_search(session_factory, qdrant_client,
-  settings=None, *, embedder=None) -> KnowledgeSearch`` (voir
-  ``tests/unit/knowledge_base/test_build_knowledge_search.py``) ;
+- ``composition.compose_knowledge_search(session_factory, qdrant_client,
+  settings, *, embedder, token_counter) -> KnowledgeSearch``, variante interne
+  de la fabrique publique ``build_knowledge_search(resources)`` (voir
+  ``tests/unit/knowledge_base/test_build_knowledge_search.py``) : la recherche
+  reçoit l'embedder du rig et le compteur « un mot = un token » de
+  l'extraction, celui qui a compté les blocs ;
 - l'API (``runtime.app.create_app``) sert ``POST /api/v1/knowledge-base/search``
-  avec SON propre embedder paresseux, dont le cache est ``KB_MODELS_CACHE_DIR``
-  (positionné ici sur le cache du Makefile, ``SENTENCE_TRANSFORMERS_HOME``) ;
+  avec l'embedder paresseux de SES ressources, dont le cache est
+  ``KB_MODELS_CACHE_DIR`` (positionné ici sur le cache du Makefile,
+  ``SENTENCE_TRANSFORMERS_HOME``) ;
 - les documents sont publiés comme en production : import par l'API (S2),
   item ``extract_version`` (S3), item ``index_version`` (publication, S4) puis
   ``sync_visibility`` (qui rend les points visibles).
@@ -29,7 +33,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from knowledge_base import build_knowledge_search
+from knowledge_base.adapters.controller.composition import compose_knowledge_search
 from knowledge_base.contracts.providers import KnowledgeSearch
 from runtime.database import SessionFactory
 from runtime.settings import Settings
@@ -40,6 +44,7 @@ from tests.integration.knowledge_base.indexing_support import (
     open_indexing_rig,
 )
 from tests.integration.knowledge_base.support import kb_settings
+from tests.unit.knowledge_base.domain.services.support import COUNTER
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "knowledge_base"
 BACKEND_CACHE = Path(__file__).resolve().parents[3] / ".cache" / "models"
@@ -152,10 +157,14 @@ async def open_search_rig(
         settings, session_factory, tmp_path, monkeypatch, embedder
     ) as indexing:
         index_id = await indexing.provision()
-        search = build_knowledge_search(
+        # ``model_copy`` ne revalide pas : la politique de test (120 tokens)
+        # appelle un budget de passage sous la borne de production
+        # (``max_passage_tokens >= DEFAULT_CHUNKING_POLICY.max_tokens``).
+        search = compose_knowledge_search(
             session_factory,
             indexing.qdrant,
-            kb_settings(**kb_overrides),
+            kb_settings().model_copy(update=kb_overrides),
             embedder=embedder,
+            token_counter=COUNTER,
         )
         yield SearchRig(indexing, index_id, search)

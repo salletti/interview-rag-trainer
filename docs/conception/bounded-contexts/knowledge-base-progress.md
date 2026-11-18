@@ -132,3 +132,23 @@ Corrections appliquées (2026-11-18) — 770 unitaires, 285 intégration, mutati
 - M6 — surface publique dans 005. **Fait.**
 - M7 — composition unique des dépôts UoW / transaction d'indexation. **Fait.**
 - M8 — surface sans usage (`PublishDocumentVersionHandler.handle`, champ `visible`) : `handle` retiré, précision §3.6 ; champ `visible` d'`IndexedPoint` conservé jusqu'après S5 (utilisé par les doubles de test). **Partiel.**
+
+Revue tech lead du commit S5 (`2009ad0`) : aucun bloquant, 3 importants, 10 mineurs.
+Corrections appliquées (2026-11-18) — 1 136 unitaires, 322 intégration, 3 mutations tuées :
+
+- I1 — `build_knowledge_search` exposait un port interne (`Embedder`) et `register()` créait son propre embedder : un consommateur aurait chargé E5 une seconde fois (~1,1 Gio). Embedder unique dans les ressources du contexte. **Fait.**
+- I2 — budget « question comprise » calculé dans l'adapter SQL, non testé → règle dans le domaine, compteur réel. **Fait.**
+- I3 — intégrité d'unité non exercée en S5 (unités mono-chunk) → mesure requalifiée, à rendre significative en S6. **Fait.**
+- M1 — limites du jeu de référence écrites à côté des chiffres (thèmes disjoints, requêtes filtrées, inter-langues traduites). **Fait.**
+- M2, M3, M5, M6, M7 — readiness, borne du budget, bornes `limit` et `text`, question dupliquée après en-tête tronqué. **Fait.**
+- M4, M9, M10 — documentés seulement (`CHUNKS_PER_UNIT`, filtres non revérifiés en SQL, import du contrat qui charge le contexte). **Fait.**
+- Reliquat S4 M8 — champ `visible` d'`IndexedPoint`. **Fait.**
+
+Incident (2026-11-18, pendant l'écriture des tests rouges S6) : un lancement
+de tests d'intégration sans `make test-integration` a visé la base de **dev**
+(défauts de `Settings`) ; les fixtures ont vidé `work_items`,
+`document_chunks` et `knowledge_units` et créé `public.kb_test_effects`.
+Documents, versions, blobs et Qdrant de dev intacts. Garde-fou ajouté dans
+`tests/integration/conftest.py` : session refusée si `ENVIRONMENT != test` ou
+si `POSTGRES_PORT` vise la stack de dev. Base de dev à reconstruire lors de
+la validation S6.

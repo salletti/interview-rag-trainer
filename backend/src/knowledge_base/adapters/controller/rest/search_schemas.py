@@ -4,24 +4,27 @@ en texte."""
 
 from __future__ import annotations
 
-from typing import Annotated, Final
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
-
-# Plafond HTTP du nombre de passages : au-delà, la réponse (jusqu'à
-# ``max_passage_tokens`` par passage) n'est plus un contexte exploitable.
-MAX_LIMIT: Final = 50
+from knowledge_base.use_cases.search_knowledge.search_knowledge_command import (
+    MAX_SEARCH_LIMIT,
+    MAX_SEARCH_TEXT_LENGTH,
+)
 
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Bornes de la query ``SearchKnowledge``, vérifiées ici pour un 422.
     # pattern : au moins un caractère non blanc (recherche non ancrée).
-    text: Annotated[str, Field(min_length=1, pattern=r"\S")]
-    limit: Annotated[int, Field(ge=1, le=MAX_LIMIT)] = 5
+    text: Annotated[
+        str, Field(min_length=1, max_length=MAX_SEARCH_TEXT_LENGTH, pattern=r"\S")
+    ]
+    limit: Annotated[int, Field(ge=1, le=MAX_SEARCH_LIMIT)] = 5
     language: Annotated[str | None, Field(min_length=1, max_length=35)] = None
     topics: list[str] = []
     kinds: list[DocumentKind] = []

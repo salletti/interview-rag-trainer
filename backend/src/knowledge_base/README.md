@@ -196,7 +196,7 @@ sync_visibility ──► visible=true pour la version publiée ; points SUPERSE
 | `Indexation`, `IndexationStatus` (`domain/entities/indexation.py`) | `PENDING → COMPLETED` (digest et nombre de points), `FAILED`, `CANCELLED`, `retry` (§5.3) ; refus `InvalidIndexationTransitionError` sans effet |
 | `IndexManifest` (`domain/value_objects/index_manifest.py`) | couples `(point_id, chunk_hash)` triés par `str(point_id)`, sans doublon ; `digest` = SHA-256 des lignes `"<point_id>:<chunk_hash>\n"` |
 | `point_id(index_id, chunk_id)` (`domain/services/point_id.py`) | `uuid5(index_id, str(chunk_id))` : même chunk → même point dans un index, autre point dans un autre |
-| `IndexedPoint`, `PointSelector` | point à écrire (payload §9) ; points d'une version ou de tout un document |
+| `IndexedPoint`, `PointSelector` | point à écrire (payload §9, sans `visible` : l'adapter Qdrant écrit toujours `visible=false`, seul `set_visibility` le rend vrai ; champ retiré à la revue S5) ; points d'une version ou de tout un document |
 
 Ports (`domain/providers/`) : `Embedder`, `VectorIndex`, `ChunkReader`, `KnowledgeCorpusRepository` (`get_shared` = `FOR SHARE`, `get_for_update` = `FOR UPDATE`, `add` lève `CorpusAlreadyExistsError`), `IndexationRepository`, `IndexingTransaction` (documents, corpus, indexations, work queue liés à une transaction ouverte par l'appelant) et `IndexingUnitOfWork` (la même, ouverte par le handler, plus les chunks) ; `ExtractionTransaction` étend `IndexingTransaction`.
 
@@ -232,7 +232,7 @@ Un échec d'indexation laisse la version `EXTRACTED` : ses chunks restent valide
 | Tokenizer | XLM-R livré avec le modèle, nommé `xlmr-d1287505` |
 | `DEFAULT_CHUNKING_POLICY` | `kb-chunking-v1`, tokenizer `xlmr-d1287505`, identité persistée **`kb-chunking-v1+xlmr-d1287505`**, `max_tokens` 508 (512 − 2 tokens spéciaux − 2 du préfixe) |
 
-Le compteur provisoire de S3 (`ApproximateTokenCounter`, identité `kb-chunking-v1+approx-xlmr-v1`) ne découpe plus en production ; il reste pour les tests de coût du `ChunkPlanner` sans modèle et, depuis S5, pour compter la question d'un passage à la recherche (majorant, sans modèle). Les lots extraits avec l'ancienne identité ne sont pas indexés (pas de backfill en S4).
+Le compteur provisoire de S3 (`ApproximateTokenCounter`, identité `kb-chunking-v1+approx-xlmr-v1`) ne découpe plus en production ; il ne sert plus qu'aux tests de coût du `ChunkPlanner` sans modèle (en S5, il comptait aussi la question d'un passage à la recherche ; depuis la revue S5, c'est le tokenizer du profil, voir S5). Les lots extraits avec l'ancienne identité ne sont pas indexés (pas de backfill en S4).
 
 **Modèle dans le worker** : `build_work_handlers(session_factory, qdrant_client, settings)` crée **un** `Embedder` paresseux par processus enfant ; l'extraction compte les tokens avec son tokenizer, l'indexation encode avec lui. Le processus maître ne le charge jamais ; l'API ne le charge pas en S4 ; depuis S5, elle le charge à la première recherche (ci-dessus). Premier démarrage : téléchargement dans `KB_MODELS_CACHE_DIR` (volume `models_cache`, ~1,1 Go de poids), à la première tâche du worker d'ingestion.
 
@@ -273,19 +273,19 @@ index actif (SQL) ─► profil = celui de l'embedder ? ─► encodage « query
   ─► small-to-big (unité complète ou fenêtre ≤ max_passage_tokens) ─► tri par meilleur score
 ```
 
-**Contrat public** (`contracts/`, bibliothèque standard seulement) : `KnowledgeSearch.search(KnowledgeQuery) -> KnowledgeSearchResult` (`contracts/providers/knowledge_search.py`), DTO `KnowledgeQuery`, `KnowledgeSearchResult`, `RetrievedPassage`, `Citation` (`contracts/result/`), champs du §14. Erreurs rendues au consommateur : `ValueError` (requête invalide : texte blanc, `limit < 1`, type de document inconnu), `KnowledgeSearchUnavailableError(reason)` avec `UnavailabilityReason.NO_ACTIVE_SEARCH_INDEX` ou `SEARCH_PROFILE_MISMATCH`, erreurs PostgreSQL/Qdrant propagées (jamais un faux « rien trouvé »). Filtres : `topics` = **tous** requis, `kinds` et `document_ids` = **l'un** d'eux, `language` = langue du document.
+**Contrat public** (`contracts/`, bibliothèque standard seulement) : `KnowledgeSearch.search(KnowledgeQuery) -> KnowledgeSearchResult` (`contracts/providers/knowledge_search.py`), DTO `KnowledgeQuery`, `KnowledgeSearchResult`, `RetrievedPassage`, `Citation` (`contracts/result/`), champs du §14. Erreurs rendues au consommateur : `ValueError` (requête invalide : texte blanc ou de plus de `MAX_SEARCH_TEXT_LENGTH` = 2 000 caractères, `limit` hors de 1 à `MAX_SEARCH_LIMIT` = 50, type de document inconnu), `KnowledgeSearchUnavailableError(reason)` avec `UnavailabilityReason.NO_ACTIVE_SEARCH_INDEX` ou `SEARCH_PROFILE_MISMATCH`, erreurs PostgreSQL/Qdrant propagées (jamais un faux « rien trouvé »). Filtres : `topics` = **tous** requis, `kinds` et `document_ids` = **l'un** d'eux, `language` = langue du document.
 
 **Domaine** (Python pur) :
 
 | Élément | Rôle |
 |---|---|
 | `SearchFilters` (`domain/value_objects/search_filters.py`) | filtres de métadonnées ; refuse un `kind` inconnu |
-| `ChunkHit`, `PublishedUnit`, `UnitChunk` (`domain/value_objects/`) | chunk trouvé (identifiants + score) ; unité publiée relue en SQL avec ses chunks dans l'ordre de lecture et sa citation (chemin et pages de l'unité) ; `PublishedUnit.token_count` = passage complet, **question comprise** |
-| `assemble_passage` (`domain/services/passage_assembler.py`) | small-to-big : unité complète (`Question : …` puis blocs) si `token_count ≤ max_passage_tokens` ; sinon fenêtre contiguë autour du meilleur chunk, étendue vers un autre chunk trouvé, sinon vers la suite, sinon vers le début, tant que la somme des `token_count` des chunks tient ; un chunk seul plus grand que le budget est rendu seul ; `truncated=True` ; la question est en tête et l'en-tête contextuel de chaque chunk est retiré quand il est reconnu (`contextual_header` du `ChunkPlanner`) |
+| `ChunkHit`, `PublishedUnit`, `UnitChunk` (`domain/value_objects/`) | chunk trouvé (identifiants + score) ; unité publiée relue en SQL avec ses chunks dans l'ordre de lecture et sa citation (chemin et pages de l'unité) ; `PublishedUnit.blocks_token_count` = taille des blocs seuls (colonne `knowledge_units.token_count`) |
+| `assemble_passage(unit, hits, *, max_tokens, token_counter)` (`domain/services/passage_assembler.py`) | small-to-big : unité complète (`Question : …` puis blocs) si `blocks_token_count` + tokens de la ligne `Question : …` (comptés par `token_counter`, en production le tokenizer du profil, déjà chargé par l'encodage de la requête) `≤ max_passage_tokens` ; sinon fenêtre contiguë autour du meilleur chunk, étendue vers un autre chunk trouvé, sinon vers la suite, sinon vers le début, tant que la somme des `token_count` des chunks tient ; un chunk seul plus grand que le budget est rendu seul ; `truncated=True` ; la question est en tête et l'en-tête contextuel de chaque chunk est retiré, entier ou tronqué par le `ChunkPlanner` (`strip_contextual_header` : préfixe de l'en-tête suivi de ` …`, ou `…` seul) ; un en-tête non reconnu laisse le texte du chunk entier |
 
 Ports : `ChunkSearcher` (recherche groupée, `visible=true` toujours appliqué par l'implémentation), `ActiveIndexReader` (sans verrou), `PublishedUnitReader` (le contrôle SQL final).
 
-**Use case** `use_cases/search_knowledge/` : `SearchKnowledge` (texte non blanc, `limit ≥ 1`, filtres validés à la construction), `SearchKnowledgeHandler`, `SearchKnowledgeResult` / `FoundPassage` (types du domaine ; le cas d'usage n'importe jamais `contracts/`), `NoActiveSearchIndexError`, `SearchProfileMismatchError`. Règles (précisions S5 de la conception) :
+**Use case** `use_cases/search_knowledge/` : `SearchKnowledge` (texte non blanc d'au plus 2 000 caractères, `1 ≤ limit ≤ 50`, filtres validés à la construction ; bornes `MAX_SEARCH_TEXT_LENGTH` et `MAX_SEARCH_LIMIT`, reprises par le schéma REST), `SearchKnowledgeHandler`, `SearchKnowledgeResult` / `FoundPassage` (types du domaine ; le cas d'usage n'importe jamais `contracts/`), `NoActiveSearchIndexError`, `SearchProfileMismatchError`. Règles (précisions S5 de la conception) :
 
 - première passe : `unit_limit = limit × f` ; complément tant que des unités ont été écartées, qu'il manque des passages et qu'il reste des passes : `unit_limit = manquantes × f`, en excluant les unités écartées **et** déjà retenues ; arrêt dès qu'une passe rend moins d'unités que demandé ;
 - `complete = false` si et seulement si des unités ont été écartées **et** qu'il reste moins de `limit` passages : un corpus simplement petit, sans rejet, est complet ;
@@ -294,23 +294,23 @@ Ports : `ChunkSearcher` (recherche groupée, `visible=true` toujours appliqué p
 
 **Adapters** :
 
-- `QdrantVectorIndex.search` : `query_points_groups(group_by="unit_id", limit=unit_limit, group_size=3)`, filtre `search_filter` (`visible=true`, un `MatchValue` par sujet, `MatchAny` pour types et documents, `must_not` `MatchAny` sur `unit_id` exclus) ; payload lu : `chunk_id`, `unit_id`.
-- `SqlAlchemyActiveIndexReader`, `SqlAlchemyPublishedUnitReader` (`adapters/gateway/persistence/`) : session courte par appel ; le contrôle SQL fait **deux requêtes** quel que soit le nombre d'unités (unités publiées par clé primaire avec jointures version et document, puis leurs chunks par l'index unique `(unit_id, ordinal_in_unit)`) ; la question est comptée par `ApproximateTokenCounter` (majorant du tokenizer XLM-R, sans modèle : +3 à +16 tokens par question sur le jeu de référence, médiane +10).
+- `QdrantVectorIndex.search` : `query_points_groups(group_by="unit_id", limit=unit_limit, group_size=CHUNKS_PER_UNIT)` (3 : au plus trois chunks trouvés par unité, constante non mesurée, sans effet sur le jeu S5 où chaque unité tient en un chunk), filtre `search_filter` (`visible=true`, un `MatchValue` par sujet, `MatchAny` pour types et documents, `must_not` `MatchAny` sur `unit_id` exclus) ; payload lu : `chunk_id`, `unit_id`.
+- `SqlAlchemyActiveIndexReader`, `SqlAlchemyPublishedUnitReader` (`adapters/gateway/persistence/`) : session courte par appel ; le contrôle SQL fait **deux requêtes** quel que soit le nombre d'unités (unités publiées par clé primaire avec jointures version et document, puis leurs chunks par l'index unique `(unit_id, ordinal_in_unit)`) ; il ne compte rien : la question est comptée par le domaine (`assemble_passage`). Revue S5 : la question était comptée ici par `ApproximateTokenCounter` (majorant, +3 à +16 tokens par question, médiane +10), règle déplacée dans le domaine et testée.
 - `KnowledgeSearchAdapter` (`adapters/controller/contracts/`) : traduit le contrat vers le cas d'usage et retour, et les deux refus en `KnowledgeSearchUnavailableError`.
 - REST `adapters/controller/rest/search_router.py` + `search_schemas.py` : `add_search_routes(router, *, knowledge_search)` reçoit une **fabrique** de `KnowledgeSearch`.
 
-**REST** — `POST /api/v1/knowledge-base/search`, corps `{"text", "limit" (1 à 50, défaut 5), "language", "topics", "kinds", "document_ids"}` (champ inconnu refusé) :
+**REST** — `POST /api/v1/knowledge-base/search`, corps `{"text" (1 à 2 000 caractères, au moins un non blanc), "limit" (1 à 50, défaut 5), "language", "topics", "kinds", "document_ids"}` (champ inconnu refusé) :
 
 | Code | Cas |
 |---|---|
 | 200 | `{"index_id", "complete", "passages": [{"unit_id", "unit_type", "question", "text", "truncated", "matched_chunk_ids", "score", "citation": {...}}]}` ; liste vide si rien ne correspond |
-| 422 | corps invalide (texte blanc, `limit` hors bornes, UUID illisible, `kind` inconnu, champ inconnu) |
+| 422 | corps invalide (texte blanc ou trop long, `limit` hors bornes, UUID illisible, `kind` inconnu, champ inconnu) |
 | 503 | `{"code": "NO_ACTIVE_SEARCH_INDEX" \| "SEARCH_PROFILE_MISMATCH", "message"}` |
 | 500 | PostgreSQL ou Qdrant injoignable |
 
-**Modèle dans l'API** : `register(app, resources, settings)` crée **un** `SentenceTransformersEmbedder` paresseux par application, chargé à la première recherche dans un thread (jamais au démarrage : `/health/ready` n'en dépend pas) ; la recherche est reconstruite à chaque requête sur ce même embedder. Volume `models_cache` monté dans `api` depuis S4.
+**Modèle dans l'API** : `KnowledgeBaseResources` porte **un** `SentenceTransformersEmbedder` paresseux (`resources.embedder`, champ hors constructeur, cache `settings.models_cache_dir`), créé avec les ressources dans le `lifespan`, chargé à la première recherche dans un thread (jamais au démarrage : `/health/ready` n'en dépend pas). La route montée par `register` et la fabrique publique `build_knowledge_search(resources)` le reçoivent toutes deux : un consommateur composé par `runtime` sur les mêmes ressources ne charge pas le modèle une seconde fois (~1,1 Gio ; revue S5, I1). La recherche est reconstruite à chaque requête sur ce même embedder. Le tokenizer du profil compte aussi la question d'un passage (`embedder.token_counter`), sur la boucle asyncio, après l'encodage de la requête : un comptage concurrent d'un encodage dans un autre thread n'a produit ni erreur ni compte faux en 15 s d'essai sur un tokenizer rapide synthétique (`transformers` 5.23, `tokenizers` 0.23) ; non mesuré sur le tokenizer XLM-R réel. Volume `models_cache` monté dans `api` depuis S4.
 
-**Réglages** (O12, [knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)) : `KB_SEARCH_OVERSAMPLING_FACTOR` (2), `KB_SEARCH_COMPLEMENT_PASSES` (1), `KB_MAX_PASSAGE_TOKENS` (1024, au moins un chunk entier de 508).
+**Réglages** (O12, [knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)) : `KB_SEARCH_OVERSAMPLING_FACTOR` (2), `KB_SEARCH_COMPLEMENT_PASSES` (1), `KB_MAX_PASSAGE_TOKENS` (1024 ; refusé au démarrage sous `DEFAULT_CHUNKING_POLICY.max_tokens` = 508, un chunk entier de la politique de production).
 
 **Évaluation** (marqueur `retrieval`, `tests/integration/knowledge_base/test_retrieval_evaluation.py`) : 42 requêtes FR/EN sur 10 documents (`tests/fixtures/knowledge_base/retrieval/`), pipeline de production (Docling, tokenizer réel, vrai E5). Le rapport JSON est écrit dans `KB_RETRIEVAL_REPORT_DIR` (défaut `backend/.cache/retrieval/retrieval_report.json`) ; les seuils de non-régression sont dans `retrieval_thresholds.json` (mesure moins deux requêtes du dénominateur, une pour l'inter-langues).
 
@@ -319,7 +319,7 @@ Ports : `ChunkSearcher` (recherche groupée, `visible=true` toujours appliqué p
 | Mesure | Valeur |
 |---|---|
 | Recall@1 / Recall@5 / MRR (sans filtre, 10 résultats) | 0,810 / 0,881 (37/42) / 0,853 |
-| Intégrité d'unité (unité attendue dans les 5 premiers) | 1,000 (37/37) |
+| Intégrité d'unité (unité attendue dans les 5 premiers) | 1,000 (37/37), **non exercée** : aucune unité multi-chunks ni troncature dans le jeu ; à rendre significative en S6 |
 | Recall@5 inter-langues / même langue | 0,750 (9/12) / 0,933 |
 | Recall@5 avec filtres / sans filtre, mêmes requêtes | 0,975 (39/40) / 0,875 |
 | Reproductibilité | deux exécutions : métriques et rangs identiques |
@@ -343,6 +343,8 @@ Simulation de rejets (O12) : 3 des 10 documents passés `WITHDRAWN` en SQL, leur
 | 2 / 2 | 0,917 | 0,833 | 0 % | 19,6 ms |
 | 3 / 0, 3 / 1, 3 / 2 | 0,917 | 0,833 | 0 % | 19,7 à 20,2 ms |
 
+Limites du jeu, à lire avec ces chiffres (revue S5, M1) : 12 documents indexés, dont 10 visés par une requête et 2 distracteurs (Kubernetes, Redis) ; thèmes largement disjoints : hors des cinq documents Python (FastAPI, notes EN, asyncio, révision, pytest), un document par sujet, donc pas de négatif proche (deux documents qui répondent presque à la même question) ; 40 requêtes sur 42 ont des filtres, si bien que la mesure « avec filtres » couvre presque tout le jeu ; les 12 requêtes inter-langues sont pour la plupart des traductions ou reformulations de requêtes de même langue (x01/en01, x05/en08, y01/fr10, y02/fr12) ; aucune requête n'interroge un identifiant de code exact. Négatifs proches et requêtes à identifiants de code : S6/S9 ([feuille de route](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md)).
+
 La latence de Qdrant ne dépend pas du facteur sur ce corpus (médiane 3,2 / 2,8 / 2,8 / 2,8 ms pour f = 1, 2, 4, 8). Concurrence : 320 encodages de requêtes lancés par lots de 64 en parallèle sur un même modèle (hôte) : aucune erreur, pas de verrou ajouté.
 
 ## Surface publique
@@ -351,9 +353,9 @@ La latence de Qdrant ne dépend pas du facteur sur ce corpus (médiane 3,2 / 2,8
 
 | Nom | Rôle |
 |---|---|
-| `register(app, resources, settings=None)` | monte les routes d'import et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; `settings` donne le cache du modèle de la recherche, chargé à la première recherche (S5) |
-| `KnowledgeBaseResources(session_factory, settings, qdrant_client)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application, client Qdrant du processus (S5) |
-| `build_knowledge_search(session_factory, qdrant_client, settings=None, *, embedder=None)` | implémentation du contrat public `knowledge_base.contracts.providers.KnowledgeSearch` (S5) ; ne se connecte à rien ; sans `embedder`, modèle chargé au premier usage |
+| `register(app, resources)` | monte les routes d'import et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; réglages et modèle de la recherche viennent des ressources (une seule source depuis la revue S5) |
+| `KnowledgeBaseResources(session_factory, settings, qdrant_client)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application, client Qdrant du processus (S5) ; portent aussi l'embedder paresseux de la recherche (`embedder`, hors constructeur, interne au contexte) |
+| `build_knowledge_search(resources)` | implémentation du contrat public `knowledge_base.contracts.providers.KnowledgeSearch` (S5) sur l'embedder des ressources, partagé avec la route ; ne se connecte à rien, ne charge pas le modèle. Variante interne pour les tests : `adapters/controller/composition.compose_knowledge_search(session_factory, qdrant_client, settings, *, embedder, token_counter)` |
 | `register_worker(celery_app, resources, settings=None)` | déclare les tâches `knowledge_base.work.{execute,dispatch,recover}`, leurs routes et le `beat_schedule`, dans le processus maître ; `resources` est un fournisseur appelé seulement à l'exécution d'une tâche |
 | `KnowledgeBaseWorkerResources(session_factory, loop, handlers=())` | ressources d'un processus enfant : fabrique de sessions, boucle asyncio persistante, handlers (registre construit à la création) |
 | `KnowledgeBaseSettings` | réglages `KB_*` (pydantic-settings) |

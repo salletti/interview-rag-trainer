@@ -72,7 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resources: knowledge_base.KnowledgeBaseResources = app.state.knowledge_base
         return resources
 
-    knowledge_base.register(
-        app, knowledge_base_resources, app.state.knowledge_base_settings
-    )
+    # Réglages KB_* : une seule source, les ressources construites dans le
+    # ``lifespan`` à partir de ``app.state.knowledge_base_settings``.
+    knowledge_base.register(app, knowledge_base_resources)
     return app

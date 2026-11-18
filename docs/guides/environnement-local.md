@@ -74,7 +74,7 @@ docker compose exec worker_ingestion celery -A runtime.worker:celery_app inspect
                                          # knowledge_base.ingestion : consommée par worker_ingestion seul
 ```
 
-`/health/ready` répond `ready` (200), `degraded` (200, Qdrant ou RabbitMQ indisponible) ou `not_ready` (503, PostgreSQL indisponible). Voir ADR 0006.
+`/health/ready` répond `ready` (200), `degraded` (200, Qdrant ou RabbitMQ indisponible) ou `not_ready` (503, PostgreSQL indisponible). Voir ADR 0006. Qdrant reste non bloquant depuis S5 : sans lui, l'import de documents fonctionne, seule la recherche échoue (500).
 
 ### Importer un document (Knowledge Base, S2)
 

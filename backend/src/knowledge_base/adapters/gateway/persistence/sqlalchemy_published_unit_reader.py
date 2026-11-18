@@ -12,11 +12,9 @@ Deux requêtes dans une session courte, quel que soit le nombre d'unités :
 La citation est celle de l'unité : titre courant du document, numéro et nom
 de fichier de la version, chemin de sections et pages de l'unité.
 
-``token_count`` d'une ``PublishedUnit`` : celui des blocs (calculé à
-l'extraction avec le tokenizer de la politique) plus la ligne de question
-comptée par ``question_counter``. En production, ``ApproximateTokenCounter``,
-qui majore le tokenizer XLM-R sans charger le modèle : quelques tokens d'excès
-sur une question, sans conséquence sur un budget de passage.
+``blocks_token_count`` : la colonne ``knowledge_units.token_count`` (blocs
+seuls, comptés à l'extraction) ; la question est comptée par le domaine
+(``passage_assembler``), jamais ici.
 """
 
 from __future__ import annotations
@@ -28,8 +26,6 @@ from uuid import UUID
 from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from knowledge_base.domain.providers.token_counter import TokenCounter
-from knowledge_base.domain.services.chunk_planner import QUESTION_LABEL
 from knowledge_base.domain.value_objects.citation import Citation
 from knowledge_base.domain.value_objects.knowledge_unit import UnitType
 from knowledge_base.domain.value_objects.published_unit import (
@@ -51,13 +47,8 @@ _ch = document_chunks.c
 
 
 class SqlAlchemyPublishedUnitReader:
-    def __init__(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        question_counter: TokenCounter,
-    ) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
-        self._question_counter = question_counter
 
     async def read_published(
         self, unit_ids: Sequence[UUID]
@@ -117,33 +108,28 @@ class SqlAlchemyPublishedUnitReader:
                 )
             )
         return {
-            row.id: self._published_unit(row, tuple(chunks.get(row.id, ())))
-            for row in units
+            row.id: _published_unit(row, tuple(chunks.get(row.id, ()))) for row in units
         }
 
-    def _published_unit(
-        self, row: Row[*tuple[Any, ...]], chunks: tuple[UnitChunk, ...]
-    ) -> PublishedUnit:
-        question_tokens = (
-            0
-            if row.question_text is None
-            else self._question_counter.count(f"{QUESTION_LABEL}{row.question_text}")
-        )
-        return PublishedUnit(
-            unit_id=row.id,
-            unit_type=UnitType(row.unit_type),
-            question_text=row.question_text,
-            text=row.text,
-            token_count=row.token_count + question_tokens,
-            chunks=chunks,
-            citation=Citation(
-                document_id=row.document_id,
-                document_title=row.title,
-                version_id=row.version_id,
-                version_number=row.number,
-                section_path=SectionPath(tuple(row.section_path)),
-                page_start=row.page_start,
-                page_end=row.page_end,
-                source_filename=row.filename,
-            ),
-        )
+
+def _published_unit(
+    row: Row[*tuple[Any, ...]], chunks: tuple[UnitChunk, ...]
+) -> PublishedUnit:
+    return PublishedUnit(
+        unit_id=row.id,
+        unit_type=UnitType(row.unit_type),
+        question_text=row.question_text,
+        text=row.text,
+        blocks_token_count=row.token_count,
+        chunks=chunks,
+        citation=Citation(
+            document_id=row.document_id,
+            document_title=row.title,
+            version_id=row.version_id,
+            version_number=row.number,
+            section_path=SectionPath(tuple(row.section_path)),
+            page_start=row.page_start,
+            page_end=row.page_end,
+            source_filename=row.filename,
+        ),
+    )

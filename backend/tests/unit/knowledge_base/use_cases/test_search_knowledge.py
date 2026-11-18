@@ -27,11 +27,14 @@ from knowledge_base.use_cases.search_knowledge.errors import (
     NoActiveSearchIndexError,
 )
 from knowledge_base.use_cases.search_knowledge.search_knowledge_command import (
+    MAX_SEARCH_LIMIT,
+    MAX_SEARCH_TEXT_LENGTH,
     SearchKnowledge,
 )
 from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
+from tests.unit.knowledge_base.domain.services.support import COUNTER
 from tests.unit.knowledge_base.use_cases.search_fakes import (
     INDEX_ID,
     QUERY_VECTOR,
@@ -62,6 +65,26 @@ def test_a_blank_query_is_refused(text: str) -> None:
 def test_a_limit_below_one_is_refused(limit: int) -> None:
     with pytest.raises(ValueError):
         SearchKnowledge(text="depends", limit=limit)
+
+
+def test_a_limit_above_the_cap_is_refused() -> None:
+    with pytest.raises(ValueError, match="entre 1 et 50"):
+        SearchKnowledge(text="depends", limit=MAX_SEARCH_LIMIT + 1)
+
+
+def test_the_limit_cap_is_fifty_and_allowed() -> None:
+    assert MAX_SEARCH_LIMIT == 50
+    assert SearchKnowledge(text="depends", limit=MAX_SEARCH_LIMIT).limit == 50
+
+
+def test_a_text_longer_than_the_cap_is_refused() -> None:
+    with pytest.raises(ValueError, match="au plus 2000"):
+        SearchKnowledge(text="x" * (MAX_SEARCH_TEXT_LENGTH + 1))
+
+
+def test_a_text_at_the_cap_is_allowed() -> None:
+    assert MAX_SEARCH_TEXT_LENGTH == 2_000
+    assert len(SearchKnowledge(text="x" * MAX_SEARCH_TEXT_LENGTH).text) == 2_000
 
 
 def test_the_default_limit_is_five() -> None:
@@ -136,6 +159,7 @@ async def test_the_default_oversampling_factor_is_two() -> None:
         chunk_searcher=rig.searcher,
         published_units=rig.units,
         active_indexes=FakeActiveIndexes(active_index()),
+        token_counter=COUNTER,
         max_passage_tokens=1_000,
     )
 
@@ -152,6 +176,7 @@ async def test_without_a_complement_default_one_pass_is_made() -> None:
         chunk_searcher=rig.searcher,
         published_units=rig.units,
         active_indexes=FakeActiveIndexes(active_index()),
+        token_counter=COUNTER,
         max_passage_tokens=1_000,
     )
 

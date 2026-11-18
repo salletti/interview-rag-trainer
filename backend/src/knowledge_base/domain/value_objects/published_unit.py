@@ -31,9 +31,9 @@ class PublishedUnit:
     question_text: str | None
     # Blocs rendus de l'unité, sans la question.
     text: str
-    # Taille du passage complet (question comprise) : c'est elle qui est
-    # comparée au budget ``max_passage_tokens``.
-    token_count: int
+    # Taille des blocs seuls (``knowledge_units.token_count``, comptée à
+    # l'extraction) ; la question est ajoutée par ``passage_assembler``.
+    blocks_token_count: int
     # Dans l'ordre de lecture (``ordinal_in_unit``).
     chunks: tuple[UnitChunk, ...]
     # Citation de l'unité : chemin de sections et pages de l'unité entière.

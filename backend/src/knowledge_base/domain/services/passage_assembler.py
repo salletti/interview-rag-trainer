@@ -1,8 +1,11 @@
 """Reconstruction small-to-big d'un passage (knowledge-base.md §12 étape 6 ;
 ADR 0009 §6).
 
-- Unité complète si ``unit.token_count`` (question comprise) tient dans le
-  budget : question (``Question : …``) puis blocs, ``truncated=False``.
+- Unité complète si elle tient dans le budget, question comprise : taille des
+  blocs (``blocks_token_count``, comptée à l'extraction) plus la ligne
+  ``Question : …`` comptée par ``token_counter`` (en production, le tokenizer
+  du profil, déjà chargé par l'encodage de la requête). Texte : question puis
+  blocs, ``truncated=False``.
 - Sinon, **fenêtre** de chunks contigus, ``truncated=True`` : elle part du
   meilleur chunk trouvé et s'étend d'un voisin à la fois tant que la somme des
   ``token_count`` des chunks tient dans le budget. Voisin choisi : un chunk
@@ -10,10 +13,10 @@ ADR 0009 §6).
   hors fenêtre, sinon le suivant (la suite de la réponse), sinon le précédent.
   Un chunk seul plus grand que le budget est rendu seul.
 - La fenêtre garde la question racine en tête, puis le contenu de chaque
-  chunk dans l'ordre de lecture, sans son en-tête contextuel quand celui-ci est
-  reconnu (il répéterait titre, chemin et question à chaque chunk). Le budget
-  est compté sur les ``token_count`` des chunks, en-têtes compris : le texte
-  rendu est donc plus court que le budget compté.
+  chunk dans l'ordre de lecture, sans son en-tête contextuel, entier ou tronqué
+  par le ``ChunkPlanner`` (il répéterait titre, chemin et question à chaque
+  chunk). Le budget est compté sur les ``token_count`` des chunks, en-têtes
+  compris : le texte rendu est donc plus court que le budget compté.
 - ``matched_chunk_ids`` : les chunks trouvés présents dans le passage, le
   meilleur d'abord.
 """
@@ -24,16 +27,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.services.chunk_planner import (
     HEADER_SEPARATOR,
     QUESTION_LABEL,
     contextual_header,
+    strip_contextual_header,
 )
 from knowledge_base.domain.value_objects.chunk_hit import ChunkHit
-from knowledge_base.domain.value_objects.published_unit import (
-    PublishedUnit,
-    UnitChunk,
-)
+from knowledge_base.domain.value_objects.published_unit import PublishedUnit
 
 
 @dataclass(frozen=True)
@@ -44,13 +46,17 @@ class AssembledPassage:
 
 
 def assemble_passage(
-    unit: PublishedUnit, hits: Sequence[ChunkHit], max_tokens: int
+    unit: PublishedUnit,
+    hits: Sequence[ChunkHit],
+    *,
+    max_tokens: int,
+    token_counter: TokenCounter,
 ) -> AssembledPassage:
     """``hits`` : les chunks trouvés de ``unit`` (au moins un)."""
     if not hits:
         raise ValueError(f"aucun chunk trouvé pour l'unité {unit.unit_id}")
     ranked = sorted(hits, key=lambda hit: hit.score, reverse=True)
-    if unit.token_count <= max_tokens:
+    if whole_unit_token_count(unit, token_counter) <= max_tokens:
         return AssembledPassage(
             text=_with_question(unit, unit.text),
             truncated=False,
@@ -62,7 +68,9 @@ def assemble_passage(
     header = contextual_header(
         unit.citation.document_title, unit.citation.section_path, unit.question_text
     )
-    body = HEADER_SEPARATOR.join(_content(chunk, header) for chunk in kept)
+    body = HEADER_SEPARATOR.join(
+        strip_contextual_header(chunk.text, header) for chunk in kept
+    )
     return AssembledPassage(
         text=_with_question(unit, body),
         truncated=True,
@@ -70,19 +78,18 @@ def assemble_passage(
     )
 
 
+def whole_unit_token_count(unit: PublishedUnit, token_counter: TokenCounter) -> int:
+    """Taille du passage complet : blocs, plus la ligne de question."""
+    if unit.question_text is None:
+        return unit.blocks_token_count
+    question_line = f"{QUESTION_LABEL}{unit.question_text}"
+    return unit.blocks_token_count + token_counter.count(question_line)
+
+
 def _with_question(unit: PublishedUnit, body: str) -> str:
     if unit.question_text is None:
         return body
     return f"{QUESTION_LABEL}{unit.question_text}{HEADER_SEPARATOR}{body}"
-
-
-def _content(chunk: UnitChunk, header: str) -> str:
-    """Contenu du chunk sans son en-tête ; texte entier si l'en-tête n'est pas
-    reconnu (en-tête tronqué par le ``ChunkPlanner``)."""
-    prefix = f"{header}{HEADER_SEPARATOR}"
-    if chunk.text.startswith(prefix):
-        return chunk.text[len(prefix) :]
-    return chunk.text
 
 
 def _window(
