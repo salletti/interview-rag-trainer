@@ -112,6 +112,23 @@ curl -s -X POST localhost:6333/collections/kb_index_<index_id>/points/count \
   -d '{"exact": true, "filter": {"must": [{"key": "visible", "match": {"value": true}}]}}'
 ```
 
+### Rechercher (Knowledge Base, S5)
+
+Une fois la version `PUBLISHED` et `sync_visibility` passé (quelques secondes après l'import) :
+
+```bash
+curl -s -X POST localhost:8010/api/v1/knowledge-base/search \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Comment rejouer un test avec plusieurs jeux de valeurs ?", "limit": 3, "language": "fr", "topics": ["pytest"]}'
+# 200 {"index_id": "...", "complete": true, "passages": [{"unit_id": "...", "unit_type": "QA",
+#      "question": "...", "text": "Question : ...\n\n...", "truncated": false, "matched_chunk_ids": ["..."],
+#      "score": 0.87, "citation": {"document_id": "...", "document_title": "...", "version_id": "...",
+#      "version_number": 1, "section_path": ["..."], "page_start": null, "page_end": null,
+#      "source_filename": "qa_pytest_fr.md"}}]}
+```
+
+Seul `text` est obligatoire ; `limit` de 1 à 50 (5 par défaut) ; filtres facultatifs `language`, `topics` (tous requis), `kinds` et `document_ids` (l'un d'eux). 422 si le corps est invalide, 503 `NO_ACTIVE_SEARCH_INDEX` si `kb_provision` n'a pas tourné. La **première** recherche charge le modèle dans l'API (~4 s, RSS du processus serveur ~1,3 Gio ensuite) ; les suivantes prennent ~70 ms (médiane mesurée en local, HTTP compris). Variables : `KB_SEARCH_OVERSAMPLING_FACTOR` (2), `KB_SEARCH_COMPLEMENT_PASSES` (1), `KB_MAX_PASSAGE_TOKENS` (1024), voir `.env.example`.
+
 ## Qualité et tests
 
 ```bash
@@ -120,6 +137,8 @@ make frontend-lint frontend-test         # ESLint, Prettier, tsc, Vitest
 make ci                                  # tout ce qui précède
 make test-integration                    # stack compose.test.yaml éphémère + pytest -m integration
 ```
+
+L'évaluation de la recherche (marqueur `retrieval`, inclus dans `make test-integration`) écrit sa mesure dans `backend/.cache/retrieval/retrieval_report.json` (ou `KB_RETRIEVAL_REPORT_DIR`) et la compare aux seuils de `backend/tests/fixtures/knowledge_base/retrieval/retrieval_thresholds.json`.
 
 Les tests d'intégration incluent les tests marqués `model` (vrai `multilingual-e5-base`) : le Makefile pointe `SENTENCE_TRANSFORMERS_HOME` vers `backend/.cache/models` (ignoré par git), rempli au premier lancement (1,1 Go ; `HF_HUB_DISABLE_XET=1` si le téléchargement reste bloqué à 0 octet). Pour les exclure : `cd backend && uv run pytest -m "integration and not model"` avec l'environnement de `INTEGRATION_ENV`. Les tests d'intégration (re)construisent l'image, démarrent PostgreSQL (5441), Qdrant (6343), RabbitMQ (5682) et un worker, appliquent `alembic upgrade head`, puis détruisent la stack. `rabbitmq_test` monte `backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf` (`consumer_timeout` de 5 s, scénario 14 de S0 uniquement) et le Makefile exporte `KB_TEST_CONSUMER_TIMEOUT_SECONDS=5` ; sans cette variable, le scénario 14 est ignoré explicitement. Ce scénario dure environ 1 min 30 ; les scénarios 13 et 14 lancent un vrai worker prefork en sous-processus.
 

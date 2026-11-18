@@ -141,3 +141,12 @@ Faits de l'implémentation de S4, le corps de l'ADR est inchangé.
   La RAM du worker d'ingestion avoisine donc 1,7 Gio dès la première
   indexation ; l'API ne charge pas le modèle en S4 (recherche : S5). Le
   benchmark de S9 comparera ces chiffres à ceux des autres candidats.
+
+S5 (2026-11-18) : l'API charge le modèle du profil initial à la **première
+recherche** (pas au démarrage) ; RSS du processus serveur 146 → 1 267 Mio,
+premier appel 4,3 s, encodage d'une requête 63 ms médians dans le conteneur
+de dev (13 ms sur l'hôte macOS). Garde-fou en attendant S9 : la recherche
+refuse (`SEARCH_PROFILE_MISMATCH`) un index actif dont le profil diffère de
+celui de l'embedder de l'API, au lieu de comparer des vecteurs incompatibles.
+Le chargement « du modèle de l'index actif » (Conséquences) arrive avec la
+migration blue/green.

@@ -1,0 +1,14 @@
+{
+  "_AVERTISSEMENT": "Ne jamais abaisser un minimum pour faire passer une régression sans l'écrire dans la conception (ADR 0009/0010, conditions de réévaluation). Toute nouvelle mesure de référence (changement de profil, de politique de découpage, de parseur ou du jeu de référence) remplace ces seuils selon la même règle.",
+  "_regle": "minimum de non-régression = valeur mesurée moins une marge documentée (bruit de l'index approximatif et des mises à jour de dépendances), jamais la valeur mesurée de la machine du moment sans marge.",
+  "_statut": "MESURE_2026-11-18",
+  "_mesure": "Mesure de référence du 2026-11-18 (S5) : 42 requêtes, 10 documents, profil intfloat/multilingual-e5-base@d1287505, politique kb-chunking-v1+xlmr-d1287505, Docling Markdown, max_passage_tokens 1024, 10 résultats par requête. Valeurs : recall_at_1 0.810, recall_at_5 0.881 (37/42), mrr 0.853, unit_integrity 1.000 (37/37), cross_language_recall_at_5 0.750 (9/12), same_language_recall_at_5 0.933, recall_at_5_with_filters 0.975 (39/40) contre 0.875 sans filtre sur les mêmes requêtes. Deux exécutions identiques (encodage déterministe, collection de 49 points sous le seuil de recherche exacte de Qdrant).",
+  "_marge": "Deux requêtes du dénominateur de la métrique (une seule pour l'inter-langues, qui n'en compte que 12), arrondi vers le bas au centième : recall_at_5 0.881 - 2/42 = 0.83 ; mrr 0.853 - 0.05 = 0.80 ; unit_integrity 1.000 - 2/37 = 0.94 ; cross_language_recall_at_5 0.750 - 1/12 = 0.66 ; recall_at_5_with_filters 0.975 - 2/40 = 0.92. La marge couvre une mise à jour de torch, sentence-transformers ou Docling qui déplacerait une ou deux requêtes au rang limite ; au-delà, c'est une régression à expliquer.",
+  "metrics": {
+    "recall_at_5": {"minimum": 0.83},
+    "mrr": {"minimum": 0.80},
+    "unit_integrity": {"minimum": 0.94},
+    "cross_language_recall_at_5": {"minimum": 0.66},
+    "recall_at_5_with_filters": {"minimum": 0.92}
+  }
+}

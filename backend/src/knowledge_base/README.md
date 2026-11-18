@@ -2,7 +2,7 @@
 
 Bounded Context ([ADR 0007](../../../docs/decisions/0007-knowledge-base-bounded-context.md)) chargé des documents de connaissances, de leur ingestion (extraction, chunking, embeddings) et de la recherche sémantique publiée vers les autres contextes. Conception : [knowledge-base.md](../../../docs/conception/bounded-contexts/knowledge-base.md) ; feuille de route : [S0–S9](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md).
 
-## État : slices S0 à S4
+## État : slices S0 à S5
 
 ### S0 — infrastructure de traitement durable
 
@@ -232,9 +232,9 @@ Un échec d'indexation laisse la version `EXTRACTED` : ses chunks restent valide
 | Tokenizer | XLM-R livré avec le modèle, nommé `xlmr-d1287505` |
 | `DEFAULT_CHUNKING_POLICY` | `kb-chunking-v1`, tokenizer `xlmr-d1287505`, identité persistée **`kb-chunking-v1+xlmr-d1287505`**, `max_tokens` 508 (512 − 2 tokens spéciaux − 2 du préfixe) |
 
-Le compteur provisoire de S3 (`ApproximateTokenCounter`, identité `kb-chunking-v1+approx-xlmr-v1`) n'est plus utilisé en production ; il reste pour les tests de coût du `ChunkPlanner` sans modèle. Les lots extraits avec l'ancienne identité ne sont pas indexés (pas de backfill en S4).
+Le compteur provisoire de S3 (`ApproximateTokenCounter`, identité `kb-chunking-v1+approx-xlmr-v1`) ne découpe plus en production ; il reste pour les tests de coût du `ChunkPlanner` sans modèle et, depuis S5, pour compter la question d'un passage à la recherche (majorant, sans modèle). Les lots extraits avec l'ancienne identité ne sont pas indexés (pas de backfill en S4).
 
-**Modèle dans le worker** : `build_work_handlers(session_factory, qdrant_client, settings)` crée **un** `Embedder` paresseux par processus enfant ; l'extraction compte les tokens avec son tokenizer, l'indexation encode avec lui. Le processus maître ne le charge jamais ; l'API ne le charge pas en S4 (la recherche arrive en S5). Premier démarrage : téléchargement dans `KB_MODELS_CACHE_DIR` (volume `models_cache`, ~1,1 Go de poids), à la première tâche du worker d'ingestion.
+**Modèle dans le worker** : `build_work_handlers(session_factory, qdrant_client, settings)` crée **un** `Embedder` paresseux par processus enfant ; l'extraction compte les tokens avec son tokenizer, l'indexation encode avec lui. Le processus maître ne le charge jamais ; l'API ne le charge pas en S4 ; depuis S5, elle le charge à la première recherche (ci-dessus). Premier démarrage : téléchargement dans `KB_MODELS_CACHE_DIR` (volume `models_cache`, ~1,1 Go de poids), à la première tâche du worker d'ingestion.
 
 **Provisionnement** : `knowledge_base.provision_search_index(session_factory, qdrant_client)` (surface publique), lancé par `python -m runtime.provision`, service Compose `kb_provision` : après `migrate`, Qdrant sain ; l'API et les workers attendent sa fin. Choix S4 : une commande au démarrage de la stack plutôt qu'au `worker_process_init` (exécutée une fois, avant toute extraction, en échec visible si Qdrant ou PostgreSQL manquent ; jamais dans le chemin d'une tâche). Idempotente : relancée, elle ne crée rien. Si l'index actif a un autre profil ou une autre politique que la configuration, il reste actif et un avertissement est journalisé (migration blue/green : S9).
 
@@ -262,14 +262,98 @@ Tables (migrations `448949d0e134` et `c43c7e850745` (revue S4), schéma `knowled
 
 La même migration ajoute `UNIQUE (id, version_id, chunking_policy_version)` sur `knowledge_units` et la clé étrangère composite `document_chunks (unit_id, version_id, chunking_policy_version)` → ce `UNIQUE` (correction reportée de la revue S3 : un chunk ne peut référencer qu'une unité de son lot) ; la clé simple `unit_id` de S3 est conservée.
 
+### S5 — recherche sémantique, provenance et évaluation
+
+La query `SearchKnowledge` sert le contrat public `KnowledgeSearch` (aux autres contextes, par injection depuis `runtime`) et l'endpoint `POST /api/v1/knowledge-base/search`, qui passe par le même contrat ([knowledge-base.md §12, §14](../../../docs/conception/bounded-contexts/knowledge-base.md#12-stratégie-de-recherche-et-limites-de-recall), précisions S5 ; [ADR 0010 §5-6](../../../docs/decisions/0010-postgresql-source-of-truth-qdrant-derived-index.md)).
+
+```text
+index actif (SQL) ─► profil = celui de l'embedder ? ─► encodage « query: » (thread)
+  ─► Qdrant groupé par unit_id, visible=true + filtres, limit × f unités
+  ─► contrôle SQL : version PUBLISHED, document ACTIVE ─► complément si rejets
+  ─► small-to-big (unité complète ou fenêtre ≤ max_passage_tokens) ─► tri par meilleur score
+```
+
+**Contrat public** (`contracts/`, bibliothèque standard seulement) : `KnowledgeSearch.search(KnowledgeQuery) -> KnowledgeSearchResult` (`contracts/providers/knowledge_search.py`), DTO `KnowledgeQuery`, `KnowledgeSearchResult`, `RetrievedPassage`, `Citation` (`contracts/result/`), champs du §14. Erreurs rendues au consommateur : `ValueError` (requête invalide : texte blanc, `limit < 1`, type de document inconnu), `KnowledgeSearchUnavailableError(reason)` avec `UnavailabilityReason.NO_ACTIVE_SEARCH_INDEX` ou `SEARCH_PROFILE_MISMATCH`, erreurs PostgreSQL/Qdrant propagées (jamais un faux « rien trouvé »). Filtres : `topics` = **tous** requis, `kinds` et `document_ids` = **l'un** d'eux, `language` = langue du document.
+
+**Domaine** (Python pur) :
+
+| Élément | Rôle |
+|---|---|
+| `SearchFilters` (`domain/value_objects/search_filters.py`) | filtres de métadonnées ; refuse un `kind` inconnu |
+| `ChunkHit`, `PublishedUnit`, `UnitChunk` (`domain/value_objects/`) | chunk trouvé (identifiants + score) ; unité publiée relue en SQL avec ses chunks dans l'ordre de lecture et sa citation (chemin et pages de l'unité) ; `PublishedUnit.token_count` = passage complet, **question comprise** |
+| `assemble_passage` (`domain/services/passage_assembler.py`) | small-to-big : unité complète (`Question : …` puis blocs) si `token_count ≤ max_passage_tokens` ; sinon fenêtre contiguë autour du meilleur chunk, étendue vers un autre chunk trouvé, sinon vers la suite, sinon vers le début, tant que la somme des `token_count` des chunks tient ; un chunk seul plus grand que le budget est rendu seul ; `truncated=True` ; la question est en tête et l'en-tête contextuel de chaque chunk est retiré quand il est reconnu (`contextual_header` du `ChunkPlanner`) |
+
+Ports : `ChunkSearcher` (recherche groupée, `visible=true` toujours appliqué par l'implémentation), `ActiveIndexReader` (sans verrou), `PublishedUnitReader` (le contrôle SQL final).
+
+**Use case** `use_cases/search_knowledge/` : `SearchKnowledge` (texte non blanc, `limit ≥ 1`, filtres validés à la construction), `SearchKnowledgeHandler`, `SearchKnowledgeResult` / `FoundPassage` (types du domaine ; le cas d'usage n'importe jamais `contracts/`), `NoActiveSearchIndexError`, `SearchProfileMismatchError`. Règles (précisions S5 de la conception) :
+
+- première passe : `unit_limit = limit × f` ; complément tant que des unités ont été écartées, qu'il manque des passages et qu'il reste des passes : `unit_limit = manquantes × f`, en excluant les unités écartées **et** déjà retenues ; arrêt dès qu'une passe rend moins d'unités que demandé ;
+- `complete = false` si et seulement si des unités ont été écartées **et** qu'il reste moins de `limit` passages : un corpus simplement petit, sans rejet, est complet ;
+- l'index actif doit avoir le profil de l'embedder (V1 : un seul embedder), sinon `SearchProfileMismatchError` avant tout encodage ;
+- aucune session SQL n'est tenue pendant l'encodage : chaque lecture ouvre et ferme la sienne.
+
+**Adapters** :
+
+- `QdrantVectorIndex.search` : `query_points_groups(group_by="unit_id", limit=unit_limit, group_size=3)`, filtre `search_filter` (`visible=true`, un `MatchValue` par sujet, `MatchAny` pour types et documents, `must_not` `MatchAny` sur `unit_id` exclus) ; payload lu : `chunk_id`, `unit_id`.
+- `SqlAlchemyActiveIndexReader`, `SqlAlchemyPublishedUnitReader` (`adapters/gateway/persistence/`) : session courte par appel ; le contrôle SQL fait **deux requêtes** quel que soit le nombre d'unités (unités publiées par clé primaire avec jointures version et document, puis leurs chunks par l'index unique `(unit_id, ordinal_in_unit)`) ; la question est comptée par `ApproximateTokenCounter` (majorant du tokenizer XLM-R, sans modèle : +3 à +16 tokens par question sur le jeu de référence, médiane +10).
+- `KnowledgeSearchAdapter` (`adapters/controller/contracts/`) : traduit le contrat vers le cas d'usage et retour, et les deux refus en `KnowledgeSearchUnavailableError`.
+- REST `adapters/controller/rest/search_router.py` + `search_schemas.py` : `add_search_routes(router, *, knowledge_search)` reçoit une **fabrique** de `KnowledgeSearch`.
+
+**REST** — `POST /api/v1/knowledge-base/search`, corps `{"text", "limit" (1 à 50, défaut 5), "language", "topics", "kinds", "document_ids"}` (champ inconnu refusé) :
+
+| Code | Cas |
+|---|---|
+| 200 | `{"index_id", "complete", "passages": [{"unit_id", "unit_type", "question", "text", "truncated", "matched_chunk_ids", "score", "citation": {...}}]}` ; liste vide si rien ne correspond |
+| 422 | corps invalide (texte blanc, `limit` hors bornes, UUID illisible, `kind` inconnu, champ inconnu) |
+| 503 | `{"code": "NO_ACTIVE_SEARCH_INDEX" \| "SEARCH_PROFILE_MISMATCH", "message"}` |
+| 500 | PostgreSQL ou Qdrant injoignable |
+
+**Modèle dans l'API** : `register(app, resources, settings)` crée **un** `SentenceTransformersEmbedder` paresseux par application, chargé à la première recherche dans un thread (jamais au démarrage : `/health/ready` n'en dépend pas) ; la recherche est reconstruite à chaque requête sur ce même embedder. Volume `models_cache` monté dans `api` depuis S4.
+
+**Réglages** (O12, [knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)) : `KB_SEARCH_OVERSAMPLING_FACTOR` (2), `KB_SEARCH_COMPLEMENT_PASSES` (1), `KB_MAX_PASSAGE_TOKENS` (1024, au moins un chunk entier de 508).
+
+**Évaluation** (marqueur `retrieval`, `tests/integration/knowledge_base/test_retrieval_evaluation.py`) : 42 requêtes FR/EN sur 10 documents (`tests/fixtures/knowledge_base/retrieval/`), pipeline de production (Docling, tokenizer réel, vrai E5). Le rapport JSON est écrit dans `KB_RETRIEVAL_REPORT_DIR` (défaut `backend/.cache/retrieval/retrieval_report.json`) ; les seuils de non-régression sont dans `retrieval_thresholds.json` (mesure moins deux requêtes du dénominateur, une pour l'inter-langues).
+
+**Mesures** (2026-11-18) :
+
+| Mesure | Valeur |
+|---|---|
+| Recall@1 / Recall@5 / MRR (sans filtre, 10 résultats) | 0,810 / 0,881 (37/42) / 0,853 |
+| Intégrité d'unité (unité attendue dans les 5 premiers) | 1,000 (37/37) |
+| Recall@5 inter-langues / même langue | 0,750 (9/12) / 0,933 |
+| Recall@5 avec filtres / sans filtre, mêmes requêtes | 0,975 (39/40) / 0,875 |
+| Reproductibilité | deux exécutions : métriques et rangs identiques |
+| Latence par composant, hôte macOS arm64 (médiane / p95, 126 recherches) | encodage 12,9 / 15,1 ms ; Qdrant 3,7 / 4,8 ms ; contrôle SQL 2,2 / 2,9 ms ; recherche complète 20,1 / 24,2 ms |
+| Latence par composant, conteneur `api` de dev (médiane / p95, 50 recherches) | index actif 0,6 / 0,7 ms ; encodage 62,8 / 77,3 ms ; Qdrant 2,2 / 5,1 ms ; contrôle SQL 1,4 / 2,0 ms |
+| Latence HTTP de bout en bout, `curl` depuis l'hôte vers la stack de dev (50 requêtes, modèle chargé) | médiane 69,2 ms, p95 105,3 ms |
+| Premier appel (chargement du modèle compris) | 4,30 s (chargement journalisé : 1,9 s) |
+| RSS du processus serveur de l'API | 146 Mio avant la première recherche → 1 267 Mio après, inchangé après 50 recherches |
+| Taux de troncature (5 passages × 42 requêtes) | 0/210 pour des budgets de 508, 768, 1 024 et 1 536 : les 49 unités du jeu tiennent chacune dans un chunk (médiane 92 tokens, p90 178, max 427, question comprise) |
+| Fenêtre de synchronisation (dev, un import) | item `sync_visibility` terminé 1,5 s après sa création ; le document était trouvé au premier sondage après le premier appel |
+
+Simulation de rejets (O12) : 3 des 10 documents passés `WITHDRAWN` en SQL, leurs points encore visibles ; 24 requêtes dont le document attendu reste actif, `limit` 5 :
+
+| f / passes | Recall@5 | MRR | résultats `complete=false` | latence médiane (hôte) |
+|---|---|---|---|---|
+| 1 / 0 | 0,875 | 0,812 | 66,7 % | 19,7 ms |
+| 1 / 1 | 0,917 | 0,833 | 41,7 % | 24,6 ms |
+| 1 / 2 | 0,917 | 0,833 | 29,2 % | 29,4 ms |
+| 2 / 0 | 0,917 | 0,833 | 25,0 % | 21,6 ms |
+| **2 / 1 (défaut)** | 0,917 | 0,833 | 12,5 % | 19,5 ms |
+| 2 / 2 | 0,917 | 0,833 | 0 % | 19,6 ms |
+| 3 / 0, 3 / 1, 3 / 2 | 0,917 | 0,833 | 0 % | 19,7 à 20,2 ms |
+
+La latence de Qdrant ne dépend pas du facteur sur ce corpus (médiane 3,2 / 2,8 / 2,8 / 2,8 ms pour f = 1, 2, 4, 8). Concurrence : 320 encodages de requêtes lancés par lots de 64 en parallèle sur un même modèle (hôte) : aucune erreur, pas de verrou ajouté.
+
 ## Surface publique
 
 `knowledge_base/__init__.py` réexporte, depuis `adapters/controller/dependencies.py` :
 
 | Nom | Rôle |
 |---|---|
-| `register(app, resources)` | monte les routes d'import sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) |
-| `KnowledgeBaseResources(session_factory, settings)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application |
+| `register(app, resources, settings=None)` | monte les routes d'import et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; `settings` donne le cache du modèle de la recherche, chargé à la première recherche (S5) |
+| `KnowledgeBaseResources(session_factory, settings, qdrant_client)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application, client Qdrant du processus (S5) |
+| `build_knowledge_search(session_factory, qdrant_client, settings=None, *, embedder=None)` | implémentation du contrat public `knowledge_base.contracts.providers.KnowledgeSearch` (S5) ; ne se connecte à rien ; sans `embedder`, modèle chargé au premier usage |
 | `register_worker(celery_app, resources, settings=None)` | déclare les tâches `knowledge_base.work.{execute,dispatch,recover}`, leurs routes et le `beat_schedule`, dans le processus maître ; `resources` est un fournisseur appelé seulement à l'exécution d'une tâche |
 | `KnowledgeBaseWorkerResources(session_factory, loop, handlers=())` | ressources d'un processus enfant : fabrique de sessions, boucle asyncio persistante, handlers (registre construit à la création) |
 | `KnowledgeBaseSettings` | réglages `KB_*` (pydantic-settings) |
@@ -336,6 +420,15 @@ knowledge_base/
   adapters/gateway/embedding/approximate_token_counter.py  # TokenCounter provisoire (S3) ; hors production depuis S4 (tests de coût)
   adapters/gateway/embedding/sentence_transformers_embedder.py  # SentenceTransformersEmbedder : préfixes, normalisation, tokenizer (S4)
   adapters/gateway/vector_store/qdrant_vector_index.py  # QdrantVectorIndex : collection par index, payload, manifest (S4)
+  contracts/providers/knowledge_search.py # KnowledgeSearch, KnowledgeSearchUnavailableError, UnavailabilityReason (S5)
+  contracts/result/                       # KnowledgeQuery, KnowledgeSearchResult, RetrievedPassage, Citation (S5)
+  domain/value_objects/                   # S5 : search_filters, chunk_hit, published_unit
+  domain/services/passage_assembler.py    # reconstruction small-to-big (S5)
+  domain/providers/                       # S5 : chunk_searcher, active_index_reader, published_unit_reader
+  use_cases/search_knowledge/             # SearchKnowledge, SearchKnowledgeHandler, SearchKnowledgeResult, erreurs (S5)
+  adapters/controller/contracts/          # KnowledgeSearchAdapter (S5)
+  adapters/controller/rest/search_router.py, search_schemas.py  # POST /search (S5)
+  adapters/gateway/persistence/sqlalchemy_active_index_reader.py, sqlalchemy_published_unit_reader.py  # S5
   frameworks/sqlalchemy/tables.py         # MetaData(schema="knowledge_base"), work_items, documents, document_versions, idempotency_keys, knowledge_units, document_chunks, knowledge_corpus, search_indexes, indexations
   frameworks/configuration/chunking.py    # DEFAULT_CHUNKING_POLICY (tokenizer du profil depuis S4)
   frameworks/configuration/settings.py    # KnowledgeBaseSettings
@@ -375,4 +468,6 @@ Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` 
 - Unitaires S3 : `domain/test_extraction_value_objects.py`, `domain/services/` (segmentation Q/R, sections, définitions, identifiants, `ChunkPlanner` et ses fallbacks), `adapters/parsing/` (TXT, routage, Docling), `adapters/test_approximate_token_counter.py`, `use_cases/test_record_extraction.py`, `test_extract_version_handler.py`, `test_extract_version_lease_and_blob.py` (heartbeats pendant le calcul, `BLOB_MISSING`), `test_corpus_golden.py` (goldens rejoués avec Docling) ; `architecture/test_docling_confinement.py`.
 - Intégration (`make test-integration`) : `backend/tests/integration/knowledge_base/`, scénarios 1 à 14 de S0 §12.2 contre PostgreSQL et RabbitMQ réels ; worker in-process (pool solo) et vrai worker prefork en sous-processus (scénarios 13 et 14). S2 : `test_import_api` (POST multipart réel → lignes, blob, work item), `test_import_atomicity` (orphelin après rollback, verrou optimiste, course sur un même nouveau fichier avec barrière explicite), `test_import_persistence`, `test_import_migration` ; le volume de blobs est un répertoire temporaire (`KB_BLOB_ROOT`). S3 : `test_extraction_flow` (import réel → `EXTRACTED`, unités, chunks, citations, Docling réel), `test_extraction_fencing`, `test_extraction_failures`, `test_extraction_rerun` (mêmes identifiants après un crash), `test_extraction_blob_missing`, `test_extraction_migration`. S4 (PostgreSQL et Qdrant réels ; chaque scénario tourne avec l'`Embedder` de test `hash` et avec le vrai modèle, paramètre marqué `model`) : `test_indexing_flow` (import → `PUBLISHED`, payload, invisibilité avant synchronisation), `test_indexing_idempotence` (panne entre upserts et finalisation, rejeux, zombie), `test_indexing_integrity` (point perdu ou modifié, collection non conforme ou absente), `test_indexing_visibility`, `test_qdrant_vector_index` (contrat de l'adapter), `test_indexing_migration`. Revue S4 : `test_knowledge_corpus_repository` (`FOR SHARE` contre `FOR UPDATE NOWAIT`, provisionnement concurrent réel, verrou optimiste de `save`), `test_corpus_active_index_migration` (clé étrangère de l'index actif, aller-retour ancré sur `c43c7e850745`).
 - Unitaires S4 : `domain/test_{embedding_profile,index_manifest,indexation,knowledge_corpus}.py`, `use_cases/test_{record_extraction_indexations,complete_indexation,publish_document_version,sync_document_visibility,provision_search_index}.py` (doubles `indexing_fakes.py` : `HashEmbedder`, Qdrant en mémoire, garde « aucun appel externe dans une transaction »), `test_indexing_work_handlers.py`, `test_index_version_lease.py` (heartbeats pendant un `prepare` lent, heartbeat refusé → `prepare` interrompu sans upsert ni finalisation, intervalle de la composition de production), `test_lease.py` (`keeping_lease` : annulation au refus, aucune tâche survivante, annulation de l'appelant), `adapters/embedding/` (préfixes, normalisation, tokenizer, sans modèle), `adapters/vector_store/` ; `architecture/test_embedding_confinement.py`.
+- Unitaires S5 : `use_cases/test_search_knowledge.py` (contrôle SQL, complément, regroupement, score, provenance), `use_cases/test_search_knowledge_passages.py` (small-to-big), `use_cases/test_search_profile_and_contract.py` (profil de l'index, traduction et erreurs du contrat), `domain/services/test_passage_assembler.py` (chunks du vrai `ChunkPlanner`), `adapters/vector_store/test_search_filter.py`, `test_search_routes_http.py`, `test_search_routes_errors.py`, `test_build_knowledge_search.py`, `test_search_settings.py`, `test_retrieval_metrics.py`, `test_retrieval_reference_set.py` ; `architecture/test_knowledge_search_contract.py`. Doubles : `use_cases/search_fakes.py`.
+- Intégration S5 : `test_search_flow` (bout en bout, vrai E5 : citation complète, filtres, version non publiée, non synchronisée, supplantée, document retiré, `complete=false`, troncature, REST), `test_qdrant_chunk_search` (groupement, exclusion, `visible`, filtres sur Qdrant réel), `test_retrieval_evaluation` (marqueurs `model` et `retrieval`).
 - Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go.

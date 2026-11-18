@@ -39,6 +39,11 @@ x-backend-env: &backend-env
   # il doit rester le point de montage du volume models_cache.
   KB_MODELS_CACHE_DIR: /var/cache/interview-rag-trainer/models
   KB_EMBEDDING_BATCH_SIZE: ${KB_EMBEDDING_BATCH_SIZE:-32}
+  # Recherche (S5, knowledge-base.md §12, O12). L'API charge le modèle à la
+  # première recherche (volume models_cache), jamais au démarrage.
+  KB_SEARCH_OVERSAMPLING_FACTOR: ${KB_SEARCH_OVERSAMPLING_FACTOR:-2}
+  KB_SEARCH_COMPLEMENT_PASSES: ${KB_SEARCH_COMPLEMENT_PASSES:-1}
+  KB_MAX_PASSAGE_TOKENS: ${KB_MAX_PASSAGE_TOKENS:-1024}
   # Premier téléchargement du modèle par HTTPS simple : le protocole xet du
   # Hub est resté bloqué à 0 octet dans cet environnement (2026-11-18, hôte
   # et conteneur), le téléchargement HTTP aboutit. 0 pour réactiver xet.

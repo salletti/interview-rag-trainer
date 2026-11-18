@@ -182,6 +182,8 @@ flowchart LR
 
 ## S5 — Recherche sémantique, provenance et évaluation RAG
 
+> **Statut : implémentée (2026-11-18)** — contrat public `KnowledgeSearch` et `build_knowledge_search`, `POST /api/v1/knowledge-base/search`, contrôle SQL après Qdrant (`visible=true`), complément f = 2 / 1 passe (O12 tranché, `max_passage_tokens` = 1024 Proposed), small-to-big ; jeu de 42 requêtes : Recall@5 0,881, MRR 0,853, intégrité 1,00, inter-langues 0,75 ; seuils de non-régression fixés ; 1 115 unitaires et 321 tests d'intégration verts.
+
 - **Objectif :** rechercher des passages traçables et mesurer la qualité de
   récupération.
 - **Périmètre :** query `SearchKnowledge` (§12 de la conception) ; contrat

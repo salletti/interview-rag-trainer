@@ -1,0 +1,148 @@
+"""Query ``SearchKnowledge`` (knowledge-base.md §12 ; ADR 0010 §5-6 ; O12).
+
+1. Index actif (SQL) ; son profil doit être celui de l'embedder.
+2. Requête encodée une fois (l'adapter ajoute ``query: `` et sort le calcul
+   de la boucle asyncio).
+3. Recherche groupée par unité, ``unit_limit = limit x f`` à la première passe.
+4. Contrôle SQL final : seules les unités publiées de documents actifs restent.
+5. Complément si des unités ont été écartées et qu'il en manque : jusqu'à
+   ``complement_passes`` passes de ``manquantes x f`` unités, excluant les
+   unités écartées ET déjà retenues. Arrêt anticipé si une passe rend moins
+   d'unités que demandé (plus rien à trouver).
+6. Passages reconstruits (small-to-big, ``passage_assembler``), classés par
+   meilleur score de leurs chunks, au plus ``limit``.
+
+``complete`` est faux si et seulement si des unités ont été écartées et qu'il
+reste moins de ``limit`` passages : un corpus simplement trop petit pour la
+requête, sans aucun rejet, donne un résultat complet (précision S5).
+
+Aucune session SQL n'est tenue pendant l'encodage : chaque lecture ouvre et
+ferme la sienne (adapters).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from uuid import UUID
+
+from knowledge_base.domain.providers.active_index_reader import ActiveIndexReader
+from knowledge_base.domain.providers.chunk_searcher import ChunkSearcher
+from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.published_unit_reader import (
+    PublishedUnitReader,
+)
+from knowledge_base.domain.services.passage_assembler import assemble_passage
+from knowledge_base.domain.value_objects.chunk_hit import ChunkHit
+from knowledge_base.domain.value_objects.published_unit import PublishedUnit
+from knowledge_base.use_cases.search_knowledge.errors import (
+    NoActiveSearchIndexError,
+    SearchProfileMismatchError,
+)
+from knowledge_base.use_cases.search_knowledge.search_knowledge_command import (
+    SearchKnowledge,
+)
+from knowledge_base.use_cases.search_knowledge.search_knowledge_result import (
+    FoundPassage,
+    SearchKnowledgeResult,
+)
+
+
+@dataclass(frozen=True)
+class _Retained:
+    unit: PublishedUnit
+    hits: tuple[ChunkHit, ...]
+
+    @property
+    def score(self) -> float:
+        return max(hit.score for hit in self.hits)
+
+
+class SearchKnowledgeHandler:
+    def __init__(
+        self,
+        *,
+        embedder: Embedder,
+        chunk_searcher: ChunkSearcher,
+        published_units: PublishedUnitReader,
+        active_indexes: ActiveIndexReader,
+        max_passage_tokens: int,
+        oversampling_factor: int = 2,
+        complement_passes: int = 1,
+    ) -> None:
+        if max_passage_tokens < 1:
+            raise ValueError(f"max_passage_tokens < 1 : {max_passage_tokens}")
+        if oversampling_factor < 1:
+            raise ValueError(f"oversampling_factor < 1 : {oversampling_factor}")
+        if complement_passes < 0:
+            raise ValueError(f"complement_passes < 0 : {complement_passes}")
+        self._embedder = embedder
+        self._searcher = chunk_searcher
+        self._published = published_units
+        self._indexes = active_indexes
+        self._max_passage_tokens = max_passage_tokens
+        self._factor = oversampling_factor
+        self._complement_passes = complement_passes
+
+    async def handle(self, command: SearchKnowledge) -> SearchKnowledgeResult:
+        index = await self._indexes.get_active_index()
+        if index is None:
+            raise NoActiveSearchIndexError
+        if index.profile != self._embedder.profile:
+            raise SearchProfileMismatchError(
+                index.index_id, index.profile, self._embedder.profile
+            )
+        vector = await self._embedder.embed_query(command.text)
+        filters = command.filters
+
+        retained: dict[UUID, _Retained] = {}
+        rejected: set[UUID] = set()
+        for _ in range(1 + self._complement_passes):
+            unit_limit = (command.limit - len(retained)) * self._factor
+            hits = await self._searcher.search(
+                index.index_id,
+                vector,
+                unit_limit=unit_limit,
+                filters=filters,
+                excluded_unit_ids=frozenset(rejected | retained.keys()),
+            )
+            found = _by_unit(hits)
+            published = await self._published.read_published(list(found))
+            for unit_id, unit_hits in found.items():
+                unit = published.get(unit_id)
+                if unit is None:
+                    rejected.add(unit_id)
+                else:
+                    retained[unit_id] = _Retained(unit, unit_hits)
+            if len(retained) >= command.limit or len(found) < unit_limit:
+                break
+
+        best = sorted(retained.values(), key=lambda r: r.score, reverse=True)
+        passages = tuple(self._passage(r) for r in best[: command.limit])
+        return SearchKnowledgeResult(
+            passages=passages,
+            complete=not rejected or len(passages) >= command.limit,
+            index_id=index.index_id,
+        )
+
+    def _passage(self, retained: _Retained) -> FoundPassage:
+        unit = retained.unit
+        assembled = assemble_passage(unit, retained.hits, self._max_passage_tokens)
+        return FoundPassage(
+            unit_id=unit.unit_id,
+            unit_type=unit.unit_type,
+            question=unit.question_text,
+            text=assembled.text,
+            truncated=assembled.truncated,
+            matched_chunk_ids=assembled.matched_chunk_ids,
+            score=retained.score,
+            citation=unit.citation,
+        )
+
+
+def _by_unit(hits: Sequence[ChunkHit]) -> dict[UUID, tuple[ChunkHit, ...]]:
+    """Chunks regroupés par unité, dans l'ordre de première apparition."""
+    grouped: dict[UUID, list[ChunkHit]] = {}
+    for hit in hits:
+        grouped.setdefault(hit.unit_id, []).append(hit)
+    return {unit_id: tuple(unit_hits) for unit_id, unit_hits in grouped.items()}

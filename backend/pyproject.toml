@@ -117,4 +117,5 @@ addopts = "-ra -m 'not integration' --import-mode=importlib"
 markers = [
     "integration: nécessite les services de compose.test.yaml (PostgreSQL, Qdrant, RabbitMQ)",
     "model: charge le vrai modèle d'embeddings (multilingual-e5-base, cache SENTENCE_TRANSFORMERS_HOME)",
+    "retrieval: évaluation de la récupération sur le jeu de référence S5 (Recall, MRR, intégrité ; rapport dans KB_RETRIEVAL_REPORT_DIR)",
 ]

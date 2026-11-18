@@ -496,6 +496,47 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
    racine et les chunks trouvés, avec `truncated=true`.
 7. Score d'une unité = meilleur score de ses chunks.
 
+*Précisions S5 (2026-11-18), implémentation de `SearchKnowledge`
+([README du contexte](../../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation)) :*
+
+- *Étape 1 : index actif absent → `NoActiveSearchIndexError`, rendue au
+  consommateur comme `KnowledgeSearchUnavailableError`
+  (`NO_ACTIVE_SEARCH_INDEX`) et par l'API comme 503 avec ce code.*
+- *Étape 2 : en V1, la requête est encodée par l'unique embedder du
+  processus. Le profil de l'index actif doit lui être égal, sinon
+  `SearchProfileMismatchError` (503 `SEARCH_PROFILE_MISMATCH`) avant tout
+  encodage : jamais de résultat silencieusement faux sur des vecteurs
+  incomparables (ADR 0011 §2). Le choix du modèle d'après l'index arrive avec
+  S9.*
+- *Étape 3 : Qdrant `query_points_groups` groupé par `unit_id`, au plus
+  3 chunks par unité ; `visible=true` est ajouté par l'adapter, jamais par
+  l'appelant. Filtres : `topics` = tous requis, `kinds` et `document_ids` =
+  l'un d'eux, `language` = langue du document.*
+- *Étape 5 : passe de complément tant que des unités ont été écartées, qu'il
+  manque des passages et qu'il reste des passes ; elle demande
+  `manquantes × f` unités et exclut les unités écartées **et** déjà retenues.
+  Une passe qui rend moins d'unités que demandé arrête le complément (plus
+  rien à trouver).*
+- *`complete = false` si et seulement si des unités ont été écartées **et**
+  qu'il reste moins de `limit` passages après complément. Un corpus
+  simplement trop petit pour la requête, sans aucun rejet, donne
+  `complete = true` : le drapeau signale une perte due à la visibilité, pas
+  l'absence de résultats.*
+- *Étape 6 : le budget d'une unité complète compte la question
+  (`token_count` des blocs + ligne `Question : …`, comptée par un majorant du
+  tokenizer). Au-delà, fenêtre contiguë de chunks autour du meilleur chunk
+  trouvé, étendue vers un autre chunk trouvé, sinon vers la suite, sinon vers
+  le début, tant que la somme de leurs `token_count` tient ; un chunk seul
+  plus gros que le budget est rendu seul ; `truncated=true` dès qu'il s'agit
+  d'une fenêtre. Le texte d'un passage commence par la question (unités
+  `QA`) ; la fenêtre ne répète pas l'en-tête contextuel de chaque chunk.
+  `matched_chunk_ids` : chunks trouvés présents dans le passage, le meilleur
+  d'abord.*
+- *Contrôle SQL : deux requêtes par passe, quel que soit le nombre d'unités
+  (unités publiées de documents actifs par clé primaire, puis leurs chunks par
+  l'index unique `(unit_id, ordinal_in_unit)`) ; aucune session tenue pendant
+  l'encodage ; aucune migration nécessaire.*
+
 Limites connues, documentées et mesurées :
 
 - Recall réduit pendant la fenêtre de synchronisation (§11).
@@ -588,6 +629,19 @@ class Citation:
     page_end: int | None
     source_filename: str
 ```
+
+*Précisions S5 (2026-11-18) : champs livrés tels quels
+(`backend/src/knowledge_base/contracts/`, bibliothèque standard seulement,
+vérifié par `tests/architecture/test_knowledge_search_contract.py`) ; le
+commentaire de `complete` s'entend « moins de `limit` passages **parce que**
+le contrôle SQL a écarté des unités » (précision du §12). Le contrat publie
+aussi `KnowledgeSearchUnavailableError(reason)` et `UnavailabilityReason`
+(`NO_ACTIVE_SEARCH_INDEX`, `SEARCH_PROFILE_MISMATCH`) : un consommateur ne
+peut pas importer les erreurs internes du contexte. Une requête invalide
+(texte blanc, `limit < 1`, `kind` inconnu) lève `ValueError` ; une panne de
+PostgreSQL ou de Qdrant est propagée, jamais convertie en résultat vide.
+L'API REST sert le même contrat : `POST /api/v1/knowledge-base/search`
+(`limit` de 1 à 50), 200, 422 ou 503.*
 
 - Aucun objet Qdrant, ORM ou Docling dans le contrat.
 - Le consommateur reçoit l'implémentation par injection depuis `runtime`
@@ -693,14 +747,14 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O2 | Même fichier importé pour deux documents distincts | Refuser (409 avec l'identifiant existant) | S2 — **Tranché en S2 (2026-11-18) :** un contenu (SHA-256) n'appartient qu'à un seul document, garanti par `UNIQUE(content_hash)` global sur `document_versions` (qui couvre aussi I3). Import **sans** document cible d'un contenu connu → 200 avec le document et la version existants (métadonnées de la requête ignorées) ; import d'une version **ciblée** sur un autre document → 409 `DUPLICATE_CONTENT` avec `document_id` et `version_id` existants. Course entre deux imports simultanés : le perdant bute sur la contrainte, rejoue sa transaction et obtient le même résultat (200 ou 409). **Conséquence :** le contenu d'un document retiré ne peut plus être réimporté, ni comme nouveau document (409 `DOCUMENT_WITHDRAWN`) ni comme version d'un autre (409 `DUPLICATE_CONTENT`), cohérent avec O11 |
 | O3 | Périmètre de corpus au-delà du singleton V1 | Singleton tant qu'un besoin multi-corpus n'existe pas | — |
 | O4 | Persister le `StructuredDocument` pour rechunker sans re-parser | Non en V1 : re-parser depuis le blob | S9 |
-| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18).* |
+| O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Faits mesurés en S5 (2026-11-18), sans décision : l'API charge le modèle à la première recherche ; RSS de son processus serveur 146 → 1 267 Mio (stack de dev), premier appel 4,3 s ; image inchangée (aucune dépendance ajoutée). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18).* |
 | O6 | Recherche hybride (sparse/BM25) pour les identifiants de code | Mesurer en S5/S9 avant de l'introduire | S9 |
 | O7 | Prise en charge de `.txt` par Docling | Adapter natif par défaut | S2/S3 — **Tranché en S3 (2026-11-18) : adapter natif.** `PlainTextParser` (`adapters/gateway/parsing/`) : UTF-8, un bloc par suite de lignes non vides, `CodeBlock` si toutes ses lignes sont indentées (4 espaces ou tabulation), `Paragraph` sinon ; ni titre, ni page, ni métadonnée. Docling ne reçoit que le Markdown (`RoutingDocumentParser`) |
 | O8 | OCR, formats supplémentaires (HTML), limites définitives | Hors V1 ; limites réévaluées après S6 | S6 |
 | O9 | Accès et documents privés (multi-utilisateur) | Hors V1 ; `KnowledgeQuery` extensible sans rupture | — |
 | O10 | DLQ RabbitMQ | Non en V1 ; réexaminer avec les consommateurs d'Integration Events | ADR 0004 |
 | O11 | Réactivation d'un document retiré | Non prévue en V1 | — |
-| O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 |
+| O12 | Facteur de suréchantillonnage, nombre de passes de complément, `max_passage_tokens` | f = 2, 1 passe, budget à mesurer | S5 — **Tranché en S5 (2026-11-18) pour f et les passes, budget Proposed.** Mesures sur le jeu de référence (42 requêtes, 10 documents, vrai E5) : sans rejet, f et les passes ne changent aucun résultat (le contrôle SQL n'écarte rien) et la latence de Qdrant ne dépend pas de f (médiane 2,8 à 3,2 ms pour f = 1 à 8). Rejets simulés (3 documents sur 10 retirés en SQL, points encore visibles ; 24 requêtes) : Recall@5 0,917 dès f = 2 ou une passe, `complete=false` sur 66,7 % des résultats à f = 1 sans passe, 12,5 % à **f = 2, 1 passe** (retenu : 19,5 ms médians), 0 % à f = 2 / 2 passes ou f ≥ 3. f = 2 et 1 passe sont conservés : le cas simulé (30 % du corpus en fenêtre de synchronisation à la fois) dépasse de loin une republication ordinaire, et les deux leviers sans coût mesuré (f = 3, 2 passes) restent réglables (`KB_SEARCH_OVERSAMPLING_FACTOR`, `KB_SEARCH_COMPLEMENT_PASSES`). **`max_passage_tokens` = 1024 reste Proposed** : le jeu de référence ne l'exerce pas (49 unités, toutes en un chunk, 427 tokens au plus, question comprise ; 0 passage tronqué sur 210 pour des budgets de 508 à 1 536). 1024 contient deux chunks entiers (508) et borne 5 passages à environ 5 000 tokens ; à remesurer sur des cours longs (S6, PDF/DOCX). Détail : [README du contexte](../../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation) |
 | O13 | Heuristiques Q/R sans front-matter | Couvrir les formats rencontrés, mesurés par golden tests | S3 — **Heuristiques retenues en S3 (2026-11-18), Proposed jusqu'aux mesures de S5 :** un titre est une question s'il commence par `Question` ou `Q` (casse indifférente, numéro facultatif) suivi de `:`, ou s'il se termine par `?` ; l'unité `QA` court jusqu'à la question suivante ou un titre de niveau strictement inférieur, les titres du corps (« Réponse », « Explication ») restent des blocs ; le contenu hors question forme des unités `SECTION` ; une fiche sans aucune question est découpée comme un cours. Le front-matter `kind: qa_sheet` l'emporte : tout titre de niveau 2 est alors une question. Couverture : golden files du corpus FR/EN (`backend/tests/fixtures/knowledge_base/`) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s3--docling-markdown-knowledgeunit-et-chunking) |
 | O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 |
 | O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 |

@@ -11,7 +11,7 @@
 | [0007](0007-knowledge-base-bounded-context.md) | Bounded Context Knowledge Base, contrat `KnowledgeSearch` | Accepted |
 | [0008](0008-custom-pipeline-docling-extraction.md) | Pipeline personnalisé, extraction Docling, SentenceTransformers | Accepted (installation : Proposed) |
 | [0009](0009-pedagogical-chunking-knowledge-units.md) | Chunking pédagogique par KnowledgeUnit | Accepted (paramètres : Proposed) |
-| [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md) | PostgreSQL source de vérité, Qdrant index dérivé, visibilité | Accepted (paramètres de recherche : Proposed) |
+| [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md) | PostgreSQL source de vérité, Qdrant index dérivé, visibilité | Accepted (paramètres de recherche : facteur et passes tranchés en S5, voir O12 ; `max_passage_tokens` Proposed) |
 | [0011](0011-embedding-profile-search-index-blue-green.md) | EmbeddingProfile, SearchIndex, migration blue/green | Accepted ; profil initial révisable ; barrière Proposed |
 | [0012](0012-original-document-storage-and-purge.md) | Stockage des originaux et purge | Accepted (rétention, doublons : Proposed / Open) |
 

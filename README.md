@@ -22,8 +22,9 @@ Guide complet : [docs/guides/environnement-local.md](docs/guides/environnement-l
 ```text
 backend/            FastAPI, Celery, Alembic — Python 3.13, uv
   src/runtime/      composition root (settings, app, worker, santé)
-  src/<contexte>/   knowledge_base (ADR 0007) : slices S0 à S4 (work queue, documents,
-                    import, extraction, chunking, embeddings, index Qdrant, publication) ;
+  src/<contexte>/   knowledge_base (ADR 0007) : slices S0 à S5 (work queue, documents,
+                    import, extraction, chunking, embeddings, index Qdrant, publication,
+                    recherche sourcée et évaluation) ;
                     interview_training, assessment (READMEs ; code à venir par vertical slices)
   src/shared/       primitives transverses justifiées uniquement
   tests/            unit, integration, architecture

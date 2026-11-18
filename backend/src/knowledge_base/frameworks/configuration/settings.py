@@ -1,5 +1,6 @@
 """Réglages techniques de Knowledge Base : work queue (S0 §7, §8.4), import et
-stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6).
+stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6),
+recherche (S5, knowledge-base.md §12, O12).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -47,6 +48,16 @@ class KnowledgeBaseSettings(BaseSettings):
     models_cache_dir: Path = Path("/var/cache/interview-rag-trainer/models")
     # Chunks par appel au modèle, donc par upsert Qdrant.
     embedding_batch_size: int = Field(default=32, gt=0)
+
+    # Recherche (S5, O12) : suréchantillonnage de la première passe
+    # (``limit x f`` unités demandées à Qdrant), passes de complément après
+    # le contrôle SQL, budget en tokens d'un passage reconstruit
+    # (small-to-big). Le budget doit contenir au moins un chunk entier de la
+    # politique (508 tokens), sinon le meilleur chunk d'une unité longue ne
+    # tiendrait jamais dans sa fenêtre.
+    search_oversampling_factor: int = Field(default=2, ge=1)
+    search_complement_passes: int = Field(default=1, ge=0)
+    max_passage_tokens: int = Field(default=1024, gt=0)
 
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:

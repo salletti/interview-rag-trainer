@@ -46,6 +46,7 @@ from knowledge_base.domain.value_objects.citation import Citation
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
 from knowledge_base.domain.value_objects.page_span import PageSpan
+from knowledge_base.domain.value_objects.section_path import SectionPath
 from knowledge_base.domain.value_objects.structured_document import (
     Block,
     CodeBlock,
@@ -59,6 +60,7 @@ CONTINUATION_MARKER: Final = "(suite)"
 TRUNCATION_MARK: Final = "…"
 QUESTION_LABEL: Final = "Question : "
 HASH_SEPARATOR: Final = "\x00"
+HEADER_SEPARATOR: Final = "\n\n"
 
 Fits = Callable[[str], bool]
 
@@ -146,19 +148,20 @@ class ChunkPlanner:
         if current:
             bodies.append((render_blocks(tuple(current)), tuple(current)))
         return tuple(
-            self._chunk(unit, citation_base, ordinal, f"{header}\n\n{body}", blocks)
+            self._chunk(
+                unit,
+                citation_base,
+                ordinal,
+                f"{header}{HEADER_SEPARATOR}{body}",
+                blocks,
+            )
             for ordinal, (body, blocks) in enumerate(bodies)
         )
 
     # --- en-tête --------------------------------------------------------------
 
     def _header(self, unit: KnowledgeUnit, title: str) -> str:
-        lines = [title]
-        if unit.section_path.parts:
-            lines.append(str(unit.section_path))
-        if unit.question_text is not None:
-            lines.append(f"{QUESTION_LABEL}{unit.question_text}")
-        header = "\n".join(lines)
+        header = contextual_header(title, unit.section_path, unit.question_text)
         limit = self._policy.max_tokens // 2
         if self._counter.count(header) <= limit:
             return header
@@ -206,7 +209,8 @@ class ChunkPlanner:
         return [wrap(piece) for piece in _split(source, [*boundaries, WORDS], fits)]
 
     def _fits(self, header: str, body: str) -> bool:
-        return self._counter.count(f"{header}\n\n{body}") <= self._policy.max_tokens
+        text = f"{header}{HEADER_SEPARATOR}{body}"
+        return self._counter.count(text) <= self._policy.max_tokens
 
     # --- chunk ------------------------------------------------------------------
 
@@ -235,6 +239,19 @@ class ChunkPlanner:
                 page_end=pages.end,
             ),
         )
+
+
+def contextual_header(
+    title: str, section_path: SectionPath, question_text: str | None
+) -> str:
+    """En-tête contextuel complet, avant une éventuelle troncature : titre du
+    document, chemin de sections, ``Question : …``, une ligne chacun."""
+    lines = [title]
+    if section_path.parts:
+        lines.append(str(section_path))
+    if question_text is not None:
+        lines.append(f"{QUESTION_LABEL}{question_text}")
+    return "\n".join(lines)
 
 
 def _chunk_hash(contextual_text: str, policy_identity: str) -> str:

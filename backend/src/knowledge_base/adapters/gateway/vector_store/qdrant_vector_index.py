@@ -10,11 +10,14 @@ ADR 0010, ADR 0011 §2).
 - Toutes les écritures attendent leur application (``wait=True``) et exigent
   le statut ``completed`` : une écriture non confirmée lève, la tentative est
   rejouée (les écritures sont idempotentes, §7.3).
+- Recherche (S5, port ``ChunkSearcher``) : ``query_points_groups`` groupé par
+  ``unit_id``, ``CHUNKS_PER_UNIT`` chunks au plus par unité ; le filtre
+  ``visible=true`` est toujours ajouté ici (§12 étape 3).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 from uuid import UUID
 
@@ -24,6 +27,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -32,6 +36,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from knowledge_base.domain.value_objects.chunk_hit import ChunkHit
 from knowledge_base.domain.value_objects.embedding_profile import (
     Distance,
     EmbeddingProfile,
@@ -40,8 +45,14 @@ from knowledge_base.domain.value_objects.indexed_point import (
     IndexedPoint,
     PointSelector,
 )
+from knowledge_base.domain.value_objects.search_filters import SearchFilters
 
 COLLECTION_PREFIX: Final = "kb_index_"
+
+# Chunks rendus par unité trouvée : ceux qui ancrent la fenêtre small-to-big
+# d'une unité longue. Au-delà de trois, une unité de 512 tokens par chunk
+# dépasserait de toute façon le budget de passage par défaut.
+CHUNKS_PER_UNIT: Final = 3
 
 _DISTANCES: Final[Mapping[Distance, QdrantDistance]] = {
     Distance.COSINE: QdrantDistance.COSINE,
@@ -180,6 +191,68 @@ class QdrantVectorIndex:
                 wait=True,
             ),
         )
+
+    async def search(
+        self,
+        index_id: UUID,
+        vector: Sequence[float],
+        *,
+        unit_limit: int,
+        filters: SearchFilters,
+        excluded_unit_ids: Collection[UUID],
+    ) -> Sequence[ChunkHit]:
+        result = await self._client.query_points_groups(
+            collection_name=self.collection_name(index_id),
+            query=list(vector),
+            group_by="unit_id",
+            limit=unit_limit,
+            group_size=CHUNKS_PER_UNIT,
+            query_filter=search_filter(filters, excluded_unit_ids),
+            with_payload=["chunk_id", "unit_id"],
+            with_vectors=False,
+        )
+        return [
+            ChunkHit(
+                chunk_id=UUID(str((point.payload or {})["chunk_id"])),
+                unit_id=UUID(str(group.id)),
+                score=point.score,
+            )
+            for group in result.groups
+            for point in group.hits
+        ]
+
+
+def search_filter(
+    filters: SearchFilters, excluded_unit_ids: Collection[UUID]
+) -> Filter:
+    """``visible=true`` toujours ; un sujet = une condition (tous requis) ;
+    types et documents : l'un d'eux."""
+    must = [FieldCondition(key="visible", match=MatchValue(value=True))]
+    if filters.language is not None:
+        must.append(
+            FieldCondition(key="language", match=MatchValue(value=filters.language))
+        )
+    must.extend(
+        FieldCondition(key="topics", match=MatchValue(value=topic))
+        for topic in filters.topics
+    )
+    if filters.kinds:
+        must.append(FieldCondition(key="kind", match=MatchAny(any=list(filters.kinds))))
+    if filters.document_ids:
+        must.append(
+            FieldCondition(
+                key="document_id",
+                match=MatchAny(any=[str(i) for i in filters.document_ids]),
+            )
+        )
+    must_not = []
+    if excluded_unit_ids:
+        must_not.append(
+            FieldCondition(
+                key="unit_id", match=MatchAny(any=[str(i) for i in excluded_unit_ids])
+            )
+        )
+    return Filter(must=must, must_not=must_not or None)
 
 
 def _payload(point: IndexedPoint) -> dict[str, Any]:

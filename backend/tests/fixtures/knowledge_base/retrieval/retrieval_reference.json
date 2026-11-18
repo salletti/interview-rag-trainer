@@ -1,0 +1,845 @@
+{
+  "_description": "Jeu de référence S5 (knowledge-base-roadmap.md, S5). Un document source par entrée de `documents` (chemin relatif à tests/fixtures/knowledge_base/) ; une requête désigne son unité attendue par le fichier source et des extraits qui doivent figurer dans le passage : `answer_snippet` (réponse de référence), `question` (unités QA) et `code_snippet` (exemple de code), jamais par un identifiant (les identifiants d'unité dépendent de la version du découpage). `filters` : filtres de la passe filtrée (le document attendu les satisfait). `tags` : cross_language = requête et document dans des langues différentes.",
+  "documents": [
+    {
+      "file": "qa_python_fastapi_fr.md",
+      "title": "Fiche de révision FastAPI",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "python",
+        "fastapi"
+      ]
+    },
+    {
+      "file": "qa_python_en.md",
+      "title": "Python interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "cours_asyncio_fr.md",
+      "title": "Cours asyncio",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "python",
+        "asyncio"
+      ]
+    },
+    {
+      "file": "fiche_revision_python_fr.md",
+      "title": "Fiche de révision Python",
+      "kind": "REVISION_SHEET",
+      "language": "fr",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "retrieval/qa_postgres_fr.md",
+      "title": "Fiche de révision PostgreSQL",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "postgresql",
+        "sql"
+      ]
+    },
+    {
+      "file": "retrieval/qa_pytest_fr.md",
+      "title": "Fiche de révision pytest",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "python",
+        "testing"
+      ]
+    },
+    {
+      "file": "retrieval/cours_git_fr.md",
+      "title": "Cours Git",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "git"
+      ]
+    },
+    {
+      "file": "retrieval/qa_docker_en.md",
+      "title": "Docker interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "docker",
+        "devops"
+      ]
+    },
+    {
+      "file": "retrieval/qa_system_design_en.md",
+      "title": "System design interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "architecture"
+      ]
+    },
+    {
+      "file": "retrieval/course_http_en.md",
+      "title": "HTTP and REST course",
+      "kind": "COURSE",
+      "language": "en",
+      "topics": [
+        "http",
+        "api"
+      ]
+    },
+    {
+      "file": "retrieval/qa_kubernetes_en.md",
+      "title": "Kubernetes interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "kubernetes",
+        "devops"
+      ]
+    },
+    {
+      "file": "retrieval/qa_redis_fr.md",
+      "title": "Fiche de révision Redis",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "redis"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "fr01",
+      "text": "À quoi sert Depends dans FastAPI ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "fastapi"
+        ]
+      },
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "question": "Qu'est-ce que Depends dans FastAPI ?",
+        "answer_snippet": "Depends déclare une dépendance que FastAPI résout et injecte à chaque requête.",
+        "code_snippet": "def get_db"
+      }
+    },
+    {
+      "id": "fr02",
+      "text": "Comment remplacer une dépendance par une version de test ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "fastapi"
+        ]
+      },
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "question": "Comment tester un endpoint qui dépend d'une base de données ?",
+        "answer_snippet": "dictionnaire dependency_overrides de l'application",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr03",
+      "text": "Quelle est la différence entre un endpoint async et un endpoint synchrone ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "fastapi"
+        ]
+      },
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "question": "Quelle différence entre async def et def pour un endpoint ?",
+        "answer_snippet": "un endpoint déclaré avec def est exécuté dans un pool de threads",
+        "code_snippet": "await asyncio.sleep(1)"
+      }
+    },
+    {
+      "id": "fr04",
+      "text": "Mon planificateur ignore l'index de la colonne, pourquoi ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "postgresql"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "À quoi sert un index B-tree et quand ne sert-il à rien ?",
+        "answer_snippet": "le planificateur préfère alors un parcours séquentiel",
+        "code_snippet": "CREATE INDEX idx_commandes_client"
+      }
+    },
+    {
+      "id": "fr05",
+      "text": "Comment lire le plan d'exécution réel d'une requête SQL ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "postgresql"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "Que fait EXPLAIN ANALYZE ?",
+        "answer_snippet": "exécute réellement la requête et affiche le plan retenu",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr06",
+      "text": "Quel niveau d'isolation donne le même instantané pendant toute la transaction ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "postgresql"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "Quels sont les niveaux d'isolation des transactions ?",
+        "answer_snippet": "toute la transaction travaille sur le même instantané",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr07",
+      "text": "Comment éviter une requête par ligne en chargeant les relations avec SQLAlchemy ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "postgresql"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "Qu'est-ce que le problème N+1 et comment l'éviter avec un ORM ?",
+        "answer_snippet": "en chargeant la relation d'avance",
+        "code_snippet": "selectinload(Commande.lignes)"
+      }
+    },
+    {
+      "id": "fr08",
+      "text": "Comment faire une migration de schéma sans interruption pour un champ obligatoire ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "postgresql"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "Comment ajouter une colonne sans bloquer une grande table en production ?",
+        "answer_snippet": "on pose la contrainte NOT NULL une fois les données complètes",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr09",
+      "text": "Comment partager une ressource préparée entre plusieurs tests pytest ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "testing"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "question": "À quoi servent les fixtures pytest ?",
+        "answer_snippet": "Les fixtures remplacent les méthodes setUp et tearDown",
+        "code_snippet": "def client()"
+      }
+    },
+    {
+      "id": "fr10",
+      "text": "Comment lancer un même test avec plusieurs valeurs d'entrée ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "testing"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "question": "Comment exécuter le même test avec plusieurs jeux de données ?",
+        "answer_snippet": "Le décorateur parametrize exécute le test une fois par jeu de valeurs",
+        "code_snippet": "pytest.mark.parametrize"
+      }
+    },
+    {
+      "id": "fr11",
+      "text": "Comment vérifier qu'une exception est bien levée dans un test ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "testing"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "question": "Comment vérifier qu'une fonction lève une exception ?",
+        "answer_snippet": "le gestionnaire de contexte pytest.raises",
+        "code_snippet": "pytest.raises(ValueError"
+      }
+    },
+    {
+      "id": "fr12",
+      "text": "Comment annuler un commit déjà publié sans réécrire l'historique ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "language": "fr",
+        "kinds": [
+          "COURSE"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "question": null,
+        "answer_snippet": "git revert, qui ajoute un commit inverse sans toucher à l'historique",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr13",
+      "text": "Une régression est apparue dans les 500 derniers commits, comment la localiser vite ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "language": "fr",
+        "kinds": [
+          "COURSE"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "question": null,
+        "answer_snippet": "cherche par dichotomie le commit qui a introduit un bogue",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr14",
+      "text": "Comment annuler une tâche asyncio en cours ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "asyncio"
+        ]
+      },
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "question": null,
+        "answer_snippet": "lève CancelledError à l'intérieur de la coroutine",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr15",
+      "text": "Mon programme asynchrone se fige pendant une grosse boucle de calcul",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "asyncio"
+        ]
+      },
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "question": null,
+        "answer_snippet": "on les confie à un exécuteur de processus ou de threads grâce à run_in_executor",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "fr16",
+      "text": "Comment ajouter un comportement avant et après l'appel d'une fonction sans la modifier ?",
+      "language": "fr",
+      "tags": [],
+      "filters": {
+        "language": "fr",
+        "kinds": [
+          "REVISION_SHEET"
+        ]
+      },
+      "expected": {
+        "file": "fiche_revision_python_fr.md",
+        "question": null,
+        "answer_snippet": "Un décorateur est une fonction qui prend une fonction et en renvoie une autre",
+        "code_snippet": "def chronometre(fonction)"
+      }
+    },
+    {
+      "id": "fr17",
+      "text": "Pourquoi les threads Python n'accélèrent pas un calcul intensif ?",
+      "language": "fr",
+      "tags": [],
+      "filters": null,
+      "expected": {
+        "file": "fiche_revision_python_fr.md",
+        "question": null,
+        "answer_snippet": "n'autorise qu'un seul thread à exécuter du bytecode à la fois",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en13",
+      "text": "Why can't Python threads run CPU-bound code in parallel?",
+      "language": "en",
+      "tags": [],
+      "filters": null,
+      "expected": {
+        "file": "qa_python_en.md",
+        "question": "What is the GIL?",
+        "answer_snippet": "lets only one thread run Python bytecode at a time",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en01",
+      "text": "What is the difference between an image and a container in Docker?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "docker"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "What is the difference between an image and a container?",
+        "answer_snippet": "A container is a running instance of an image",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en02",
+      "text": "Why does my docker build reinstall every package each time I edit a source file?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "docker"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "Why does the order of instructions in a Dockerfile matter?",
+        "answer_snippet": "keeps the expensive install layer cached while only the code changes",
+        "code_snippet": "RUN uv sync --frozen"
+      }
+    },
+    {
+      "id": "en03",
+      "text": "How do I get a smaller production image without build tools?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "docker"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "What is a multi-stage build used for?",
+        "answer_snippet": "copies only the final artifacts into a small runtime stage",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en04",
+      "text": "How do I keep database files after the container is removed?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "docker"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "How do you persist data written by a container?",
+        "answer_snippet": "keeps the data outside the container lifecycle",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en05",
+      "text": "My API crashes at startup because Postgres is not accepting connections yet",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "docker"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "What does a health check do in Docker Compose?",
+        "answer_snippet": "Compose can wait for a dependency to be healthy",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en06",
+      "text": "Thundering herd on a popular cache entry",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "architecture"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "How does a cache-aside strategy work and what are its risks?",
+        "answer_snippet": "a stampede when a popular key expires",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en07",
+      "text": "Duplicate charges after network timeouts and client retries",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "architecture"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "What does idempotency mean for an API and why does it matter?",
+        "answer_snippet": "should accept an idempotency key",
+        "code_snippet": "Idempotency-Key"
+      }
+    },
+    {
+      "id": "en08",
+      "text": "How does a token bucket limit the request rate?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "architecture"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "How does a token bucket rate limiter work?",
+        "answer_snippet": "Each request consumes a token",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en09",
+      "text": "Offset versus cursor pagination for a REST API",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "http"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/course_http_en.md",
+        "question": null,
+        "answer_snippet": "Cursor pagination returns an opaque token",
+        "code_snippet": "cursor=eyJpZCI6MTAwfQ"
+      }
+    },
+    {
+      "id": "en10",
+      "text": "What does a 304 Not Modified response mean?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "topics": [
+          "http"
+        ]
+      },
+      "expected": {
+        "file": "retrieval/course_http_en.md",
+        "question": null,
+        "answer_snippet": "answers 304 Not Modified with no body when nothing changed",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "en11",
+      "text": "When should I prefer asyncio over threads?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "language": "en",
+        "topics": [
+          "python"
+        ]
+      },
+      "expected": {
+        "file": "qa_python_en.md",
+        "question": "When should you use asyncio instead of threads",
+        "answer_snippet": "Use asyncio for many concurrent I/O-bound operations",
+        "code_snippet": "asyncio.gather"
+      }
+    },
+    {
+      "id": "en12",
+      "text": "What does functools.wraps do?",
+      "language": "en",
+      "tags": [],
+      "filters": {
+        "language": "en",
+        "topics": [
+          "python"
+        ]
+      },
+      "expected": {
+        "file": "qa_python_en.md",
+        "question": "How does functools.wraps work?",
+        "answer_snippet": "copies the name, docstring and other metadata of the wrapped function",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x01",
+      "text": "Quelle différence entre une image et un conteneur Docker ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "What is the difference between an image and a container?",
+        "answer_snippet": "A container is a running instance of an image",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x02",
+      "text": "Comment conserver les données d'une base quand le conteneur est recréé ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "How do you persist data written by a container?",
+        "answer_snippet": "keeps the data outside the container lifecycle",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x03",
+      "text": "Comment réduire la taille et la surface d'attaque de l'image finale ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "question": "What is a multi-stage build used for?",
+        "answer_snippet": "copies only the final artifacts into a small runtime stage",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x04",
+      "text": "Comment rendre une API de paiement idempotente face aux nouvelles tentatives des clients ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "What does idempotency mean for an API and why does it matter?",
+        "answer_snippet": "should accept an idempotency key",
+        "code_snippet": "Idempotency-Key"
+      }
+    },
+    {
+      "id": "x05",
+      "text": "Comment limiter le nombre de requêtes par seconde tout en tolérant des pointes ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "How does a token bucket rate limiter work?",
+        "answer_snippet": "Each request consumes a token",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x06",
+      "text": "Cohérence ou disponibilité quand le réseau est coupé entre deux datacenters ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "What does the CAP theorem say?",
+        "answer_snippet": "must choose between consistency",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "x07",
+      "text": "Pagination par curseur ou par décalage pour une API REST ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/course_http_en.md",
+        "question": null,
+        "answer_snippet": "Cursor pagination returns an opaque token",
+        "code_snippet": "cursor=eyJpZCI6MTAwfQ"
+      }
+    },
+    {
+      "id": "x08",
+      "text": "Comment utiliser un cache avec chargement à la demande en cas d'absence ?",
+      "language": "fr",
+      "tags": [
+        "cross_language",
+        "fr_to_en"
+      ],
+      "filters": {
+        "language": "en"
+      },
+      "expected": {
+        "file": "retrieval/qa_system_design_en.md",
+        "question": "How does a cache-aside strategy work and what are its risks?",
+        "answer_snippet": "the application reads the cache first, loads from the database on a miss",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "y01",
+      "text": "How do I run one pytest test with several data sets?",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "en_to_fr"
+      ],
+      "filters": {
+        "language": "fr"
+      },
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "question": "Comment exécuter le même test avec plusieurs jeux de données ?",
+        "answer_snippet": "Le décorateur parametrize exécute le test une fois par jeu de valeurs",
+        "code_snippet": "pytest.mark.parametrize"
+      }
+    },
+    {
+      "id": "y02",
+      "text": "How do I undo a published commit without rewriting history?",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "en_to_fr"
+      ],
+      "filters": {
+        "language": "fr"
+      },
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "question": null,
+        "answer_snippet": "git revert, qui ajoute un commit inverse sans toucher à l'historique",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "y03",
+      "text": "Bisecting history to locate a regression",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "en_to_fr"
+      ],
+      "filters": {
+        "language": "fr"
+      },
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "question": null,
+        "answer_snippet": "cherche par dichotomie le commit qui a introduit un bogue",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "y04",
+      "text": "What does EXPLAIN ANALYZE tell me about a query plan?",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "en_to_fr"
+      ],
+      "filters": {
+        "language": "fr"
+      },
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "question": "Que fait EXPLAIN ANALYZE ?",
+        "answer_snippet": "exécute réellement la requête et affiche le plan retenu",
+        "code_snippet": null
+      }
+    }
+  ]
+}

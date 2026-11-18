@@ -27,7 +27,7 @@ review prêt.
 | S2 | Import Markdown/TXT, stockage, dédoublonnage | S0, S1 | **Terminée** | voir journal | Ruff, mypy (125 fichiers), 309 unit./archi., 162 intégration, import réel sur la stack de dev (202 puis 200) |
 | S3 | Docling Markdown, `KnowledgeUnit`, chunking | S2 | **Terminée** | voir journal | Ruff, mypy (180 fichiers), 529 unit./archi., 192 intégration, extraction réelle sur la stack de dev (3 unités QA, 3 chunks) |
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | **Terminée** | voir journal | Ruff, mypy (252 fichiers), 759 unit./archi., 273 intégration (18 `model`), 3/3 mutations, import réel jusqu'à PUBLISHED (3 points visibles) |
-| S5 | Recherche sémantique, provenance, évaluation | S4 | À faire | | |
+| S5 | Recherche sémantique, provenance, évaluation | S4 | **Terminée** | voir journal | Ruff, mypy (299 fichiers), 1 115 unit./archi., 321 intégration (dont `retrieval`), 4 mutations tuées, recherche réelle sur la stack de dev (citation complète) |
 | S6 | PDF et DOCX avec Docling | S3, S5 | À faire | | |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | À faire | | |
 | S8 | Réconciliation et gestion des erreurs | S7 | À faire | | |
@@ -59,7 +59,12 @@ périmètre.
 - 2026-11-18 — S4 terminée : tests rouges → implémentation (expert-python) →
   revalidation par l'orchestrateur : Ruff, mypy 252 fichiers, 759 unitaires,
   273 intégration. Mesures : image `production` 152 → 479 Mo (contenu),
-  RSS worker ~1 Gio, 91 ms/chunk en conteneur. Revue S4 à suivre.
+  RSS worker ~1 Gio, 91 ms/chunk en conteneur. Revue S4 faite et corrigée (`de9c5b4`).
+- 2026-11-18 — S5 terminée : tests rouges (prouvés par une implémentation
+  jetable hors dépôt, 18 mutations) → implémentation → revalidation :
+  1 115 unitaires, 321 intégration. Recall@5 0,881, MRR 0,853 (42 requêtes) ;
+  recherche HTTP médiane 69 ms ; RSS de l'API 146 → 1 267 Mio après le
+  premier appel (modèle chargé paresseusement).
 
 ## Écarts et décisions en cours de route
 
@@ -82,6 +87,12 @@ périmètre.
 - S4 — `HF_HUB_DISABLE_XET=1` : le téléchargement xet du Hub est resté bloqué à 0 octet (hôte et conteneur).
 - S4 — la FK simple `unit_id` de S3 est conservée à côté de la FK composite.
 - S4 — import de N+1 n'annule pas encore les indexations de N (S7) ; pas de backfill de l'identité `approx-xlmr-v1` (S9).
+
+- S5 — `complete=false` seulement si des rejets SQL ont eu lieu et qu'il manque des passages après complément ; complément sur les manquantes × f, rejetés et retenus exclus.
+- S5 — index actif absent ou de profil différent → 503 (`NO_ACTIVE_SEARCH_INDEX`, `SEARCH_PROFILE_MISMATCH`) ; erreurs publiées dans `contracts/`.
+- S5 — question comptée par le compteur approximatif (majorant) dans le budget de passage.
+- S5 — le jeu de référence n'exerce pas la troncature (toutes les unités tiennent en un chunk) : `max_passage_tokens` reste Proposed, à remesurer en S6.
+- S5 — l'API charge E5 (≈ 1,1 Gio de RSS supplémentaire) : risque mémoire à suivre avec O5.
 
 ## Corrections en attente
 

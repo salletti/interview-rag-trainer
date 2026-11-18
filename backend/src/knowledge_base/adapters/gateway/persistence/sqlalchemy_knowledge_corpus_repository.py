@@ -103,7 +103,7 @@ class SqlAlchemyKnowledgeCorpusRepository:
             corpus_id=row.corpus_id,
             active_index_id=row.active_index_id,
             version=row.version,
-            indexes=[_to_index(r) for r in index_rows],
+            indexes=[index_from_row(r) for r in index_rows],
         )
 
     async def _write_indexes(self, corpus: KnowledgeCorpus) -> None:
@@ -160,7 +160,7 @@ def policy_document(policy: ChunkingPolicy) -> dict[str, Any]:
     }
 
 
-def _to_index(row: Row[Any]) -> SearchIndex:
+def index_from_row(row: Row[Any]) -> SearchIndex:
     profile = row.embedding_profile
     policy = row.chunking_policy
     return SearchIndex(

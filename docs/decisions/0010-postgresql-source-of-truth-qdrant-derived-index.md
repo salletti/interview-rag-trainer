@@ -81,3 +81,20 @@ de l'index au-delà d'un simple comptage.
   [0009](0009-pedagogical-chunking-knowledge-units.md),
   [0011](0011-embedding-profile-search-index-blue-green.md).
 - Conception : [knowledge-base.md §9–§12](../conception/bounded-contexts/knowledge-base.md#9-intégrité-de-lindex-qdrant).
+
+## Suivi (2026-11-18)
+
+Implémentation de S5, le corps de l'ADR est inchangé. Les points 5 et 6 sont
+en place : `visible=true` est ajouté à chaque recherche par l'adapter Qdrant ;
+le contrôle SQL final (`SqlAlchemyPublishedUnitReader`) ne garde que les
+unités de versions `PUBLISHED` de documents `ACTIVE` ; une passe de complément
+par défaut, `complete=false` quand des rejets laissent moins de `limit`
+passages. Les « paramètres de recherche Proposed jusqu'à S5 » sont tranchés
+dans [knowledge-base.md §16, O12](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts)
+(f = 2, une passe ; `max_passage_tokens` reste Proposed) et précisés au §12.
+Mesures sur le jeu de référence S5 : Recall@5 0,881, MRR 0,853, intégrité
+d'unité 1,000 ; recherche complète en 20 ms médians sur l'hôte (encodage
+13 ms, Qdrant 4 ms, contrôle SQL 2 ms). La condition de réévaluation
+« Recall mesuré en S5 insuffisant malgré le complément » n'est pas atteinte :
+avec 3 documents sur 10 écartés par le contrôle SQL, Recall@5 reste à 0,917
+dès f = 2. Détail : [README du contexte](../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation).

@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.knowledge_base = knowledge_base.KnowledgeBaseResources(
         session_factory=app.state.session_factory,
         settings=app.state.knowledge_base_settings,
+        qdrant_client=app.state.qdrant_client,
     )
     logger.info("startup environment=%s", settings.environment)
     try:
@@ -71,5 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resources: knowledge_base.KnowledgeBaseResources = app.state.knowledge_base
         return resources
 
-    knowledge_base.register(app, knowledge_base_resources)
+    knowledge_base.register(
+        app, knowledge_base_resources, app.state.knowledge_base_settings
+    )
     return app

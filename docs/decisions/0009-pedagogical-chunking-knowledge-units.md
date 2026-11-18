@@ -101,3 +101,15 @@ S4 (2026-11-18) : le compteur de production est le tokenizer du profil
 (`SentenceTransformersEmbedder.token_counter`) ; identité de production
 `kb-chunking-v1+xlmr-d1287505`, budget inchangé (508). Les lots de l'identité
 provisoire ne sont pas réindexés (pas de backfill avant S9).
+
+S5 (2026-11-18) : small-to-big (point 6) implémenté
+(`domain/services/passage_assembler.py`) ; le budget d'une unité complète
+compte la question ; une fenêtre ne répète pas l'en-tête contextuel des
+chunks (précisions au [§12](../conception/bounded-contexts/knowledge-base.md#12-stratégie-de-recherche-et-limites-de-recall)).
+Première mesure des conditions de réévaluation : intégrité d'unité 1,000
+(37 unités retrouvées sur 37) et Recall@5 0,881 sur le jeu de référence
+(42 requêtes) ; seuils de non-régression dans
+`backend/tests/fixtures/knowledge_base/retrieval/retrieval_thresholds.json`.
+Le jeu n'exerce ni les unités multi-chunks ni la troncature (49 unités, toutes
+en un chunk) : `max_passage_tokens` et l'overlap (point 5) restent à mesurer
+sur des cours longs (S6, S9).
