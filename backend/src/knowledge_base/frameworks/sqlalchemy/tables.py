@@ -1,7 +1,7 @@
 """Tables du schéma PostgreSQL ``knowledge_base`` : ``work_items`` (S0 §2),
-``documents``, ``document_versions`` et ``idempotency_keys`` (S2),
-``knowledge_units`` et ``document_chunks`` (S3), ``knowledge_corpus``,
-``search_indexes`` et ``indexations`` (S4).
+``documents`` (``purged_at`` depuis S7), ``document_versions`` et
+``idempotency_keys`` (S2), ``knowledge_units`` et ``document_chunks`` (S3),
+``knowledge_corpus``, ``search_indexes`` et ``indexations`` (S4).
 
 Ce ``MetaData`` est importé par ``alembic/env.py`` (``target_metadata``) ;
 Alembic reste l'unique mécanisme de création du schéma.
@@ -141,6 +141,10 @@ documents = Table(
     Column(
         "updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     ),
+    # Purge physique enregistrée (S7, ADR 0012 point 6) : hors de l'agrégat,
+    # écrite par la finalisation de purge_document. Un document purgé ne
+    # retient plus ses blobs (BlobReferences).
+    Column("purged_at", DateTime(timezone=True)),
     CheckConstraint(f"status IN ({_one_of(DOCUMENT_STATUSES)})", name="status"),
     CheckConstraint(f"kind IN ({_one_of(DOCUMENT_KINDS)})", name="kind"),
     CheckConstraint(

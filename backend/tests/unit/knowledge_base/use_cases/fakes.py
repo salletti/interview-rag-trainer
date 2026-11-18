@@ -26,6 +26,11 @@ API figée par ces tests (ports du domaine) :
   ``put(chunks, *, max_bytes) -> StoredBlob`` (lève ``BlobTooLargeError`` sans
   rien laisser), ``exists(content_hash)`` ; ``StoredBlob(content_hash,
   size_bytes)``.
+
+Depuis S7, la Unit of Work expose aussi ``corpus`` et ``indexations`` (l'import
+d'une version et le retrait annulent l'indexation en cours) : les tests de S2
+n'ont pas de corpus (``NoCorpus``), donc aucune indexation à annuler ; les
+doubles complets sont ceux de ``indexing_fakes.py``.
 """
 
 from __future__ import annotations
@@ -39,6 +44,8 @@ from types import TracebackType
 from typing import Self
 from uuid import UUID, uuid4
 
+from knowledge_base.domain.entities.indexation import Indexation
+from knowledge_base.domain.entities.knowledge_corpus import KnowledgeCorpus
 from knowledge_base.domain.entities.knowledge_document import KnowledgeDocument
 from knowledge_base.domain.providers.document_blob_store import (
     BlobTooLargeError,
@@ -46,6 +53,12 @@ from knowledge_base.domain.providers.document_blob_store import (
 )
 from knowledge_base.domain.providers.idempotency_key_repository import (
     IdempotencyRecord,
+)
+from knowledge_base.domain.providers.indexation_repository import (
+    IndexationRepository,
+)
+from knowledge_base.domain.providers.knowledge_corpus_repository import (
+    KnowledgeCorpusRepository,
 )
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
@@ -57,6 +70,9 @@ from knowledge_base.use_cases.import_document.import_document_handler import (
 )
 from knowledge_base.use_cases.import_document_version.import_document_version_handler import (  # noqa: E501
     ImportDocumentVersionHandler,
+)
+from knowledge_base.use_cases.withdraw_document.withdraw_document_handler import (
+    WithdrawDocumentHandler,
 )
 
 NOW = datetime(2026, 11, 18, 10, 0, tzinfo=UTC)
@@ -155,6 +171,35 @@ class FakeIdempotencyKeys:
         self._w.keys[record.key] = record
 
 
+class NoCorpus:
+    """Corpus jamais créé : la situation des tests de S2 et S3."""
+
+    async def get_shared(self) -> KnowledgeCorpus | None:
+        return None
+
+    async def get_for_update(self) -> KnowledgeCorpus | None:
+        return None
+
+    async def add(self, corpus: KnowledgeCorpus) -> None:
+        raise AssertionError("les tests de S2 et S3 ne créent pas de corpus")
+
+    async def save(self, corpus: KnowledgeCorpus) -> None:
+        raise AssertionError("les tests de S2 et S3 ne modifient pas de corpus")
+
+
+class NoIndexations:
+    """Sans corpus, aucune indexation n'est lue ni écrite."""
+
+    async def get(self, version_id: UUID, index_id: UUID) -> Indexation | None:
+        return None
+
+    async def add(self, indexation: Indexation) -> None:
+        raise AssertionError("aucune indexation attendue sans corpus")
+
+    async def save(self, indexation: Indexation) -> None:
+        raise AssertionError("aucune indexation attendue sans corpus")
+
+
 class FakeUnitOfWork:
     def __init__(self, state: State) -> None:
         self._state = state
@@ -162,6 +207,8 @@ class FakeUnitOfWork:
         self.documents = FakeDocuments(self._working)
         self.work_queue = FakeWorkQueue(self._working)
         self.idempotency_keys = FakeIdempotencyKeys(self._working)
+        self.corpus: KnowledgeCorpusRepository = NoCorpus()
+        self.indexations: IndexationRepository = NoIndexations()
 
     async def __aenter__(self) -> Self:
         snapshot = copy.deepcopy(self._state)
@@ -229,6 +276,7 @@ class Harness:
     blobs: InMemoryBlobStore
     import_document: ImportDocumentHandler
     import_version: ImportDocumentVersionHandler
+    withdraw_document: WithdrawDocumentHandler
 
     def pending_item_for(self, version_id: UUID) -> FakeWorkItem | None:
         return self.state.items.get(f"extract_version:{version_id}")
@@ -256,4 +304,5 @@ def make_harness(*, max_upload_bytes: int = MAX_UPLOAD_BYTES) -> Harness:
             max_upload_bytes=max_upload_bytes,
             clock=lambda: NOW,
         ),
+        withdraw_document=WithdrawDocumentHandler(unit_of_work=unit_of_work),
     )

@@ -13,11 +13,13 @@ ADR 0010, ADR 0011 §2).
   rejouée (les écritures sont idempotentes, §7.3).
 - Recherche (S5, port ``ChunkSearcher``) : ``query_points_groups`` groupé par
   ``unit_id``, ``CHUNKS_PER_UNIT`` chunks au plus par unité ; le filtre
-  ``visible=true`` est toujours ajouté ici (§12 étape 3).
+  ``visible=true`` est toujours ajouté ici (§12 étape 3). Un hit sans
+  ``chunk_id`` (point supprimé pendant la requête, S7) est ignoré.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 from uuid import UUID
@@ -54,6 +56,8 @@ COLLECTION_PREFIX: Final = "kb_index_"
 # d'une unité longue. Au-delà de trois, une unité de 512 tokens par chunk
 # dépasserait de toute façon le budget de passage par défaut.
 CHUNKS_PER_UNIT: Final = 3
+
+logger = logging.getLogger(__name__)
 
 _DISTANCES: Final[Mapping[Distance, QdrantDistance]] = {
     Distance.COSINE: QdrantDistance.COSINE,
@@ -212,15 +216,30 @@ class QdrantVectorIndex:
             with_payload=["chunk_id", "unit_id"],
             with_vectors=False,
         )
-        return [
-            ChunkHit(
-                chunk_id=UUID(str((point.payload or {})["chunk_id"])),
-                unit_id=UUID(str(group.id)),
-                score=point.score,
-            )
-            for group in result.groups
-            for point in group.hits
-        ]
+        hits: list[ChunkHit] = []
+        for group in result.groups:
+            for point in group.hits:
+                chunk_id = (point.payload or {}).get("chunk_id")
+                if chunk_id is None:
+                    # Point supprimé pendant la requête (purge ou
+                    # synchronisation concurrente) : Qdrant peut rendre le hit
+                    # avec un payload réduit à la clé de regroupement. Il
+                    # n'existe plus ; PostgreSQL arbitre de toute façon (§11).
+                    logger.debug(
+                        "hit %s de l'unité %s sans chunk_id ignoré (point en "
+                        "cours de suppression)",
+                        point.id,
+                        group.id,
+                    )
+                    continue
+                hits.append(
+                    ChunkHit(
+                        chunk_id=UUID(str(chunk_id)),
+                        unit_id=UUID(str(group.id)),
+                        score=point.score,
+                    )
+                )
+        return hits
 
 
 def search_filter(

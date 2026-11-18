@@ -245,6 +245,10 @@ class KnowledgeDocument:
         return imported
 
     def record_extraction(self, version_id: UUID) -> None:
+        """Refusée sur un document retiré : défense en profondeur de §7.3
+        (condition 5), au cas où l'annulation du work item n'aurait pas eu
+        lieu."""
+        self._ensure_active("extraction")
         self._move(version_id, VersionStatus.EXTRACTED)
         self._events.append(
             DocumentVersionExtracted(

@@ -200,7 +200,7 @@ traduction en `PointStruct`, payload et filtres Qdrant appartient à l'adapter
 | I3 | Une même empreinte n'est importée qu'une fois par document | *Précision S2, 2026-11-18 :* `UNIQUE(content_hash)` **global** sur `document_versions`, qui couvre I3 et la décision O2 (un contenu n'appartient qu'à un document, §16) ; remplace `UNIQUE(document_id, content_hash)` |
 | I4 | Au plus une version `PUBLISHED` par document | `published_version_id` sous verrou + index unique partiel |
 | I5 | Publication monotone : une version ne peut être publiée que si son numéro est supérieur à celui de la version publiée | Règle de l'agrégat, vérifiée dans la transaction de publication (§8) |
-| I6 | Importer la version N supplante (`DISCARDED`) toutes les versions antérieures non publiées et annule leurs `work_items` | Même transaction que l'import |
+| I6 | Importer la version N supplante (`DISCARDED`) toutes les versions antérieures non publiées et annule leurs `work_items` | Même transaction que l'import. *Précision S7, 2026-11-18 :* la transaction annule aussi, dans chaque index vivant, l'item `index_version` des versions écartées et leurs `Indexation` `PENDING` ou `FAILED` (→ `CANCELLED`, une `COMPLETED` est laissée telle quelle) ; le corpus n'est lu (`FOR SHARE`) que si une version est écartée |
 | I7 | Les unités et chunks d'une version sont écrits dans la transaction qui la fait passer à `EXTRACTED`, et ne sont jamais modifiés | Finalisation sous fencing (§7) |
 | I8 | Une `Indexation` n'est `COMPLETED` que si le manifest a été vérifié dans Qdrant (§9) et que le fencing token du `WorkItem` est valide | Transaction de finalisation |
 | I9 | Une version n'est publiée que si son `Indexation` dans l'index `ACTIVE` est `COMPLETED`, l'index actif étant lu sous le verrou du corpus | §8, §13 |
@@ -238,6 +238,14 @@ stateDiagram-v2
 
 Un document `WITHDRAWN` n'accepte plus de nouvelle version. Une réactivation
 éventuelle est **[Open]** (non prévue en V1).
+
+*Précisions S7 (2026-11-18) : un second retrait est refusé
+(`DocumentWithdrawnError`, 409 `DOCUMENT_WITHDRAWN` par l'API), sans effet :
+ni révision, ni seconde purge. Un document `WITHDRAWN` refuse aussi
+`record_extraction` (défense en profondeur de §7.3, condition 5, si
+l'annulation du work item n'avait pas eu lieu). La purge physique est
+enregistrée par `documents.purged_at` (hors agrégat) ; la ligne reste comme
+tombstone, avec ses versions.*
 
 ### 5.2 `DocumentVersion`
 
@@ -313,6 +321,12 @@ récupération repose sur la table et le scheduler, jamais sur une redélivrance
 | `sync_visibility` | claim | convergence Qdrant vers l'état SQL du document (§11) | fencing + item `SUCCEEDED` | — |
 | `purge_document` | claim | suppression des points, puis des blobs non référencés | fencing + chunks supprimés, `purged_at` | — |
 | `build_index` (S9) | claim | création de la collection, planification du backfill | fencing + `Indexation PENDING` pour le corpus éligible | `index_version`, éventuellement `extract_version` (rechunking) |
+
+*Précision S7 (2026-11-18) : `purge_document` (file d'ingestion, 5
+tentatives, dedup `purge_document:<document_id>`) est implémenté comme décrit
+dans la ligne `purge_document` ; les unités sont supprimées avec les chunks, à la
+finalisation. Voir l'écart d'ordre avec le tableau du §10 dans les précisions
+S7 du §10.*
 
 Les noms des `kind` sont **[Proposed]** et fixés au moment de la slice qui les
 introduit. S0 ne livre que le mécanisme générique, sans aucun `kind` métier.
@@ -391,6 +405,13 @@ Un effet externe est acceptable si **toutes** ces conditions tiennent :
    (points d'une version `PUBLISHED` de document `ACTIVE` avec
    `visible=false` → replanifier `sync_visibility`) ; aucune garantie n'est
    donnée avant S8.*
+   *Précision S7 (2026-11-18) : vérifié contre Qdrant réel
+   (`test_s7_withdrawal_purge`) : une indexation dont l'item a été annulé par
+   le retrait et qui écrit après la purge laisse des points `visible=false`,
+   jamais renvoyés (filtre `visible` et contrôle SQL), que seule une nouvelle
+   exécution de `purge_document` supprime. Rien ne la planifie en S7 : la
+   réconciliation S8 replanifiera `purge_document` pour un document
+   `WITHDRAWN` qui a encore des points.*
 
 ## 8. Prévention des publications obsolètes
 
@@ -409,6 +430,15 @@ puis l'indexation de N se termine.
      lu sous `FOR SHARE` de la ligne du corpus (I9).
 4. Si N+1 est publiée **avant** que N ne termine (cas impossible après 1,
    mais protégé), I5 refuse la publication de N.
+
+*Précision S7 (2026-11-18) : le point 1 est complet depuis S7 (S4 n'annulait
+que l'item `extract_version`) ; vérifié sous concurrence réelle
+(`test_s7_concurrent_versions`) : la tentative de N, suspendue avant son
+upsert pendant l'import de N+1, finit `stale`, N n'est jamais publiée, ses
+points restent `visible=false` puis sont supprimés à la synchronisation de
+N+1. Une recherche ne mêle jamais deux versions d'un document, y compris
+quand Qdrant porte les deux versions visibles (fenêtre de `sync_visibility`
+entre `set_visibility` et `delete_points`, tenue ouverte par une barrière).*
 
 ## 9. Intégrité de l'index Qdrant
 
@@ -444,6 +474,59 @@ Sémantique d'un retrait concurrent à une recherche : la visibilité est
 Une recherche commencée avant le commit du retrait peut encore renvoyer le
 document ; les consommateurs ayant figé l'extrait, ce comportement est accepté.
 
+*Précisions S7 (2026-11-18), décisions de l'orchestrateur ([README du
+contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrentes-retrait-et-purge)) :*
+
+- *API : `DELETE /api/v1/knowledge-base/documents/{id}` → 202
+  `{document_id, status: "WITHDRAWN", visibility_revision}` ; le document reste
+  comme tombstone. 404 `DOCUMENT_NOT_FOUND` ; 409 `DOCUMENT_WITHDRAWN` pour un
+  document déjà retiré, sans effet (pas de nouvelle purge, révision
+  inchangée) ; 409 `CONCURRENT_MODIFICATION` si le verrou optimiste est perdu
+  deux fois (un import de version concurrent est rejoué une fois, pour que sa
+  version n'échappe pas à l'annulation) ; 422 pour un identifiant invalide.*
+- *« Items en cours annulés » : item `extract_version` des versions
+  `RECEIVED`, `EXTRACTED` et `FAILED` ; dans chaque index vivant, item
+  `index_version` de chaque version et indexation `PENDING` ou `FAILED` →
+  `CANCELLED` (une `COMPLETED` reste un fait). Une même transaction.*
+- *Le retrait ne planifie **pas** `sync_visibility` : la recherche exclut le
+  document dès le commit par le contrôle SQL (I12), alors que Qdrant porte
+  encore ses points visibles (le complément de §12 compense la perte de
+  Recall) ; la purge supprime ces points. Vérifié avec des recherches
+  concurrentes : aucune recherche commencée après le commit ne rend le
+  document.*
+- *Ordre effectif de la purge : **points Qdrant** (index vivants), puis
+  **blobs** non détenus (hors transaction), puis **chunks, unités et
+  `purged_at`** dans la transaction de finalisation, sous fencing. Écart avec
+  « points, puis chunks, puis blobs » du tableau et du §6 : les chunks sont
+  des écritures PostgreSQL ; les faire dans la finalisation les protège par le
+  fencing et rend l'ensemble rejouable étape par étape. Une panne de Qdrant
+  ne supprime rien d'autre ; une panne du volume laisse chunks et `purged_at`
+  intacts ; l'item est rejoué. Les points d'un document retiré ne sont jamais
+  renvoyés de toute façon (contrôle SQL) : l'ordre n'affecte pas la
+  visibilité.*
+- *Index purgés : les index vivants (`ACTIVE`, `BUILDING`,
+  `live_indexes()`). Les points d'un index `RETIRED` partent avec sa
+  collection, supprimée en entier en S9.*
+- *Blob « non référencé » : aucun document **non purgé** (`purged_at IS
+  NULL`) n'a de version, quel que soit son état, qui porte l'empreinte. Les
+  versions du document purgé (tombstones) ne retiennent pas son propre blob ;
+  après la purge, le tombstone garde l'empreinte (réimport refusé, O2/O11)
+  sans retenir le fichier.*
+- *Points écrits par une tentative zombie après la purge : invisibles ;
+  réparation par la réconciliation S8 (§7.3, condition 6).*
+- *Blobs orphelins (ADR 0012 point 6) : cas d'usage `CleanBlobOrphans` livré
+  en S7 (délai de grâce réglable, `KB_BLOB_ORPHAN_GRACE_SECONDS`, défaut
+  24 h, **Proposed**) ; son ordonnancement périodique est celui de la
+  réconciliation (S8) ; les fichiers temporaires de `tmp/` sont hors
+  périmètre (S8). Risque résiduel connu : un import du **même** contenu qu'un
+  orphelin plus vieux que le délai, qui commiterait entre la lecture des
+  références et la suppression du fichier, perdrait son blob (fenêtre de
+  l'ordre de la milliseconde ; conséquence visible : `BLOB_MISSING` à
+  l'extraction). Non fermé en S7.*
+- *Défaut corrigé : pendant un `delete_points` concurrent, Qdrant peut rendre
+  un hit au payload réduit à la clé de regroupement ; la recherche levait
+  `KeyError` (500). Un hit sans `chunk_id` est désormais ignoré.*
+
 ## 11. Visibilité et cohérence PostgreSQL / Qdrant
 
 **[Accepted — ADR 0010]**
@@ -467,6 +550,10 @@ document ; les consommateurs ayant figé l'extrait, ce comportement est accepté
   par une synchronisation ultérieure dès que la version devient `DISCARDED`.
   Le handler lit l'état SQL courant : la révision de la commande n'est qu'une
   identité de dédoublonnage.*
+  *Précision S7 (2026-11-18) : « document retiré → tout supprimé » reste vrai
+  si une synchronisation s'exécute après un retrait, mais le retrait n'en
+  planifie aucune : la suppression des points est l'affaire de
+  `purge_document` (§10, précisions S7).*
 - **Ordre des écritures** : points écrits `visible=false` → publication SQL →
   synchronisation. Entre le commit et la synchronisation, le document republié
   peut **manquer temporairement** des résultats (l'ancienne version est écartée

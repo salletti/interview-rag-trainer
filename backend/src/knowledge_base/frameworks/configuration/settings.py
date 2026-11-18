@@ -1,6 +1,7 @@
 """Réglages techniques de Knowledge Base : work queue (S0 §7, §8.4), import et
 stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6),
-recherche (S5, knowledge-base.md §12, O12).
+recherche (S5, knowledge-base.md §12, O12), nettoyage des blobs orphelins
+(S7, ADR 0012 point 6).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -44,6 +45,10 @@ class KnowledgeBaseSettings(BaseSettings):
     # des blobs, montée dans l'API et les workers (compose.yaml, kb_blobs).
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
     blob_root: Path = Path("/var/lib/interview-rag-trainer/blobs")
+    # Âge minimal d'un blob non référencé avant sa suppression (ADR 0012,
+    # Proposed : 24 h) : doit dépasser largement la durée d'un import, dont
+    # le dépôt précède la transaction.
+    blob_orphan_grace_seconds: float = Field(default=24 * 3600, gt=0)
 
     # Embeddings (S4) : poids des modèles dans le volume models_cache, monté
     # dans l'API et le worker d'ingestion ; téléchargés au premier chargement.
@@ -95,6 +100,10 @@ class KnowledgeBaseSettings(BaseSettings):
     @property
     def backoff_base(self) -> timedelta:
         return timedelta(seconds=self.work_backoff_base_seconds)
+
+    @property
+    def blob_orphan_grace(self) -> timedelta:
+        return timedelta(seconds=self.blob_orphan_grace_seconds)
 
     @property
     def backoff_cap(self) -> timedelta:

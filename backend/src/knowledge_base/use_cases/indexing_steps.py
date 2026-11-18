@@ -1,17 +1,28 @@
-"""Items de la work queue de l'indexation et de la visibilité
-(knowledge-base.md §6, §11) : ``kind``, clé de dédoublonnage et payload, au
-même endroit pour le producteur (use case) et le consommateur (handler).
+"""Items de la work queue de l'indexation, de la visibilité et de la purge
+(knowledge-base.md §6, §10, §11) : ``kind``, clé de dédoublonnage et payload,
+au même endroit pour le producteur (use case) et le consommateur (handler) ;
+et l'annulation du travail d'indexation d'une version abandonnée ou d'un
+document retiré (S7 ; I6, §5.3, §8 point 1).
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Final
 from uuid import UUID
 
+from knowledge_base.domain.entities.indexation import IndexationStatus
+from knowledge_base.domain.providers.indexing_transaction import IndexingTransaction
 from knowledge_base.domain.providers.work_queue import WorkQueue
 
 INDEX_VERSION: Final = "index_version"
 SYNC_VISIBILITY: Final = "sync_visibility"
+PURGE_DOCUMENT: Final = "purge_document"
+
+# Une indexation COMPLETED reste un fait : aucune transition n'en part (§5.3).
+_CANCELLABLE_INDEXATIONS: Final = frozenset(
+    {IndexationStatus.PENDING, IndexationStatus.FAILED}
+)
 
 
 def index_version_key(version_id: UUID, index_id: UUID) -> str:
@@ -47,3 +58,38 @@ async def schedule_visibility_sync(
             "visibility_revision": str(visibility_revision),
         },
     )
+
+
+def purge_document_key(document_id: UUID) -> str:
+    return f"{PURGE_DOCUMENT}:{document_id}"
+
+
+async def schedule_purge(work_queue: WorkQueue, document_id: UUID) -> None:
+    await work_queue.enqueue(
+        PURGE_DOCUMENT,
+        purge_document_key(document_id),
+        {"document_id": str(document_id)},
+    )
+
+
+async def cancel_indexing(
+    transaction: IndexingTransaction, version_ids: Collection[UUID]
+) -> None:
+    """Dans chaque index vivant (lu sous ``FOR SHARE`` du corpus) : l'item
+    ``index_version`` de chaque version est annulé (fencing : une tentative en
+    cours ne pourra plus finaliser) et son indexation ``PENDING`` ou
+    ``FAILED`` passe ``CANCELLED``. Dans la transaction de l'appelant."""
+    if not version_ids:
+        return
+    corpus = await transaction.corpus.get_shared()
+    for index in () if corpus is None else corpus.live_indexes():
+        for version_id in version_ids:
+            await transaction.work_queue.cancel(
+                index_version_key(version_id, index.index_id)
+            )
+            indexation = await transaction.indexations.get(version_id, index.index_id)
+            if indexation is not None and (
+                indexation.status in _CANCELLABLE_INDEXATIONS
+            ):
+                indexation.cancel()
+                await transaction.indexations.save(indexation)

@@ -1,5 +1,6 @@
-"""Routes d'import de Knowledge Base (S2). Le routeur traduit HTTP en commande
-et le résultat (ou le refus) en réponse ; il ne décide rien.
+"""Routes d'import (S2) et de retrait (S7) des documents de Knowledge Base. Le
+routeur traduit HTTP en commande et le résultat (ou le refus) en réponse ; il
+ne décide rien.
 
 Le fichier est transmis au cas d'usage par morceaux : Starlette a déjà
 stocké la partie multipart dans un fichier temporaire (en mémoire jusqu'à
@@ -20,11 +21,13 @@ from fastapi.responses import JSONResponse
 
 from knowledge_base.adapters.controller.rest.errors import (
     IMPORT_REFUSALS,
+    WITHDRAW_REFUSALS,
     refusal_response,
 )
 from knowledge_base.adapters.controller.rest.schemas import (
     ErrorResponse,
     ImportResponse,
+    WithdrawResponse,
 )
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from knowledge_base.use_cases.import_document.import_document_command import (
@@ -42,6 +45,12 @@ from knowledge_base.use_cases.import_document_version.import_document_version_ha
 from knowledge_base.use_cases.import_result import (
     ImportDocumentResult,
 )
+from knowledge_base.use_cases.withdraw_document.withdraw_document_command import (
+    WithdrawDocument,
+)
+from knowledge_base.use_cases.withdraw_document.withdraw_document_handler import (
+    WithdrawDocumentHandler,
+)
 
 PREFIX: Final = "/api/v1/knowledge-base"
 TAGS: Final[list[str | Enum]] = ["knowledge-base"]
@@ -49,6 +58,7 @@ UPLOAD_CHUNK_BYTES: Final = 64 * 1024
 
 ImportDocumentHandlerFactory = Callable[[], ImportDocumentHandler]
 ImportVersionHandlerFactory = Callable[[], ImportDocumentVersionHandler]
+WithdrawDocumentHandlerFactory = Callable[[], WithdrawDocumentHandler]
 IdempotencyKey = Annotated[str | None, Header(min_length=1, max_length=255)]
 
 _RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
@@ -68,6 +78,7 @@ def add_document_routes(
     *,
     import_document_handler: ImportDocumentHandlerFactory,
     import_version_handler: ImportVersionHandlerFactory,
+    withdraw_document_handler: WithdrawDocumentHandlerFactory,
 ) -> None:
     """Déclare les routes directement sur ``router`` (le routeur de
     l'application) : FastAPI ≥ 0.163 n'aplatit plus les routeurs inclus.
@@ -139,6 +150,33 @@ def add_document_routes(
         except IMPORT_REFUSALS as refused:
             return refusal_response(refused)
         return _accepted(result, response)
+
+    @router.delete(
+        f"{PREFIX}/documents/{{document_id}}",
+        tags=TAGS,
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=WithdrawResponse,
+        responses={
+            status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
+            status.HTTP_409_CONFLICT: {"model": ErrorResponse},
+        },
+        summary="Retirer un document (purge asynchrone)",
+    )
+    async def withdraw_document(
+        document_id: UUID,
+        handler: Annotated[WithdrawDocumentHandler, Depends(withdraw_document_handler)],
+    ) -> WithdrawResponse | JSONResponse:
+        """Retrait logique, immédiat pour toute recherche commencée après la
+        réponse ; le document reste comme tombstone, ses données sont purgées
+        de façon asynchrone. 409 ``DOCUMENT_WITHDRAWN`` s'il l'est déjà."""
+        try:
+            result = await handler.handle(WithdrawDocument(document_id=document_id))
+        except WITHDRAW_REFUSALS as refused:
+            return refusal_response(refused)
+        return WithdrawResponse(
+            document_id=result.document_id,
+            visibility_revision=result.visibility_revision,
+        )
 
 
 async def _chunks(upload: UploadFile) -> AsyncIterator[bytes]:

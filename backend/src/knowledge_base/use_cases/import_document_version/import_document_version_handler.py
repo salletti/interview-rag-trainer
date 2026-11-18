@@ -21,6 +21,7 @@ from knowledge_base.use_cases.import_result import (
 from knowledge_base.use_cases.import_steps import (
     accepted_filename,
     accepted_media_type,
+    discarded_versions,
     remember,
     replay,
     request_fingerprint,
@@ -28,13 +29,16 @@ from knowledge_base.use_cases.import_steps import (
     schedule_extraction,
     utc_now,
 )
+from knowledge_base.use_cases.indexing_steps import cancel_indexing
 
 logger = logging.getLogger(__name__)
 
 
 class ImportDocumentVersionHandler:
     """Version suivante d'un document existant ; les versions antérieures non
-    publiées sont écartées (I6) et leur extraction annulée."""
+    publiées sont écartées (I6), et leur extraction comme leur indexation
+    (items et ``Indexation`` des index vivants, S7) annulées dans la même
+    transaction."""
 
     def __init__(
         self,
@@ -104,9 +108,9 @@ class ImportDocumentVersionHandler:
             # Même document : I3 est refusé par l'agrégat (DuplicateContentError).
             version = document.import_version(version_id=version_id, source=source)
             await uow.documents.save(document)
-            await schedule_extraction(
-                uow, document.document_id, version_id, document.pull_events()
-            )
+            events = document.pull_events()
+            await schedule_extraction(uow, document.document_id, version_id, events)
+            await cancel_indexing(uow, discarded_versions(events))
             result = ImportDocumentResult(
                 document_id=document.document_id,
                 version_id=version_id,

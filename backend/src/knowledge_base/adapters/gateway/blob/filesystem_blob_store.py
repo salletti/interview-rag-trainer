@@ -1,5 +1,5 @@
-"""``DocumentBlobStore`` et ``DocumentBlobReader`` sur un volume local adressé
-par contenu (ADR 0012).
+"""``DocumentBlobStore``, ``DocumentBlobReader``, ``DocumentBlobEraser`` et
+``DocumentBlobInventory`` sur un volume local adressé par contenu (ADR 0012).
 
 Le flux est écrit dans ``<root>/tmp/`` (même volume que la destination, pour
 que le renommage soit atomique), haché au fil des morceaux, puis renommé vers
@@ -8,15 +8,22 @@ répertoire de destination est ensuite synchronisé pour que le renommage
 survive à une coupure. Un fichier n'apparaît donc au chemin final que complet.
 Les écritures disque passent par ``asyncio.to_thread`` : la boucle de l'API
 n'attend jamais le disque.
+
+Suppression et inventaire (S7) : seul cet adapter supprime un fichier (test
+d'architecture ``test_withdrawal_purge_structure``) ; l'inventaire ne voit que
+les chemins adressés par contenu, jamais ``tmp/``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import tempfile
 from collections.abc import AsyncIterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
@@ -27,19 +34,32 @@ from knowledge_base.domain.providers.document_blob_store import (
 )
 from knowledge_base.domain.value_objects.content_hash import ContentHash
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StoredBlobFile:
+    """Élément de l'inventaire : empreinte et date de modification (UTC) du
+    fichier, qui date le dépôt."""
+
+    content_hash: ContentHash
+    modified_at: datetime
+
 
 class FileSystemBlobStore:
-    """``DocumentBlobStore`` (import) et ``DocumentBlobReader`` (extraction)."""
+    """``DocumentBlobStore`` (import), ``DocumentBlobReader`` (extraction),
+    ``DocumentBlobEraser`` et ``DocumentBlobInventory`` (purge, orphelins)."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._addressed = root / "sha256"
         # Les temporaires orphelins (crash pendant un upload) restent
-        # repérables ici pour la réconciliation (S7/S8).
+        # repérables ici pour la réconciliation (S8).
         self._staging = root / "tmp"
 
     def _path_of(self, content_hash: ContentHash) -> Path:
         digest = content_hash.value
-        return self._root / "sha256" / digest[:2] / digest[2:4] / digest
+        return self._addressed / digest[:2] / digest[2:4] / digest
 
     async def put(self, chunks: AsyncIterable[bytes], *, max_bytes: int) -> StoredBlob:
         staged = await asyncio.to_thread(self._open_staging_file)
@@ -67,6 +87,46 @@ class FileSystemBlobStore:
             return await asyncio.to_thread(self._path_of(content_hash).read_bytes)
         except FileNotFoundError as error:
             raise BlobMissingError(content_hash) from error
+
+    async def delete(self, content_hash: ContentHash) -> bool:
+        return await asyncio.to_thread(self._delete, self._path_of(content_hash))
+
+    async def list_blobs(self) -> list[StoredBlobFile]:
+        return await asyncio.to_thread(self._list_blobs)
+
+    @staticmethod
+    def _delete(path: Path) -> bool:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        # Les répertoires <aa>/<bb> restent : un import concurrent du même
+        # préfixe pourrait y publier au même instant.
+        return True
+
+    def _list_blobs(self) -> list[StoredBlobFile]:
+        found: list[StoredBlobFile] = []
+        for path in sorted(self._addressed.glob("*/*/*")):
+            if not path.is_file():
+                continue
+            try:
+                content_hash = ContentHash(path.name)
+                modified = path.stat().st_mtime
+            except ValueError:
+                logger.warning("fichier inattendu dans le volume des blobs : %s", path)
+                continue
+            except FileNotFoundError:
+                continue  # supprimé entre le parcours et la lecture
+            if path != self._path_of(content_hash):
+                logger.warning("blob hors de son chemin d'adressage : %s", path)
+                continue
+            found.append(
+                StoredBlobFile(
+                    content_hash=content_hash,
+                    modified_at=datetime.fromtimestamp(modified, UTC),
+                )
+            )
+        return found
 
     def _open_staging_file(self) -> IO[bytes]:
         self._staging.mkdir(parents=True, exist_ok=True)

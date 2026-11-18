@@ -43,6 +43,8 @@ EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, bool]]] = {
         "version": ("integer", False),
         "created_at": ("timestamp with time zone", False),
         "updated_at": ("timestamp with time zone", False),
+        # Ajoutée par la migration de S7 (9e4b7d2a6c13) ; ce test lit head.
+        "purged_at": ("timestamp with time zone", True),
     },
     "document_versions": {
         "id": ("uuid", False),

@@ -29,7 +29,7 @@ review prêt.
 | S4 | Embeddings, Qdrant, index initial, publication | S3 | **Terminée** | voir journal | Ruff, mypy (252 fichiers), 759 unit./archi., 273 intégration (18 `model`), 3/3 mutations, import réel jusqu'à PUBLISHED (3 points visibles) |
 | S5 | Recherche sémantique, provenance, évaluation | S4 | **Terminée** | voir journal | Ruff, mypy (299 fichiers), 1 115 unit./archi., 321 intégration (dont `retrieval`), 4 mutations tuées, recherche réelle sur la stack de dev (citation complète) |
 | S6 | PDF et DOCX avec Docling | S3, S5 | **Terminée** | voir journal | Ruff, mypy (316 fichiers), 1 196 unit./archi., 364 intégration, 3/3 mutations, import réel PDF et DOCX jusqu'à PUBLISHED, recherche avec pages |
-| S7 | Versions concurrentes, retrait, purge | S4, S5 | À faire | | |
+| S7 | Versions concurrentes, retrait, purge | S4, S5 | **Terminée** | voir journal | Ruff, mypy (356 fichiers), 1 305 unit./archi., 392 intégration, tests de concurrence S7 verts 13/13, 4 mutations, retrait + purge réels sur la stack de dev |
 | S8 | Réconciliation et gestion des erreurs | S7 | À faire | | |
 | S9 | Benchmark embeddings, blue/green | S5, S8 | À faire | | |
 
@@ -70,6 +70,10 @@ périmètre.
   enregistrées) → implémentation → revalidation : 1 196 unitaires,
   364 intégration. PDF 300 pages : 15 min 13 s jusqu'à PUBLISHED, pic RSS
   2 645 Mio ; image `production` 480 → 558 Mo ; base de dev reconstruite.
+- 2026-11-18 — S7 terminée : tests rouges (implémentation jetable hors
+  dépôt, 18 mutations) → implémentation → revalidation : 1 305 unitaires,
+  392 intégration. Défaut préexistant corrigé : recherche en 500 pendant une
+  suppression de points Qdrant.
 
 ## Écarts et décisions en cours de route
 
@@ -105,6 +109,11 @@ périmètre.
 - S6 — polices URW base35 dans l'image : sans police, docling-parse rendait le texte en rectangles dans le conteneur (0 bloc de code). Les tests d'intégration tournent sur l'hôte et ne verraient pas cette régression.
 - S6 — CPU par page 7 à 19 × plus élevé en conteneur que sur l'hôte, cause non identifiée.
 - S6 — `max_passage_tokens` = 1024 reste Proposed (une seule unité longue mesurée) ; `CHUNKS_PER_UNIT` non mesuré.
+- S7 — retrait : `DELETE` 202, tombstone ; retrait répété → 409 sans effet ; pas de `sync_visibility` (exclusion immédiate par le contrôle SQL, I12).
+- S7 — purge : points Qdrant d'abord, puis blobs non détenus, puis données SQL + `purged_at` (écart d'ordre vis-à-vis de §6/§10, consigné) ; index vivants seulement (RETIRED supprimé en S9).
+- S7 — références de blob : documents non purgés seulement.
+- S7 — course résiduelle du nettoyage d'orphelins (import concurrent entre `holders()` et `delete()`, fenêtre ~ms → `BLOB_MISSING`) : documentée, non fermée (S8).
+- S7 — renvoyés à S8 : ordonnancement du nettoyage d'orphelins, fichiers `tmp/`, replanification de la purge sur points zombies, `purge_document` FAILED sans hook.
 
 ## Corrections en attente
 

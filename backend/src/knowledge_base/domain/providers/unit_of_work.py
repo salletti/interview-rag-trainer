@@ -1,5 +1,7 @@
 """Port de l'Unit of Work de Knowledge Base : une transaction partagée par le
-dépôt des documents, la work queue et les clés d'idempotence."""
+dépôt des documents, la work queue et les clés d'idempotence, ainsi que le
+corpus et les indexations, dont l'import d'une version et le retrait annulent
+le travail en cours (S7, I6 ; knowledge-base.md §8 point 1, §10)."""
 
 from __future__ import annotations
 
@@ -8,6 +10,12 @@ from typing import Protocol, Self
 
 from knowledge_base.domain.providers.idempotency_key_repository import (
     IdempotencyKeyRepository,
+)
+from knowledge_base.domain.providers.indexation_repository import (
+    IndexationRepository,
+)
+from knowledge_base.domain.providers.knowledge_corpus_repository import (
+    KnowledgeCorpusRepository,
 )
 from knowledge_base.domain.providers.knowledge_document_repository import (
     KnowledgeDocumentRepository,
@@ -27,6 +35,12 @@ class UnitOfWork(Protocol):
 
     @property
     def idempotency_keys(self) -> IdempotencyKeyRepository: ...
+
+    @property
+    def corpus(self) -> KnowledgeCorpusRepository: ...
+
+    @property
+    def indexations(self) -> IndexationRepository: ...
 
     async def commit(self) -> None: ...
 

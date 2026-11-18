@@ -45,6 +45,7 @@ async def client(harness: Harness) -> AsyncIterator[AsyncClient]:
         app.router,
         import_document_handler=lambda: harness.import_document,
         import_version_handler=lambda: harness.import_version,
+        withdraw_document_handler=lambda: harness.withdraw_document,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

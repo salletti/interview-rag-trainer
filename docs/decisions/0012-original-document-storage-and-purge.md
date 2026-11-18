@@ -201,3 +201,43 @@ le pic, lui, croît encore à chaque conversion, par incréments décroissants
 fuite démontrée, pas de stabilité démontrée du pic : non corrigé, à remesurer
 sur davantage de conversions (et dans le worker réel, modèle d'embeddings
 compris) si la mémoire du worker devient une contrainte (O5).
+
+### S7 — purge et orphelins (2026-11-18)
+
+Mise en œuvre du point 6 ; cette section ne modifie pas la décision ci-dessus.
+Détail : [knowledge-base.md §10, précisions S7](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge)
+et [README du contexte](../../backend/src/knowledge_base/README.md#s7--versions-concurrentes-retrait-et-purge).
+
+- **Retrait** : `DELETE /api/v1/knowledge-base/documents/{id}` (202) ; une
+  transaction : document `WITHDRAWN`, travail en cours annulé, item
+  `purge_document`. Les lignes document et versions restent (tombstones),
+  conformément au point 6.
+- **Ordre de la purge** (arbitrage de l'orchestrateur) : points Qdrant des
+  index vivants, puis blobs non référencés, puis chunks, unités et
+  `documents.purged_at` dans la transaction de finalisation du work item
+  (fencing). Écart avec « points, puis chunks, puis blobs » du point 6 : les
+  chunks étant des écritures PostgreSQL, ils sont supprimés à la
+  finalisation, ce qui les protège par le fencing ; chaque étape est
+  rejouable, une panne de Qdrant ne supprime rien d'autre. L'ordre n'a pas
+  d'effet sur la visibilité : le document est écarté de toute recherche dès
+  le commit du retrait.
+- **« Plus référencé par aucune version »** s'entend : aucune version d'un
+  document **non purgé** (`purged_at IS NULL`), quel que soit son état. Les
+  tombstones d'un document purgé gardent l'empreinte (un réimport reste
+  refusé, O2/O11) mais ne retiennent plus le fichier.
+- **Orphelins** : cas d'usage `CleanBlobOrphans` (délai de grâce
+  `KB_BLOB_ORPHAN_GRACE_SECONDS`, défaut 24 h, toujours **Proposed** : rien
+  n'a été mesuré) ; la date de dépôt est la date de modification du fichier.
+  Son ordonnancement périodique arrive avec la réconciliation (S8) ; les
+  temporaires de `tmp/` sont hors périmètre (S8). Cas couvert : un import
+  refusé du contenu d'un document purgé redépose le fichier avant sa
+  transaction ; ce fichier devient un orphelin ordinaire.
+- **Risque résiduel** (conséquence « l'inverse est impossible par
+  construction ») : un import du même contenu qu'un orphelin plus vieux que
+  le délai de grâce, qui commiterait entre la lecture des références et la
+  suppression du fichier, laisserait une version sans blob (fenêtre de
+  l'ordre de la milliseconde ; `BLOB_MISSING` à l'extraction). Non fermé en
+  S7 ; à reprendre avec la réconciliation (S8) si l'ordonnancement rend ce
+  cas plausible.
+- **Schéma** : migration `9e4b7d2a6c13`, `documents.purged_at timestamptz
+  NULL` (ajout de colonne sans réécriture de table).

@@ -235,6 +235,8 @@ flowchart LR
 
 ## S7 — Versions concurrentes, retrait et purge
 
+> **Statut : implémentée (2026-11-18)** — import de N+1 qui annule l'indexation de N, `DELETE /documents/{id}` (202, tombstone, purge planifiée), `purge_document` (points des index vivants → blobs non détenus → chunks, unités, `purged_at` sous fencing), `CleanBlobOrphans` (délai de grâce 24 h Proposed, sans ordonnancement), recherche tolérante aux hits supprimés pendant la requête ; décisions consignées dans [knowledge-base.md §10, précisions S7](knowledge-base.md#10-publication-retrait-et-purge).
+
 - **Objectif :** garantir qu'aucune version obsolète ne devient visible et
   que le retrait est immédiat.
 - **Périmètre :** scénarios concurrents de l'import de versions ; annulation
@@ -266,7 +268,14 @@ flowchart LR
   `sync_visibility` — fenêtre résiduelle d'une tentative zombie d'`index_version`,
   [knowledge-base.md §7.3](knowledge-base.md#73-conditions-didempotence-des-effets-externes) ;
   versions `EXTRACTED` sans aucune indexation, repérées par le code de journal
-  `EXTRACTED_WITHOUT_INDEXATION` de `RecordExtraction`) ; `RetryIngestion`
+  `EXTRACTED_WITHOUT_INDEXATION` de `RecordExtraction` ; **ajouts S7 :**
+  document `WITHDRAWN` qui a encore des points dans un index vivant (tentative
+  zombie d'`index_version` après la purge) → replanifier `purge_document` ;
+  ordonnancement périodique de `CleanBlobOrphans` (délai
+  `KB_BLOB_ORPHAN_GRACE_SECONDS`) ; temporaires de `tmp/` abandonnés ; item
+  `purge_document` `FAILED` (aucun hook métier) ; course résiduelle entre le
+  nettoyage d'un orphelin et un import du même contenu,
+  [knowledge-base.md §10](knowledge-base.md#10-publication-retrait-et-purge)) ; `RetryIngestion`
   (réouverture d'un item `FAILED`) ; catalogue des codes d'erreur ; consultation
   des échecs (endpoint de lecture) ; décision O10 (DLQ).
 - **Dépendances :** S7.

@@ -60,7 +60,7 @@ def test_a_production_child_serves_extract_version_on_the_ingestion_queue(
 
     assert registry.kinds_by_queue() == {
         "knowledge_base.ingestion": frozenset(
-            {"extract_version", "index_version", "sync_visibility"}
+            {"extract_version", "index_version", "sync_visibility", "purge_document"}
         )
     }
     assert registry.get("extract_version").kind == "extract_version"

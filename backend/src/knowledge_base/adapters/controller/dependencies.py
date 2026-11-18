@@ -36,6 +36,9 @@ from knowledge_base.adapters.controller.tasks.extract_version_handler import (
 from knowledge_base.adapters.controller.tasks.index_version_handler import (
     build_index_version_handler,
 )
+from knowledge_base.adapters.controller.tasks.purge_document_handler import (
+    build_purge_document_handler,
+)
 from knowledge_base.adapters.controller.tasks.registry import WorkHandler
 from knowledge_base.adapters.controller.tasks.resources import (
     KnowledgeBaseWorkerResources,
@@ -67,6 +70,9 @@ from knowledge_base.use_cases.import_document_version.import_document_version_ha
 )
 from knowledge_base.use_cases.provision_search_index.provision_search_index_command import (  # noqa: E501
     ProvisionSearchIndex,
+)
+from knowledge_base.use_cases.withdraw_document.withdraw_document_handler import (
+    WithdrawDocumentHandler,
 )
 
 __all__ = [
@@ -104,6 +110,7 @@ def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> N
         app.router,
         import_document_handler=lambda: build_import_document_handler(resources()),
         import_version_handler=lambda: build_import_version_handler(resources()),
+        withdraw_document_handler=lambda: build_withdraw_document_handler(resources()),
     )
     add_search_routes(
         app.router, knowledge_search=lambda: build_knowledge_search(resources())
@@ -145,6 +152,14 @@ def build_import_version_handler(
     )
 
 
+def build_withdraw_document_handler(
+    resources: KnowledgeBaseResources,
+) -> WithdrawDocumentHandler:
+    return WithdrawDocumentHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(resources.session_factory)
+    )
+
+
 def build_work_handlers(
     session_factory: async_sessionmaker[AsyncSession],
     qdrant_client: AsyncQdrantClient,
@@ -152,8 +167,9 @@ def build_work_handlers(
 ) -> tuple[WorkHandler, ...]:
     """Handlers de production des work items, tous sur la file
     ``knowledge_base.ingestion`` : ``extract_version`` (S3), ``index_version``
-    et ``sync_visibility`` (S4). Appelé dans chaque processus enfant, sur sa
-    fabrique de sessions et son client Qdrant ; ne se connecte à rien.
+    et ``sync_visibility`` (S4), ``purge_document`` (S7). Appelé dans chaque
+    processus enfant, sur sa fabrique de sessions et son client Qdrant ; ne
+    se connecte à rien.
 
     Un seul modèle d'embeddings par processus, chargé à sa première tâche
     (jamais dans le processus maître) : l'extraction compte les tokens avec son
@@ -178,6 +194,9 @@ def build_work_handlers(
             batch_size=settings.embedding_batch_size,
         ),
         build_sync_visibility_handler(session_factory, vector_index=vector_index),
+        build_purge_document_handler(
+            session_factory, settings, vector_index=vector_index
+        ),
     )
 
 

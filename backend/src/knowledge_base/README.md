@@ -2,7 +2,7 @@
 
 Bounded Context ([ADR 0007](../../../docs/decisions/0007-knowledge-base-bounded-context.md)) chargé des documents de connaissances, de leur ingestion (extraction, chunking, embeddings) et de la recherche sémantique publiée vers les autres contextes. Conception : [knowledge-base.md](../../../docs/conception/bounded-contexts/knowledge-base.md) ; feuille de route : [S0–S9](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md).
 
-## État : slices S0 à S6
+## État : slices S0 à S7
 
 ### S0 — infrastructure de traitement durable
 
@@ -410,20 +410,57 @@ Budget de passage (O12, même jeu) :
 
 Le défaut restant à 1 024 (l03) : la fenêtre garde les deux chunks trouvés, la réponse est dans le troisième. 1 536 corrige ce cas parce que l'unité mesure 1 294 tokens : résultat propre à cette fixture, qui ne suffit pas à trancher O12 (voir [knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
 
+### S7 — versions concurrentes, retrait et purge
+
+Une version obsolète n'est jamais publiée ni visible, un retrait est immédiat pour toute recherche commencée après son commit, puis les données du document sont purgées ([roadmap S7](../../../docs/conception/bounded-contexts/knowledge-base-roadmap.md#s7--versions-concurrentes-retrait-et-purge), [knowledge-base.md §8, §10, précisions S7](../../../docs/conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge), [ADR 0012, suivi S7](../../../docs/decisions/0012-original-document-storage-and-purge.md)).
+
+```text
+POST /documents/{id}/versions ──► N+1 RECEIVED ; N DISCARDED, ses items extract_version ET index_version annulés,
+                                  ses indexations PENDING/FAILED → CANCELLED (une transaction)
+DELETE /documents/{id}        ──► WITHDRAWN, visibility_revision+1, travail en cours annulé, item purge_document (202)
+purge_document                ──► points Qdrant (index vivants) → blobs non détenus  (hors transaction)
+                              ──► chunks, unités, documents.purged_at              (finalisation sous fencing)
+```
+
+**Import de N+1** (`ImportDocumentVersionHandler`, report de S4) : pour chaque version écartée par cet import (événements `DocumentVersionDiscarded`) et chaque index vivant (`corpus.get_shared().live_indexes()`, lu seulement s'il y a une version écartée), l'item `index_version` est annulé (fencing : la tentative en cours de N ne finalise plus, `stale`) et l'indexation `PENDING` ou `FAILED` passe `CANCELLED` ; une `COMPLETED` reste telle quelle (aucune transition). Étape commune avec le retrait : `cancel_indexing` (`use_cases/indexing_steps.py`). La Unit of Work (`domain/providers/unit_of_work.py`) expose donc aussi `corpus` et `indexations`.
+
+**Retrait** (`use_cases/withdraw_document/`, `WithdrawDocumentHandler(*, unit_of_work)`, `DELETE /api/v1/knowledge-base/documents/{id}`) : une transaction — `KnowledgeDocument.withdraw()` (les versions gardent leur état), item `extract_version` des versions `RECEIVED`, `EXTRACTED`, `FAILED` annulé, `cancel_indexing` sur toutes les versions, item `purge_document` (dedup `purge_document:<document_id>`, payload `{"document_id"}`). Aucune synchronisation Qdrant : le contrôle SQL final de la recherche écarte le document dès le commit (I12), alors que Qdrant porte encore ses points visibles. Réponses : 202 `{document_id, status: "WITHDRAWN", visibility_revision}` ; 404 `DOCUMENT_NOT_FOUND` ; 409 `DOCUMENT_WITHDRAWN` si le document l'est déjà (sans effet : ni révision, ni seconde purge) ; 409 `CONCURRENT_MODIFICATION` si le verrou optimiste est perdu deux fois (un import de version concurrent est rejoué une fois : la version créée entre-temps n'échappe pas à l'annulation) ; 422 pour un identifiant non UUID. Le document reste comme tombstone.
+
+**Défense en profondeur** (domaine) : `KnowledgeDocument.record_extraction` refuse un document `WITHDRAWN` (`DocumentWithdrawnError`, report de S1) ; `RecordExtraction.apply` l'écartait déjà avant l'agrégat.
+
+**Purge** (`use_cases/purge_document/`, `PurgeDocumentHandler(*, unit_of_work, vector_index, blob_eraser, blob_references, clock)` ; work item `purge_document`, `adapters/controller/tasks/purge_document_handler.py`, file d'ingestion, 5 tentatives, `prepare` sous `keeping_lease`) :
+
+1. `prepare` (hors transaction) : rien si le document est inconnu ou non `WITHDRAWN` ; sinon `delete_points(index_id, PointSelector(document_id))` dans chaque index **vivant** (un index `RETIRED` est supprimé en entier en S9), puis, pour l'empreinte de chaque version, `DocumentBlobEraser.delete` sauf si `BlobReferences.holders` contient un **autre** document (les tombstones du document purgé ne retiennent pas leur propre blob) ;
+2. `apply` (finalisation, sous fencing) : `DocumentPurger.delete_derived_data` — chunks puis unités de toutes les versions du document (`DELETE … USING document_versions`, sans charger de ligne), `purged_at` posée à la première purge (`COALESCE`).
+
+Ordre : points d'abord, une panne de Qdrant ne supprime rien d'autre ; chaque étape est rejouable (suppression par filtre, fichier absent = `False`). L'item `FAILED` après 5 tentatives n'a pas de hook métier (réouverture : S8). Écart d'ordre avec §6/§10 : précision S7 de [§10](../../../docs/conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge).
+
+**Références de blob** (`SqlAlchemyBlobReferences`, port `BlobReferences`) : documents dont une version, quel que soit son état, porte l'empreinte **et** dont `purged_at` est nul. Après la purge, le tombstone garde l'empreinte (un réimport reste refusé, 409, O2/O11) mais ne retient plus le fichier.
+
+**Orphelins** (`use_cases/clean_blob_orphans/`, `CleanBlobOrphansHandler(*, inventory, references, eraser, clock)`, composé par `composition.build_clean_blob_orphans_handler(session_factory, settings)`) : un blob est supprimé s'il a plus que `CleanBlobOrphans.grace` (`KB_BLOB_ORPHAN_GRACE_SECONDS`, défaut 86 400 s, `settings.blob_orphan_grace`) et qu'aucun document non purgé ne le porte. Cas typique : un import refusé du contenu d'un document purgé redépose le fichier avant sa transaction. Le déclenchement périodique arrive avec la réconciliation (S8) ; les temporaires `tmp/` sont hors périmètre (S8). Risque résiduel : un import du **même** contenu qu'un orphelin ancien qui commit entre la lecture des références et la suppression perdrait son blob (fenêtre de l'ordre de la milliseconde, conséquence `BLOB_MISSING` à l'extraction).
+
+**Volume** (`FileSystemBlobStore`, seul code autorisé à supprimer un fichier — `architecture/test_withdrawal_purge_structure.py`) : `delete(content_hash) -> bool` (les répertoires `<aa>/<bb>` restent) ; `list_blobs()` → `StoredBlobFile(content_hash, modified_at)` (date de modification UTC) pour chaque fichier de `sha256/<aa>/<bb>/`, jamais `tmp/` ; un fichier au nom inattendu est journalisé et ignoré.
+
+**Qdrant pendant une suppression** (défaut préexistant) : pendant un `delete_points` concurrent, `query_points_groups` peut rendre un hit au payload réduit à `unit_id` ; `QdrantVectorIndex.search` levait `KeyError: 'chunk_id'` (500). Le hit est désormais ignoré (journal `debug`), les autres sont rendus.
+
+**Schéma** : migration `9e4b7d2a6c13` (sur `c43c7e850745`) : `knowledge_base.documents.purged_at timestamptz NULL`, sans index ni réécriture de table.
+
+**Tentative zombie après la purge** : une indexation dont l'item a été annulé par le retrait peut encore écrire ses points après la purge ; ils sont `visible=false` (jamais renvoyés, et écartés par le contrôle SQL). Une nouvelle exécution de `purge_document` les supprime ; rien ne la déclenche en S7 : la réconciliation S8 la replanifiera pour un document `WITHDRAWN` qui a encore des points.
+
 ## Surface publique
 
 `knowledge_base/__init__.py` réexporte, depuis `adapters/controller/dependencies.py` :
 
 | Nom | Rôle |
 |---|---|
-| `register(app, resources)` | monte les routes d'import et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; réglages et modèle de la recherche viennent des ressources (une seule source depuis la revue S5) |
+| `register(app, resources)` | monte les routes d'import, de retrait (S7) et de recherche sur l'application FastAPI, à sa construction ; `resources` est un fournisseur de `KnowledgeBaseResources`, appelé à chaque requête (les ressources sont créées par `runtime` dans le `lifespan`) ; réglages et modèle de la recherche viennent des ressources (une seule source depuis la revue S5) |
 | `KnowledgeBaseResources(session_factory, settings, qdrant_client)` | ressources de l'API : fabrique de sessions du runtime, `KnowledgeBaseSettings` relu à chaque construction d'application, client Qdrant du processus (S5) ; portent aussi l'embedder paresseux de la recherche (`embedder`, hors constructeur, interne au contexte) |
 | `build_knowledge_search(resources)` | implémentation du contrat public `knowledge_base.contracts.providers.KnowledgeSearch` (S5) sur l'embedder des ressources, partagé avec la route ; ne se connecte à rien, ne charge pas le modèle. Variante interne pour les tests : `adapters/controller/composition.compose_knowledge_search(session_factory, qdrant_client, settings, *, embedder, token_counter)` |
 | `register_worker(celery_app, resources, settings=None)` | déclare les tâches `knowledge_base.work.{execute,dispatch,recover}`, leurs routes et le `beat_schedule`, dans le processus maître ; `resources` est un fournisseur appelé seulement à l'exécution d'une tâche |
 | `KnowledgeBaseWorkerResources(session_factory, loop, handlers=())` | ressources d'un processus enfant : fabrique de sessions, boucle asyncio persistante, handlers (registre construit à la création) |
 | `KnowledgeBaseSettings` | réglages `KB_*` (pydantic-settings) |
 | `WorkHandler` | Protocol d'un handler : `kind`, `queue`, `max_attempts` (appliqué au claim), `execute(item, ctx)` ; hook facultatif `on_terminal_failure(session, item, error)` |
-| `build_work_handlers(session_factory, qdrant_client, settings=None)` | handlers de production des work items (`extract_version`, `index_version`, `sync_visibility`), construits par `runtime` dans chaque processus enfant sur sa fabrique de sessions et son client Qdrant ; ne se connecte à rien et ne charge pas le modèle (chargé à la première tâche) |
+| `build_work_handlers(session_factory, qdrant_client, settings=None)` | handlers de production des work items (`extract_version`, `index_version`, `sync_visibility`, `purge_document`), construits par `runtime` dans chaque processus enfant sur sa fabrique de sessions et son client Qdrant ; ne se connecte à rien et ne charge pas le modèle (chargé à la première tâche) |
 | `provision_search_index(session_factory, qdrant_client)` | crée et active l'index initial s'il n'existe pas (idempotent) ; rend l'index actif ; appelé par `python -m runtime.provision` au démarrage de la stack |
 
 `runtime` n'importe que cette racine (`backend/tests/architecture/`). `alembic/env.py` importe `knowledge_base.frameworks.sqlalchemy.metadata` (exception documentée dans [005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)).
@@ -448,7 +485,7 @@ knowledge_base/
   use_cases/import_result.py              # ImportDocumentResult, commun aux deux imports (S2)
   use_cases/errors.py                     # InvalidFilename, UnsupportedDocumentType, DocumentNotFound, DuplicateContentOtherDocument, IdempotencyKeyConflict
   use_cases/record_extraction/            # RecordExtraction, RecordExtractionHandler (prepare, apply, fail), PreparedExtraction (S3) ; indexations (S4)
-  use_cases/indexing_steps.py             # kinds index_version / sync_visibility, clés de dédoublonnage, enqueue (S4)
+  use_cases/indexing_steps.py             # kinds index_version / sync_visibility (S4) / purge_document (S7), clés, enqueue ; cancel_indexing (S7)
   use_cases/complete_indexation/          # CompleteIndexation, CompleteIndexationHandler (prepare, apply, cancel_if_obsolete, fail), erreurs (S4)
   use_cases/publish_document_version/     # PublishDocumentVersion, PublishDocumentVersionHandler (apply), refus (S4)
   use_cases/sync_document_visibility/     # SyncDocumentVisibility, SyncDocumentVisibilityHandler (S4)
@@ -461,8 +498,8 @@ knowledge_base/
   domain/providers/                       # S4 : embedder, vector_index, chunk_reader, knowledge_corpus_repository, indexation_repository, indexing_transaction
   adapters/failure_policy.py              # FailureDecision, decide_recovery — purs, partagés controller / gateway
   adapters/controller/dependencies.py     # register, register_worker, build_work_handlers, provision_search_index et réexports de la surface publique
-  adapters/controller/composition.py      # build_provision_search_index_handler (S4)
-  adapters/controller/rest/               # routes d'import, schémas HTTP, traduction des refus, KnowledgeBaseResources (S2)
+  adapters/controller/composition.py      # build_provision_search_index_handler (S4), compose_knowledge_search (S5), build_clean_blob_orphans_handler (S7)
+  adapters/controller/rest/               # routes d'import (S2) et de retrait (S7), schémas HTTP, traduction des refus, KnowledgeBaseResources
   adapters/controller/tasks/
     execution.py                          # execute_work_item, WorkContext (heartbeat, finalize)
     dispatch.py                           # dispatch_pending, recover_expired_leases
@@ -480,7 +517,7 @@ knowledge_base/
     constraint_violations.py              # nom de la contrainte violée (traduction des IntegrityError attendues)
     sqlalchemy_extraction_repository.py, sqlalchemy_extraction_transaction.py  # lot d'unités et chunks (S3)
     sqlalchemy_knowledge_corpus_repository.py, sqlalchemy_indexation_repository.py, sqlalchemy_chunk_reader.py, sqlalchemy_indexing_transaction.py  # S4
-  adapters/gateway/blob/filesystem_blob_store.py  # FileSystemBlobStore : put (S2), read (S3)
+  adapters/gateway/blob/filesystem_blob_store.py  # FileSystemBlobStore : put (S2), read (S3), delete, list_blobs (S7)
   adapters/gateway/parsing/               # RoutingDocumentParser, DoclingMarkdownParser, PlainTextParser (S3) ; docling_mapping, docling_conversion, DoclingPdfParser, DoclingDocxParser (S6)
   adapters/gateway/embedding/approximate_token_counter.py  # TokenCounter provisoire (S3) ; hors production depuis S4 (tests de coût)
   adapters/gateway/embedding/sentence_transformers_embedder.py  # SentenceTransformersEmbedder : préfixes, normalisation, tokenizer (S4)
@@ -494,6 +531,12 @@ knowledge_base/
   adapters/controller/contracts/          # KnowledgeSearchAdapter (S5)
   adapters/controller/rest/search_router.py, search_schemas.py  # POST /search (S5)
   adapters/gateway/persistence/sqlalchemy_active_index_reader.py, sqlalchemy_published_unit_reader.py  # S5
+  domain/providers/                       # S7 : document_blob_eraser, document_blob_inventory, blob_references, document_purger (DocumentPurger, PurgeTransaction)
+  use_cases/withdraw_document/            # WithdrawDocument, WithdrawDocumentHandler, WithdrawDocumentResult (S7)
+  use_cases/purge_document/               # PurgeDocument, PurgeDocumentHandler (prepare, apply), PreparedPurge (S7)
+  use_cases/clean_blob_orphans/           # CleanBlobOrphans, CleanBlobOrphansHandler (S7)
+  adapters/controller/tasks/purge_document_handler.py  # PurgeDocumentWorkHandler, build_purge_document_handler (S7)
+  adapters/gateway/persistence/sqlalchemy_document_purger.py, sqlalchemy_blob_references.py  # S7
   frameworks/sqlalchemy/tables.py         # MetaData(schema="knowledge_base"), work_items, documents, document_versions, idempotency_keys, knowledge_units, document_chunks, knowledge_corpus, search_indexes, indexations
   frameworks/configuration/chunking.py    # DEFAULT_CHUNKING_POLICY (tokenizer du profil depuis S4)
   frameworks/configuration/settings.py    # KnowledgeBaseSettings
@@ -537,4 +580,6 @@ Le handler `extract_version` traduit l'un en l'autre dans son hook (`retryable` 
 - Intégration S5 : `test_search_flow` (bout en bout, vrai E5 : citation complète, filtres, version non publiée, non synchronisée, supplantée, document retiré, `complete=false`, troncature, REST), `test_qdrant_chunk_search` (groupement, exclusion, `visible`, filtres sur Qdrant réel), `test_retrieval_evaluation` (marqueurs `model` et `retrieval`).
 - Unitaires S6 : `adapters/parsing/test_docling_office_mapping.py` (traduction sur des sorties Docling **enregistrées** des fixtures PDF/DOCX, `fixtures/knowledge_base/office/recorded/`, et sur des documents construits à la main), `test_office_parser_failures.py` et `test_pdf_checks_before_layout.py` (chiffré, corrompu, limite de pages, `OCR_REQUIRED`, PDF partiellement scanné, sans modèle), `test_office_routing.py`, `test_docling_pdf_options.py` (OCR désactivé, CPU, révision épinglée, lots d'une page), `test_office_error_codes.py`, `test_office_import_http.py`. Fixtures : `generate_office_fixtures.py` (reportlab, python-docx, environnement éphémère `uv run --no-project`, sorties identiques octet pour octet) et `record_docling_documents.py`.
 - Intégration S6 : `test_office_extraction` (PDF et DOCX équivalents aux Markdown → mêmes unités, pages, tableaux, `OCR_REQUIRED`, chiffré/corrompu, plus de 300 pages, heartbeats pendant l'extraction), `test_office_parsers_live` (parseur vivant = sorties enregistrées, limite incluse, mesures d'extraction), `test_retrieval_evaluation_office`, `test_retrieval_long_units`.
+- Unitaires S7 : `domain/test_knowledge_document_s7_states.py`, `use_cases/test_{withdraw_document,import_version_cancels_indexing,purge_document,clean_blob_orphans}.py` (doubles `use_cases/s7_support.py`), `test_purge_document_work_handler.py`, `test_withdraw_document_routes_http.py`, `test_blob_orphan_settings.py`, `adapters/test_filesystem_blob_store_maintenance.py`, `adapters/vector_store/test_search_during_deletion.py` ; `architecture/test_withdrawal_purge_structure.py`.
+- Intégration S7 (PostgreSQL, Qdrant et volume réels, `HashEmbedder`, barrières explicites sans délai, `s7_support.py`) : `test_s7_concurrent_versions` (N finit après l'import de N+1 : jamais publiée, travail annulé, points invisibles puis supprimés ; recherches pendant une republication, fenêtre « deux versions visibles dans Qdrant » tenue ouverte), `test_s7_withdrawal_purge` (retrait immédiat, aucune recherche commencée après le commit ne rend le document, purge des points / chunks / blobs, tombstones, rejeu, Qdrant injoignable, zombie après purge, extraction finissant après le retrait, import de version et retrait concurrents dans les deux ordres), `test_s7_blob_orphans`, `test_document_purger` (date de la première purge conservée), `test_purge_migration` (aller-retour ancré sur `9e4b7d2a6c13`).
 - Tests `model` : cache des poids `SENTENCE_TRANSFORMERS_HOME` (`make test-integration` le pointe vers `backend/.cache/models`, ignoré par git) ; premier lancement : téléchargement d'environ 1,1 Go. Depuis S6, poids de Docling PDF dans `HF_HOME` (`backend/.cache/huggingface`, ~506 Mio au premier lancement).

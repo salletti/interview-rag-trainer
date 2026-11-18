@@ -1,4 +1,5 @@
-"""Traduction des refus d'import en réponses HTTP ``{code, message, ...}``."""
+"""Traduction des refus d'import et de retrait en réponses HTTP
+``{code, message, ...}``."""
 
 from __future__ import annotations
 
@@ -39,6 +40,12 @@ IMPORT_REFUSALS = (
     ConcurrentModificationError,
     ContentHashTakenError,
     IdempotencyKeyTakenError,
+)
+
+WITHDRAW_REFUSALS = (
+    DocumentNotFoundError,
+    DocumentWithdrawnError,
+    ConcurrentModificationError,
 )
 
 
@@ -96,7 +103,7 @@ def _describe(error: Exception) -> tuple[int, str, dict[str, Any]]:
             | IdempotencyKeyTakenError()
         ):
             return status.HTTP_409_CONFLICT, "CONCURRENT_MODIFICATION", {}
-    raise TypeError(f"refus d'import non traduit : {type(error).__name__}") from error
+    raise TypeError(f"refus non traduit : {type(error).__name__}") from error
 
 
 def _duplicate(

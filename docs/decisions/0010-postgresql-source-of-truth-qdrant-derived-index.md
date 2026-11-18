@@ -98,3 +98,18 @@ d'unité 1,000 ; recherche complète en 20 ms médians sur l'hôte (encodage
 « Recall mesuré en S5 insuffisant malgré le complément » n'est pas atteinte :
 avec 3 documents sur 10 écartés par le contrôle SQL, Recall@5 reste à 0,917
 dès f = 2. Détail : [README du contexte](../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation).
+
+### S7 (2026-11-18)
+
+Le corps de l'ADR est inchangé. Point 8 vérifié sous concurrence réelle
+(`test_s7_withdrawal_purge`) : après le commit d'un retrait, aucune recherche
+ne rend le document, alors que Qdrant porte encore ses points visibles (le
+retrait ne planifie pas `sync_visibility`, la purge supprime les points). Le
+risque « tentative zombie réécrivant des points après une purge » est
+observé : points `visible=false`, jamais renvoyés ; leur suppression attend
+une nouvelle exécution de `purge_document`, que la réconciliation S8
+planifiera. Point 7 vérifié pendant une republication : aucun résultat ne mêle
+deux versions d'un document, y compris quand les deux sont visibles dans
+Qdrant. Défaut corrigé : un hit au payload incomplet (point supprimé pendant
+la requête) faisait échouer la recherche ; il est ignoré. Détail :
+[knowledge-base.md §8, §10, précisions S7](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge).

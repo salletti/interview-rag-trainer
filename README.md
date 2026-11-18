@@ -13,7 +13,7 @@ docker compose up --build -d
 - API : http://localhost:8010/docs — `GET /health/live`, `GET /health/ready`, `GET /api/v1/system/info`
 - Frontend : http://localhost:5180
 - RabbitMQ management : http://localhost:15672
-- Workers Celery : `worker` (file par défaut), `worker_ingestion` (Knowledge Base : extraction, embeddings, indexation Qdrant), `scheduler` (Celery beat) ; `kb_provision` crée l'index initial au démarrage
+- Workers Celery : `worker` (file par défaut), `worker_ingestion` (Knowledge Base : extraction, embeddings, indexation Qdrant, purge des documents retirés), `scheduler` (Celery beat) ; `kb_provision` crée l'index initial au démarrage
 
 Guide complet : [docs/guides/environnement-local.md](docs/guides/environnement-local.md). Cibles utiles : `make help`.
 

@@ -153,6 +153,24 @@ curl -s -X POST localhost:8010/api/v1/knowledge-base/search \
 
 Seul `text` est obligatoire ; `limit` de 1 à 50 (5 par défaut) ; filtres facultatifs `language`, `topics` (tous requis), `kinds` et `document_ids` (l'un d'eux). 422 si le corps est invalide, 503 `NO_ACTIVE_SEARCH_INDEX` si `kb_provision` n'a pas tourné. La **première** recherche charge le modèle dans l'API (~4 s, RSS du processus serveur ~1,3 Gio ensuite) ; les suivantes prennent ~70 ms (médiane mesurée en local, HTTP compris). Variables : `KB_SEARCH_OVERSAMPLING_FACTOR` (2), `KB_SEARCH_COMPLEMENT_PASSES` (1), `KB_MAX_PASSAGE_TOKENS` (1024), voir `.env.example`.
 
+### Retirer un document (Knowledge Base, S7)
+
+```bash
+curl -s -X DELETE localhost:8010/api/v1/knowledge-base/documents/<document_id>
+# 202 {"document_id": "...", "status": "WITHDRAWN", "visibility_revision": 2}
+```
+
+Le retrait est immédiat : toute recherche lancée après la réponse ignore le document (contrôle SQL), même si Qdrant porte encore ses points. Le worker d'ingestion exécute ensuite l'item `purge_document` (quelques secondes, intervalle du dispatch) : points Qdrant du document, puis originaux du volume `kb_blobs`, puis unités et chunks ; `knowledge_base.documents.purged_at` est alors renseigné. Le document et ses versions restent en base (tombstones) : un second `DELETE` répond 409 `DOCUMENT_WITHDRAWN`, une nouvelle version ou un réimport du même contenu aussi ; un identifiant inconnu donne 404 `DOCUMENT_NOT_FOUND`. Vérification :
+
+```bash
+docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer -c \
+  "SELECT status, purged_at FROM knowledge_base.documents WHERE id = '<document_id>'"
+docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer -c \
+  "SELECT kind, status FROM knowledge_base.work_items WHERE dedup_key = 'purge_document:<document_id>'"
+```
+
+Le nettoyage des blobs orphelins (fichiers sans document non purgé, plus vieux que `KB_BLOB_ORPHAN_GRACE_SECONDS`, 24 h par défaut) existe comme cas d'usage (`build_clean_blob_orphans_handler`) ; son déclenchement périodique arrive avec la réconciliation (S8).
+
 ## Qualité et tests
 
 ```bash

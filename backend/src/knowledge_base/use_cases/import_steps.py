@@ -4,7 +4,8 @@
 Ordre d'un import : contrôle du nom de fichier et du type (avant toute
 écriture), dépôt du blob (hors transaction, ADR 0012), puis une transaction
 unique : document et version, item ``extract_version``, annulation des items
-des versions écartées (I6), clé d'idempotence.
+des versions écartées et, pour un import de version, de leur indexation (I6,
+S7), clé d'idempotence.
 """
 
 from __future__ import annotations
@@ -156,9 +157,17 @@ async def schedule_extraction(
         extract_version_key(version_id),
         {"document_id": str(document_id), "version_id": str(version_id)},
     )
-    for event in events:
-        if isinstance(event, DocumentVersionDiscarded):
-            await uow.work_queue.cancel(extract_version_key(event.version_id))
+    for version_id in discarded_versions(events):
+        await uow.work_queue.cancel(extract_version_key(version_id))
+
+
+def discarded_versions(events: Iterable[DocumentEvent]) -> tuple[UUID, ...]:
+    """Versions écartées (I6) par l'opération qui a produit ces événements."""
+    return tuple(
+        event.version_id
+        for event in events
+        if isinstance(event, DocumentVersionDiscarded)
+    )
 
 
 async def retry_once_after_race(
