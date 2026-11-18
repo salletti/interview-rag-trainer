@@ -33,6 +33,7 @@ from knowledge_base.adapters.controller.tasks.extract_version_handler import (
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
     SqlAlchemyWorkLifecycle,
 )
+from knowledge_base.domain.value_objects.error_catalog import is_replayable
 from runtime.database import SessionFactory
 from runtime.settings import Settings
 from tests.integration.knowledge_base.extraction_support import (
@@ -196,7 +197,10 @@ async def assert_failed_terminally(
     assert version["status"] == "FAILED"
     assert version["failure_code"] == code
     assert version["failure_message"]
-    assert version["failure_retryable"] is False
+    # Rejouable par RetryIngestion seulement si le catalogue le dit
+    # (TOO_MANY_PAGES : borne de configuration, revue S8 I1) ; jamais rejoué
+    # automatiquement dans tous les cas.
+    assert version["failure_retryable"] is is_replayable(code)
     assert await rig.counts() == (0, 0)
     assert await rig.run(imported.item_id) == "skipped"  # jamais rejoué
 

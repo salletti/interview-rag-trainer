@@ -23,13 +23,17 @@ Contrat vérifié (voir ``s8_support`` pour la composition) :
   PAS touché ; item ``purge_document`` ``FAILED`` -> rouvert ;
 - manifest : au plus ``reconcile_manifest_sample_size`` indexations ``COMPLETED``
   revérifiées par cycle (digest enregistré, présence et ``chunk_hash`` dans
-  Qdrant) ; un écart ré-ouvre l'indexation (``COMPLETED`` -> ``PENDING``).
+  Qdrant) ; un écart ré-ouvre l'indexation (``COMPLETED`` -> ``PENDING``) ;
+  la réparation d'une version PUBLIÉE ne réécrit que les points manquants ou
+  divergents : le document reste trouvable pendant toute la réparation
+  (revue S8, I3).
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -37,11 +41,20 @@ from uuid import UUID
 import pytest
 
 from knowledge_base.domain.services.reconciliation import DiscrepancyKind as K
+from knowledge_base.domain.value_objects.indexed_point import IndexedPoint
 from runtime.database import SessionFactory
 from runtime.settings import Settings
 from tests.integration.knowledge_base.extraction_support import Imported
-from tests.integration.knowledge_base.indexing_support import QA_SHEET, QA_SHEET_V2
-from tests.integration.knowledge_base.s7_support import PYDANTIC_SHEET
+from tests.integration.knowledge_base.indexing_support import (
+    QA_SHEET,
+    QA_SHEET_V2,
+    payload,
+)
+from tests.integration.knowledge_base.s7_support import (
+    PYDANTIC_SHEET,
+    TIMEOUT,
+    GatedVectorIndex,
+)
 from tests.integration.knowledge_base.s8_support import (
     S8Rig,
     first_k,
@@ -409,6 +422,64 @@ async def test_a_damaged_manifest_is_detected_and_the_indexation_redone(
     assert await rig.point_ids_of(imported.document_id) == set(points)
     assert await rig.visibility(imported.document_id) == [True] * QUESTIONS
     assert await rig.found() == {imported.document_id}
+
+
+class GateAfterUpsert(GatedVectorIndex):
+    """Le premier upsert est APPLIQUÉ, puis la barrière : le test observe
+    l'index au pire moment de la réparation (points réécrits invisibles)."""
+
+    def __init__(self, inner: Any, *, gate_on: str) -> None:
+        super().__init__(inner, gate_on=gate_on)
+        self.written: list[UUID] = []
+
+    async def upsert(
+        self, index_id: UUID, points: Sequence[IndexedPoint], *, wait: bool = True
+    ) -> None:
+        await self._inner.upsert(index_id, points, wait=wait)
+        self.written = [p.point_id for p in points]
+        await self._gate("upsert")
+
+
+async def test_repairing_a_published_version_keeps_it_searchable_throughout(
+    rig: S8Rig,
+) -> None:
+    imported = await rig.s7.publish(QA_SHEET)
+    lost, *intact = sorted(await rig.point_ids_of(imported.document_id), key=str)
+    await rig.delete_point(lost)
+    assert await rig.found() == {imported.document_id}
+
+    report = await rig.cycle()
+
+    assert report.count(K.MANIFEST_DRIFT) == 1
+    assert await rig.found() == {imported.document_id}
+    (repair,) = [
+        i
+        for i in await rig.items("index_version", "PENDING")
+        if i["payload"]["version_id"] == str(imported.version_id)
+    ]
+    gated = GateAfterUpsert(rig.vector, gate_on="upsert")
+    handler = rig.indexing.index_handler_over(gated)
+    running = asyncio.create_task(rig.s7.indexing.extraction.run(repair["id"], handler))
+    async with asyncio.timeout(TIMEOUT):
+        await gated.reached.wait()
+    try:
+        # Barrière : seul le point perdu a été réécrit (invisible) ; les
+        # autres sont restés visibles, le document reste trouvable.
+        assert gated.written == [lost]
+        visible = {
+            UUID(str(r.id)): bool(payload(r)["visible"])
+            for r in await rig.s7.points_of(imported.document_id)
+        }
+        assert visible == {lost: False, **dict.fromkeys(intact, True)}
+        assert await rig.found() == {imported.document_id}
+    finally:
+        gated.release.set()
+    assert await running == "succeeded"
+
+    await rig.settle()
+    assert await rig.visibility(imported.document_id) == [True] * QUESTIONS
+    assert await rig.found() == {imported.document_id}
+    assert (await rig.indexation(imported.version_id))["status"] == "COMPLETED"
 
 
 async def test_a_recorded_digest_that_no_longer_matches_the_chunks_is_detected(

@@ -8,6 +8,10 @@ Coupé en deux pour la work queue (S0 §5) :
   puis vérification de la collection (une fois), embeddings et upserts
   ``visible=false`` par lots (``wait=true``), relecture par identifiants et
   égalité exacte avec le manifest attendu. N'écrit rien dans PostgreSQL.
+  Pour une version déjà ``PUBLISHED`` (réparation d'une dérive de manifest,
+  S8), seuls les points absents ou d'empreinte différente sont réécrits : les
+  points corrects restent tels quels, visibles, et le document reste
+  trouvable pendant la réparation (§11, précision S8).
 - ``apply`` : dans la transaction de finalisation, revérification métier puis
   ``COMPLETED`` (I8) et tentative de publication ; une publication refusée
   (indexation d'un index ``BUILDING``, I5…) laisse l'indexation ``COMPLETED``.
@@ -153,9 +157,10 @@ class CompleteIndexationHandler:
             return None
 
         await self._check_collection(target.index)
-        for batch in batched(chunks, self._batch_size, strict=False):
-            await self._write(target, batch)
         manifest = IndexManifest.for_chunks(target.index.index_id, chunks)
+        to_write = await self._chunks_to_write(target, chunks, manifest)
+        for batch in batched(to_write, self._batch_size, strict=False):
+            await self._write(target, batch)
         await self._verify(command, manifest)
         return PreparedIndexation(
             document_id=command.document_id,
@@ -179,6 +184,47 @@ class CompleteIndexationHandler:
                 f"collection absente ou autre que {index.profile.dimension} "
                 f"dimensions, distance {index.profile.distance}",
             )
+
+    async def _chunks_to_write(
+        self,
+        target: _Target,
+        chunks: Sequence[DocumentChunk],
+        manifest: IndexManifest,
+    ) -> Sequence[DocumentChunk]:
+        """Tous les chunks, sauf pour une version déjà publiée : ceux dont le
+        point manque ou porte une autre empreinte. Un upsert écrit
+        ``visible=false`` (ADR 0010, point 7) ; réécrire un point correct
+        d'une version publiée le cacherait jusqu'à la synchronisation et
+        retirerait le document des résultats sans raison. Les points hors
+        manifest sont l'affaire de la réconciliation (§9)."""
+        if target.version.status is not VersionStatus.PUBLISHED:
+            return chunks
+        index_id = target.index.index_id
+        found = await self._read_hashes(index_id, manifest)
+        stale = [
+            chunk
+            for chunk in chunks
+            if found.get(point_id(index_id, chunk.chunk_id)) != chunk.chunk_hash
+        ]
+        logger.info(
+            "version %s publiée, index %s : %d point(s) à réécrire sur %d, les "
+            "autres restent visibles",
+            target.version.version_id,
+            target.index.index_id,
+            len(stale),
+            len(chunks),
+        )
+        return stale
+
+    async def _read_hashes(
+        self, index_id: UUID, manifest: IndexManifest
+    ) -> dict[UUID, str]:
+        """``chunk_hash`` des points du manifest présents dans l'index, relus
+        par identifiants (``retrieve``, par lots)."""
+        found: dict[UUID, str] = {}
+        for ids in batched(dict(manifest.entries), RETRIEVE_BATCH, strict=False):
+            found.update(await self._vector_index.retrieve(index_id, ids))
+        return found
 
     async def _write(self, target: _Target, batch: Sequence[DocumentChunk]) -> None:
         index = target.index
@@ -217,9 +263,7 @@ class CompleteIndexationHandler:
         """I8 : égalité exacte des couples ``(point_id, chunk_hash)`` relus et
         attendus ; un ``count`` ne suffirait pas (ADR 0010 §3)."""
         expected = dict(manifest.entries)
-        found: dict[UUID, str] = {}
-        for ids in batched(expected, RETRIEVE_BATCH, strict=False):
-            found.update(await self._vector_index.retrieve(command.index_id, ids))
+        found = await self._read_hashes(command.index_id, manifest)
         missing = len(expected.keys() - found.keys())
         different = sum(
             1 for point, digest in found.items() if expected.get(point) != digest
@@ -278,9 +322,9 @@ class CompleteIndexationHandler:
         transaction: IndexingTransaction, document: KnowledgeDocument, version_id: UUID
     ) -> None:
         """Réindexation d'une version déjà publiée (S8 : manifest rouvert par la
-        réconciliation) : ``prepare`` vient de réécrire ses points invisibles
-        (§11) et la publication, déjà faite, ne planifiera aucune
-        synchronisation."""
+        réconciliation) : ``prepare`` vient de réécrire invisibles les points
+        manquants ou divergents (§11) et la publication, déjà faite, ne
+        planifiera aucune synchronisation."""
         await reschedule_visibility_sync(
             transaction.work_queue, document.document_id, document.visibility_revision
         )

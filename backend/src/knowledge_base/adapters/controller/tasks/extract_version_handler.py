@@ -15,8 +15,8 @@ Erreurs terminales (sans retry) :
 | ``INVALID_DOCUMENT`` | illisible (non UTF-8, chiffré, corrompu), type inconnu | faux |
 | ``DOCUMENT_TOO_COMPLEX`` | imbrication trop profonde pour le parseur | faux |
 | ``OCR_REQUIRED`` | PDF sans couche texte (scan), OCR désactivé | faux |
-| ``TOO_MANY_PAGES`` | PDF de plus de 300 pages (ADR 0012) | faux |
-| ``DOCUMENT_TOO_LARGE`` | texte au-delà de ``KB_MAX_DOCUMENT_TOKENS`` (O16) | faux |
+| ``TOO_MANY_PAGES`` | PDF de plus de 300 pages (ADR 0012) | vrai (borne relevée) |
+| ``DOCUMENT_TOO_LARGE`` | texte au-delà de la borne (O16) | vrai (borne relevée) |
 | ``CHUNKING_FAILED`` | ``ChunkBudgetError`` (budget sans place) | faux |
 | ``BLOB_MISSING`` | original absent du volume | vrai (après restauration) |
 | ``INVALID_PAYLOAD`` | payload de l'item illisible | — (aucune version désignée) |
@@ -81,7 +81,7 @@ from knowledge_base.domain.value_objects.error_catalog import (
     DOCUMENT_TOO_LARGE,
     ERROR_CATALOG,
     INVALID_PAYLOAD,
-    replayable_or_not_known,
+    is_known_replayable,
 )
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
@@ -117,8 +117,9 @@ __all__ = [
 
 INGESTION_QUEUE: Final = "knowledge_base.ingestion"
 # Vue dérivée du catalogue (S8), gardée pour ses lecteurs : les codes qu'une
-# RetryIngestion ne rouvrira jamais ; tout code d'une DocumentParseError en
-# fait partie.
+# RetryIngestion ne rouvrira jamais. Les codes de contenu d'une
+# DocumentParseError en font partie, pas TOO_MANY_PAGES (borne de
+# configuration, rejouable une fois relevée).
 NOT_RETRYABLE_CODES: Final = frozenset(
     code for code, spec in ERROR_CATALOG.items() if not spec.replayable
 )
@@ -183,7 +184,7 @@ class ExtractVersionWorkHandler:
         reason = FailureReason(
             code=error.code,
             message=error.message,
-            retryable=replayable_or_not_known(error.code),
+            retryable=is_known_replayable(error.code),
         )
         await self._use_case.fail(self._transaction(session), command, reason)
 

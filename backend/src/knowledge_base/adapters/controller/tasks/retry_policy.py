@@ -15,14 +15,21 @@ from knowledge_base.domain.providers.work_queue import (
     UNEXPECTED_ERROR,
     FailureInfo,
 )
+from knowledge_base.domain.value_objects.error_catalog import spec_of
 
 Uniform = Callable[[float, float], float]
 
 
 class TerminalWorkError(Exception):
-    """Erreur déterministe : une nouvelle tentative échouerait pareillement."""
+    """Erreur déterministe : une nouvelle tentative échouerait pareillement.
+
+    ``code`` appartient au catalogue des erreurs (S8) : un code inconnu est
+    une erreur de programmation, levée ici (``UnknownErrorCodeError``) plutôt
+    qu'écrite en base où ``RetryIngestion`` et la liste des échecs le
+    tiendraient pour non rejouable sans rien dire."""
 
     def __init__(self, code: str, message: str = "") -> None:
+        spec_of(code)
         super().__init__(f"{code}: {message}" if message else code)
         self.code = code
         self.message = message

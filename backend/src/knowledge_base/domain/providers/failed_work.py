@@ -11,9 +11,10 @@ l'état métier (version ``FAILED`` -> ``RECEIVED``, indexation ``FAILED`` ->
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -29,6 +30,17 @@ from knowledge_base.domain.providers.knowledge_document_repository import (
 )
 
 
+class WorkItemStatus(StrEnum):
+    """États d'un item de la work queue (S0 §3) ; valeurs de la colonne
+    ``work_items.status``."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
 @dataclass(frozen=True)
 class WorkItemRecord:
     """Un item tel qu'il est en base. ``failed_at`` : date d'entrée dans son
@@ -36,7 +48,7 @@ class WorkItemRecord:
 
     item_id: UUID
     kind: str
-    status: str
+    status: WorkItemStatus
     payload: Mapping[str, str]
     attempts: int
     max_attempts: int
@@ -70,8 +82,11 @@ class FailedWorkRepository(Protocol):
         ``reopen_count`` incrémenté. Faux si l'item n'est pas ``FAILED``."""
         ...
 
-    async def list_failed(self, limit: int) -> Sequence[WorkItemRecord]:
-        """Items ``FAILED``, du plus récent au plus ancien (``failed_at``)."""
+    async def list_failed(
+        self, limit: int, *, excluding_kinds: Collection[str] = ()
+    ) -> Sequence[WorkItemRecord]:
+        """Items ``FAILED``, du plus récent au plus ancien (``failed_at``),
+        hors des ``kind`` de ``excluding_kinds`` (filtrés avant ``limit``)."""
         ...
 
 

@@ -161,7 +161,10 @@ services:
   # extraction d'un PDF. L'enfant est remplacé toutes les
   # KB_INGESTION_MAX_TASKS_PER_CHILD tâches (S8) : le pic de RSS d'un même
   # processus croît sur des conversions PDF successives (ADR 0012, suivi S6 ;
-  # O5) ; le nouvel enfant recharge ses modèles à sa première tâche.
+  # O5) ; le nouvel enfant recharge ses modèles à leur premier usage. Les
+  # cycles de réconciliation comptent dans ces tâches (12 par heure à vide :
+  # un enfant remplacé toutes les ~4 h, sans rechargement tant que rien
+  # n'arrive ; revue S8, M9).
   worker_ingestion:
     build: *backend-build
     command: ["celery", "-A", "runtime.worker:celery_app", "worker", "-Q", "knowledge_base.ingestion", "--loglevel=INFO", "--concurrency=1", "--prefetch-multiplier=1", "--max-tasks-per-child=${KB_INGESTION_MAX_TASKS_PER_CHILD:-50}"]

@@ -57,6 +57,7 @@ from knowledge_base.use_cases.retry_ingestion.errors import (
     ItemNotFailedError,
     NotReplayableError,
     ObsoleteWorkError,
+    SupersededCycleError,
 )
 from knowledge_base.use_cases.retry_ingestion.retry_ingestion_command import (
     RetryIngestion,
@@ -234,8 +235,13 @@ async def test_retrying_a_failure_answers_202_with_the_reopened_item() -> None:
             409,
             {"code": "OBSOLETE_WORK", "reason": "version supplantée"},
         ),
+        (
+            SupersededCycleError(ITEM_ID, "UNEXPECTED_ERROR"),
+            409,
+            {"code": "NOT_REPLAYABLE", "failure_code": "UNEXPECTED_ERROR"},
+        ),
     ],
-    ids=["unknown", "not-failed", "not-replayable", "obsolete"],
+    ids=["unknown", "not-failed", "not-replayable", "obsolete", "reconcile-cycle"],
 )
 async def test_each_refusal_has_its_status_and_a_stable_code(
     refusal: Exception, status: int, body: dict[str, object]

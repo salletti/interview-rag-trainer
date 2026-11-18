@@ -44,6 +44,7 @@ from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
 from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.domain.providers.reconciliation_store import CompletedIndexation
 from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.vector_index import VectorIndex
@@ -73,7 +74,6 @@ from knowledge_base.use_cases.reconcile_knowledge_base.indexation_reconciliation
 )
 from knowledge_base.use_cases.reconcile_knowledge_base.point_reconciliation import (
     PointReconciliation,
-    ReconcilableIndex,
 )
 from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_handler import (  # noqa: E501
     ReconcileKnowledgeBaseHandler,

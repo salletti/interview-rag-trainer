@@ -4,7 +4,8 @@ point 9).
 
 Distinct de ``VectorIndex`` (écriture, vérification, visibilité), qui n'est
 pas élargi : les doublures de ``VectorIndex`` des tests restent valides,
-seul l'adapter réel porte le parcours.
+seul l'adapter réel porte le parcours. ``ReconcilableIndex`` réunit les deux
+pour la réconciliation.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from collections.abc import AsyncIterator, Collection, Mapping
 from typing import Protocol
 from uuid import UUID
 
+from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.domain.value_objects.indexed_point import PointSelector
 from knowledge_base.domain.value_objects.point_record import PointRecord
 
@@ -37,3 +39,7 @@ class PointInventory(Protocol):
     ) -> None:
         """Supprime ces points ; un identifiant absent est sans effet."""
         ...
+
+
+class ReconcilableIndex(VectorIndex, PointInventory, Protocol):
+    """L'index vectoriel que la réconciliation lit, corrige et parcourt."""

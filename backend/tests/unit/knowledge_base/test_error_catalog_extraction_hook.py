@@ -2,9 +2,11 @@
 catalogue (S8, O14), pour TOUT code du catalogue : plus de liste parallèle
 (``NOT_RETRYABLE_CODES``) qui puisse diverger.
 
-Aujourd'hui le hook tient pour rejouable tout code absent de
-``NOT_RETRYABLE_CODES`` : ``NOT_FINALIZED``, ``INVALID_PAYLOAD`` ou
-``UNKNOWN_KIND`` sortiraient « rejouables » alors que rien n'est à rouvrir.
+Avant S8, le hook tenait pour rejouable tout code absent de
+``NOT_RETRYABLE_CODES`` (``INVALID_PAYLOAD`` sortait « rejouable » alors que
+rien n'est à rouvrir). Depuis la revue S8 (I1), ``NOT_FINALIZED`` et
+``UNKNOWN_KIND`` SONT rejouables (correctif déployé) : seul le catalogue le
+dit, ce test suit le catalogue.
 """
 
 from __future__ import annotations

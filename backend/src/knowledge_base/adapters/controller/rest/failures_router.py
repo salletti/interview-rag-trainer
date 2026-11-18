@@ -52,9 +52,10 @@ _RETRY_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     },
     status.HTTP_409_CONFLICT: {
         "model": ErrorResponse,
-        "description": "Item pas FAILED (NOT_FAILED), échec non rejouable "
-        "(NOT_REPLAYABLE), travail sans objet (OBSOLETE_WORK) ou document "
-        "modifié pendant le rejeu (CONCURRENT_MODIFICATION)",
+        "description": "Item pas FAILED (NOT_FAILED), échec non rejouable ou "
+        "cycle de réconciliation (NOT_REPLAYABLE), travail sans objet "
+        "(OBSOLETE_WORK) ou document modifié pendant le rejeu "
+        "(CONCURRENT_MODIFICATION)",
     },
 }
 
@@ -77,7 +78,8 @@ def add_failure_routes(
         handler: Annotated[ListFailuresHandler, Depends(list_failures_handler)],
         limit: Annotated[int, Query(ge=1, le=MAX_FAILURES_LIMIT)] = 100,
     ) -> FailuresResponse:
-        """Items ``FAILED``, du plus récent au plus ancien."""
+        """Items ``FAILED``, du plus récent au plus ancien, hors cycles de
+        réconciliation (le cycle suivant les remplace)."""
         views = await handler.handle(ListFailures(limit=limit))
         return FailuresResponse(items=[_failure(view) for view in views])
 

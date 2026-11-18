@@ -21,9 +21,9 @@ Erreurs :
   dernière tentative, l'indexation passe ``FAILED``.
 
 L'échec d'une indexation laisse la version ``EXTRACTED`` ; ``retryable`` est
-celui du catalogue des erreurs (S8) : vrai pour ``COLLECTION_MISMATCH`` et les
-pannes passagères épuisées, que ``RetryIngestion`` rouvre ; faux pour
-``INVALID_PAYLOAD`` ou ``NOT_FINALIZED``.
+celui du catalogue des erreurs (S8) : vrai pour ``COLLECTION_MISMATCH``,
+``NOT_FINALIZED`` (correctif déployé) et les pannes passagères épuisées, que
+``RetryIngestion`` rouvre ; faux pour ``INVALID_PAYLOAD``.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.indexing_transaction import IndexingTransaction
 from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.domain.providers.work_queue import FailureInfo
-from knowledge_base.domain.value_objects.error_catalog import replayable_or_not_known
+from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
 from knowledge_base.use_cases.complete_indexation.complete_indexation_command import (
@@ -143,7 +143,7 @@ class IndexVersionWorkHandler:
         reason = FailureReason(
             code=error.code,
             message=error.message,
-            retryable=replayable_or_not_known(error.code),
+            retryable=is_known_replayable(error.code),
         )
         await self._use_case.fail(self._transaction(session), command, reason)
 

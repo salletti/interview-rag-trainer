@@ -16,6 +16,10 @@
    de module ``NOM = "CODE"``) que dans ``error_catalog.py`` ; les autres
    modules le réexportent ou l'importent. Sans cette règle, deux listes
    divergent (incohérence ``BLOB_MISSING`` de S3, O14).
+5. Chaque ``TerminalWorkError`` du code source reçoit un code du catalogue
+   (revue S8, M5) : constante du catalogue, ou code d'une
+   ``DocumentParseError`` (``error.code.value``, liste fermée dont chaque
+   membre est au catalogue). La construction le vérifie aussi à l'exécution.
 """
 
 from __future__ import annotations
@@ -133,3 +137,41 @@ def test_the_catalog_rule_detects_a_second_definition(tmp_path: Path) -> None:
     )
 
     assert found == ["dup.py:2 BLOB_MISSING"]
+
+
+def terminal_error_codes(src: Path) -> list[tuple[str, str]]:
+    """Premier argument de chaque ``TerminalWorkError(...)`` : nom de constante,
+    littéral, ou expression (rendue telle quelle)."""
+    found: list[tuple[str, str]] = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "TerminalWorkError"
+                and node.args
+            ):
+                argument = node.args[0]
+                if isinstance(argument, ast.Constant):
+                    code = str(argument.value)
+                else:
+                    code = ast.unparse(argument)
+                found.append((f"{path.relative_to(src)}:{node.lineno}", code))
+    return found
+
+
+def test_every_terminal_work_error_carries_a_catalog_code() -> None:
+    from knowledge_base.domain.exceptions.parsing_errors import ParseErrorCode
+
+    parse_error_code = "error.code.value"
+    uses = terminal_error_codes(KB)
+
+    assert uses, "aucune TerminalWorkError trouvée : la règle ne vérifie rien"
+    offenders = [
+        f"{where} {code}"
+        for where, code in uses
+        if code not in ERROR_CATALOG and code != parse_error_code
+    ]
+    assert offenders == []
+    assert {code.value for code in ParseErrorCode} <= set(ERROR_CATALOG)

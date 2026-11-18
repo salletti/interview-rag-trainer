@@ -63,7 +63,7 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_RECONCILE_MAX_PURGE_REOPENINGS` | 3 | réouvertures automatiques d'une purge `FAILED` ; au-delà, rejeu explicite |
 | `KB_IDEMPOTENCY_KEY_TTL_SECONDS` | 86400 | durée de vie d'une clé d'idempotence (O15) |
 | `KB_MAX_DOCUMENT_TOKENS` | 1000000 | borne du texte extrait d'un document, tous formats (O16) ; au-delà, `DOCUMENT_TOO_LARGE` |
-| `KB_INGESTION_MAX_TASKS_PER_CHILD` (Compose seulement) | 50 | tâches avant remplacement du processus enfant de `worker_ingestion` (`--max-tasks-per-child`) : borne la mémoire après des conversions PDF successives |
+| `KB_INGESTION_MAX_TASKS_PER_CHILD` (Compose seulement) | 50 | tâches avant remplacement du processus enfant de `worker_ingestion` (`--max-tasks-per-child`) : borne la mémoire après des conversions PDF successives ; les cycles de réconciliation comptent (à vide, un enfant toutes les ~4 h ; modèles rechargés à leur premier usage seulement) |
 | `HF_HOME` (non `KB_`) | `/var/cache/interview-rag-trainer/models/huggingface` | cache du Hub pour les poids de Docling PDF (S6) ; fixé par `compose.yaml` dans le volume `models_cache` (non surchargeable par `.env`) |
 | `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
 
@@ -192,7 +192,7 @@ curl -s "http://localhost:8010/api/v1/knowledge-base/failures?limit=20"
 #      "document_id": "...", "version_id": "...", "index_id": null}]}
 ```
 
-`replayable` dit si un rejeu a un sens ([catalogue des codes](../conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8)) : non pour un défaut du contenu (`EMPTY_DOCUMENT`, `OCR_REQUIRED`, `TOO_MANY_PAGES`, `DOCUMENT_TOO_LARGE`…), oui pour une panne (Qdrant, lease) ou un défaut réparable (`BLOB_MISSING` une fois le fichier restauré, `COLLECTION_MISMATCH` une fois la collection recréée). Rejeu, **après** avoir corrigé la cause :
+`replayable` dit si un rejeu a un sens ([catalogue des codes](../conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8)) : non pour un défaut du contenu (`EMPTY_DOCUMENT`, `OCR_REQUIRED`, `INVALID_DOCUMENT`…), oui pour une panne (Qdrant, lease), un défaut réparable (`BLOB_MISSING` une fois le fichier restauré, `COLLECTION_MISMATCH` une fois la collection recréée) ou une borne dépassée (`DOCUMENT_TOO_LARGE` une fois `KB_MAX_DOCUMENT_TOKENS` relevée et `worker_ingestion` redémarré ; `TOO_MANY_PAGES` une fois la limite de pages relevée par déploiement). Les cycles de réconciliation en échec ne sont pas listés : le cycle suivant les remplace. Rejeu, **après** avoir corrigé la cause :
 
 ```bash
 curl -s -X POST http://localhost:8010/api/v1/knowledge-base/failures/<item_id>/retry

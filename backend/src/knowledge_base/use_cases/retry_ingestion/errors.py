@@ -28,16 +28,28 @@ class ItemNotFailedError(RetryRefusedError):
 
 
 class NotReplayableError(RetryRefusedError):
-    """Le catalogue des erreurs dit l'échec non rejouable (contenu, défaut de
-    programmation) ou ne connaît pas son code."""
+    """Le catalogue des erreurs dit l'échec non rejouable (contenu, payload
+    illisible) ou ne connaît pas son code."""
+
+    def __init__(self, item_id: UUID, code: str, reason: str | None = None) -> None:
+        super().__init__(
+            item_id,
+            f"l'échec {code or '(sans code)'} de l'item {item_id} n'est pas "
+            f"rejouable : {reason or 'un nouvel essai échouerait pareillement'}",
+        )
+        self.code = code
+
+
+class SupersededCycleError(NotReplayableError):
+    """Cycle de réconciliation ``FAILED`` : jamais rejoué, quel que soit son
+    code ; le cycle du créneau suivant le remplace."""
 
     def __init__(self, item_id: UUID, code: str) -> None:
         super().__init__(
             item_id,
-            f"l'échec {code or '(sans code)'} de l'item {item_id} n'est pas "
-            "rejouable : un nouvel essai échouerait pareillement",
+            code,
+            "un cycle de réconciliation ne se rejoue pas, le suivant le remplace",
         )
-        self.code = code
 
 
 class ObsoleteWorkError(RetryRefusedError):

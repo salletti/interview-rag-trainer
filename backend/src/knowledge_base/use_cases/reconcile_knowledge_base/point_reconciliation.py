@@ -10,23 +10,29 @@ Corrections : points sans propriétaire supprimés par sélection (version ou
 document) ; synchronisation de visibilité ou purge replanifiée sous une
 nouvelle génération de leur clé, sauf si un item du même travail est déjà en
 attente pour ce document.
+
+Une transaction par document replanifié, qui relit le document avant
+d'écrire : un document retiré depuis le constat n'a plus de synchronisation
+à refaire (sa purge s'en charge). Le retrait et la purge (``purged_at``,
+jamais effacée) sont définitifs (O11) : un constat « retiré et purgé » ne se
+périme pas. Un document en échec n'empêche pas les suivants ; les échecs
+sont relevés ensemble à la fin, le cycle n'est pas « réussi ».
 """
 
 from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping
-from typing import Protocol
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from uuid import UUID
 
 from knowledge_base.domain.entities.knowledge_corpus import SearchIndex
-from knowledge_base.domain.providers.point_inventory import PointInventory
+from knowledge_base.domain.entities.knowledge_document import DocumentStatus
+from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.domain.providers.reconciliation_store import (
     ReconciliationStore,
     ReconciliationUnitOfWork,
 )
-from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.domain.services.reconciliation import (
     DiscrepancyKind,
     DocumentFacts,
@@ -43,10 +49,6 @@ from knowledge_base.use_cases.indexing_steps import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ReconcilableIndex(VectorIndex, PointInventory, Protocol):
-    """L'index vectoriel que la réconciliation lit, corrige et parcourt."""
 
 
 # Points d'un index regroupés par (document, version, visibilité) : la
@@ -98,30 +100,74 @@ class PointReconciliation:
         return groups
 
     async def _reschedule(self, resync: set[UUID], repurge: set[UUID]) -> None:
-        if not (resync or repurge):
-            return
+        failures: list[Exception] = []
+        for document_id in sorted(resync):
+            await _isolated(document_id, self._resync(document_id), failures)
+        for document_id in sorted(repurge):
+            await _isolated(document_id, self._repurge(document_id), failures)
+        if failures:
+            raise ExceptionGroup(
+                f"{len(failures)} document(s) non replanifié(s)", failures
+            )
+
+    async def _resync(self, document_id: UUID) -> None:
         async with self._unit_of_work() as uow:
-            for document_id in sorted(resync):
-                document = await uow.documents.get(document_id)
-                if document is None:
-                    continue
-                await reschedule_visibility_sync(
-                    uow.work_queue, document_id, document.visibility_revision
-                )
-                logger.warning(
-                    "document %s : points publiés invisibles, synchronisation "
-                    "replanifiée (révision %d)",
-                    document_id,
-                    document.visibility_revision,
-                )
-            for document_id in sorted(repurge):
-                await reschedule_purge(uow.work_queue, document_id)
-                logger.warning(
-                    "document %s retiré et purgé : points réécrits après la "
-                    "purge, purge replanifiée",
+            document = await uow.documents.get(document_id)
+            if (
+                document is None
+                or document.status is not DocumentStatus.ACTIVE
+                or document.published_version_id is None
+            ):
+                logger.info(
+                    "document %s : plus de version publiée visible, "
+                    "synchronisation non replanifiée",
                     document_id,
                 )
+                return
+            await reschedule_visibility_sync(
+                uow.work_queue, document_id, document.visibility_revision
+            )
             await uow.commit()
+        logger.warning(
+            "document %s : points publiés invisibles, synchronisation "
+            "replanifiée (révision %d)",
+            document_id,
+            document.visibility_revision,
+        )
+
+    async def _repurge(self, document_id: UUID) -> None:
+        async with self._unit_of_work() as uow:
+            document = await uow.documents.get(document_id)
+            if document is None or document.status is not DocumentStatus.WITHDRAWN:
+                logger.info(
+                    "document %s : pas un document retiré, purge non replanifiée",
+                    document_id,
+                )
+                return
+            await reschedule_purge(uow.work_queue, document_id)
+            await uow.commit()
+        logger.warning(
+            "document %s retiré et purgé : points réécrits après la purge, "
+            "purge replanifiée",
+            document_id,
+        )
+
+
+async def _isolated(
+    document_id: UUID, correction: Awaitable[None], failures: list[Exception]
+) -> None:
+    """La correction d'un document ; son échec est relevé sans arrêter les
+    corrections des autres documents (chacune a sa transaction)."""
+    try:
+        await correction
+    except Exception as error:
+        logger.warning(
+            "document %s : replanification en échec (%s: %s)",
+            document_id,
+            type(error).__name__,
+            error,
+        )
+        failures.append(error)
 
 
 def _count(

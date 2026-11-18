@@ -200,3 +200,11 @@ Corrections appliquées (2026-11-18) — 1 321 unitaires, 395 intégration, 8 mu
 - I3 — clé `purge_document:<id>` non replanifiable (enqueue renvoie l'item terminé) : contrainte documentée pour S8. **Fait.**
 - M1–M4 — docstring de défense en profondeur, guide (409 au rejeu d'un `DELETE`), test unitaire discriminant du rejeu du retrait. **Fait.**
 - Écart accepté : quarantaine dans `KB_BLOB_ROOT/quarantine/` (et non `tmp/`, que le nettoyage S8 des temporaires viderait). Reprise des fichiers de quarantaine après un crash → S8.
+
+Revue tech lead du commit S8 (`8944d04`) : aucun bloquant, 3 importants, 9 mineurs.
+Corrections appliquées (2026-11-18) — 1 584 unitaires, 490 intégration (sur stack neuve ; un premier passage avait échoué sur `test_qdrant` à cause de collections laissées par des bases isolées d agents), 11 mutations tuées :
+
+- I1 — codes dépendant de la configuration ou du déploiement (`DOCUMENT_TOO_LARGE`, `TOO_MANY_PAGES`, `NOT_FINALIZED`, `UNKNOWN_KIND`) non rejouables : avec O2, contenu bloqué pour toujours → rejouables à la main. **Fait.**
+- I2 — un item de réconciliation par créneau (288/jour), cycles `FAILED` dans `/failures`, rafale après une longue tâche → pas de nouvel item si un cycle attend ; cycles exclus de `/failures`. **Fait.**
+- I3 — réparation d'une dérive de manifest sur une version publiée : tous les points réécrits invisibles → document absent de la recherche jusqu'à la synchronisation. Décision : ne réécrire que les points en écart (règle « écrits invisibles » de l'ADR 0010 conservée). **Fait.**
+- M1–M9 — test de concurrence adoption O14 / rejeu, transaction par document, `reopen_count` relu sous verrou, statut en enum, codes validés contre le catalogue, renommage, port déplacé, décompte `COMPLETED_NOT_PUBLISHED`, `max-tasks-per-child`. **Fait.**

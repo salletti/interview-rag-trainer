@@ -10,10 +10,18 @@ modules l'importent ou le réexportent (test d'architecture
   transitoire), jusqu'à la dernière tentative ;
 - ``replayable`` : ``RetryIngestion`` peut rouvrir l'item ``FAILED`` une fois
   la cause corrigée hors de l'item (volume restauré, collection recréée,
-  service revenu). Un code déterministe n'est jamais réessayé seul, mais il
-  peut être rejouable après réparation (``BLOB_MISSING``) ; un code qui tient
-  au contenu (``EMPTY_DOCUMENT``) ou à un défaut de programmation
-  (``NOT_FINALIZED``) ne l'est jamais : un nouvel essai échouerait pareil.
+  service revenu, borne relevée, version corrigée déployée). Un code
+  déterministe n'est jamais réessayé seul, mais il peut être rejouable après
+  réparation (``BLOB_MISSING``) ; un code qui tient au seul contenu
+  (``EMPTY_DOCUMENT``) ne l'est jamais : un nouvel essai échouerait pareil.
+
+Un refus qui dépend d'une borne (``DOCUMENT_TOO_LARGE`` :
+``KB_MAX_DOCUMENT_TOKENS`` ; ``TOO_MANY_PAGES`` : limite de pages du parseur)
+ou du code déployé (``NOT_FINALIZED``, ``UNKNOWN_KIND``)
+est rejouable : le même contenu ne peut pas être réimporté (O2 : contenu
+connu -> version existante), le rejeu est la seule voie de reprise une fois
+la borne relevée ou le correctif déployé. Toujours sans réessai automatique :
+un rejeu sans correction échoue une fois de plus, sans boucle.
 
 Un code inconnu du catalogue (version future, faute de frappe) lève
 ``UnknownErrorCodeError`` : jamais « rejouable par défaut ».
@@ -97,18 +105,23 @@ ERROR_CATALOG: Final[Mapping[str, ErrorSpec]] = MappingProxyType(
             # Déterministes, mais réparables hors de l'item.
             _spec(BLOB_MISSING, automatic_retry=False, replayable=True),
             _spec(COLLECTION_MISMATCH, automatic_retry=False, replayable=True),
+            # Bornes (KB_MAX_DOCUMENT_TOKENS ; MAX_PDF_PAGES du parseur) :
+            # rejouables une fois la borne relevée (O2 interdit le réimport).
+            _spec(TOO_MANY_PAGES, automatic_retry=False, replayable=True),
+            _spec(DOCUMENT_TOO_LARGE, automatic_retry=False, replayable=True),
+            # Défauts du code déployé : rejouables une fois le correctif
+            # déployé (worker qui ne connaît pas le kind, handler fautif).
+            _spec(UNKNOWN_KIND, automatic_retry=False, replayable=True),
+            _spec(NOT_FINALIZED, automatic_retry=False, replayable=True),
             # Déterministes sur le contenu.
             _spec(EMPTY_DOCUMENT, automatic_retry=False, replayable=False),
             _spec(INVALID_DOCUMENT, automatic_retry=False, replayable=False),
             _spec(DOCUMENT_TOO_COMPLEX, automatic_retry=False, replayable=False),
             _spec(OCR_REQUIRED, automatic_retry=False, replayable=False),
-            _spec(TOO_MANY_PAGES, automatic_retry=False, replayable=False),
             _spec(CHUNKING_FAILED, automatic_retry=False, replayable=False),
-            _spec(DOCUMENT_TOO_LARGE, automatic_retry=False, replayable=False),
-            # Défauts de programmation ou de déploiement : rien à rouvrir.
+            # Payload illisible : l'item ne désigne rien, un rejeu relirait le
+            # même payload.
             _spec(INVALID_PAYLOAD, automatic_retry=False, replayable=False),
-            _spec(UNKNOWN_KIND, automatic_retry=False, replayable=False),
-            _spec(NOT_FINALIZED, automatic_retry=False, replayable=False),
         )
     }
 )
@@ -129,7 +142,7 @@ def retries_automatically(code: str) -> bool:
     return spec_of(code).automatic_retry
 
 
-def replayable_or_not_known(code: str | None) -> bool:
+def is_known_replayable(code: str | None) -> bool:
     """``is_replayable``, un code absent ou inconnu valant « non rejouable » :
     pour ce qui doit répondre sans lever (liste des échecs, hook d'échec, dont
     une exception ferait boucler l'item)."""

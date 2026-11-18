@@ -52,18 +52,24 @@ EXPECTED: dict[str, tuple[bool, bool]] = {
     # déterministes mais réparables hors de l'item
     "BLOB_MISSING": (False, True),
     "COLLECTION_MISMATCH": (False, True),
+    # bornes de configuration (revue S8, I1) : le même contenu ne peut pas
+    # être réimporté (O2 : contenu connu -> version existante) ; non
+    # rejouables, ils bloqueraient ce contenu pour toujours. Rejeu manuel
+    # après relèvement de la borne ; sans correction, il échoue une fois.
+    "TOO_MANY_PAGES": (False, True),
+    TEXT_VOLUME_CODE: (False, True),
+    # défauts du code déployé (revue S8, I1) : rejouables une fois le
+    # correctif déployé (worker qui ignore un kind, handler sans finalize).
+    "UNKNOWN_KIND": (False, True),
+    "NOT_FINALIZED": (False, True),
     # déterministes sur le contenu : un nouvel essai échouerait pareillement
     "EMPTY_DOCUMENT": (False, False),
     "INVALID_DOCUMENT": (False, False),
     "DOCUMENT_TOO_COMPLEX": (False, False),
     "OCR_REQUIRED": (False, False),
-    "TOO_MANY_PAGES": (False, False),
     "CHUNKING_FAILED": (False, False),
-    TEXT_VOLUME_CODE: (False, False),
-    # défauts de programmation ou de déploiement : rien à rouvrir
+    # payload illisible : l'item ne désigne rien, un rejeu relirait le même
     "INVALID_PAYLOAD": (False, False),
-    "UNKNOWN_KIND": (False, False),
-    "NOT_FINALIZED": (False, False),
 }
 
 
@@ -141,10 +147,10 @@ def test_every_code_defined_elsewhere_is_in_the_catalog(module: str, name: str) 
     assert value in ERROR_CATALOG
 
 
-def test_every_parse_error_is_a_non_replayable_content_failure() -> None:
+def test_every_parse_error_is_terminal_and_only_the_page_limit_is_replayable() -> None:
     for code in PARSE_ERROR_CODES:
         assert not retries_automatically(code.value)
-        assert not is_replayable(code.value)
+        assert is_replayable(code.value) is (code.value == "TOO_MANY_PAGES"), code
 
 
 # --- cohérence avec la classification réelle de la work queue ------------------------

@@ -3,7 +3,11 @@
 
 - publication perdue : indexation ``COMPLETED`` dans l'index actif d'une
   version ``EXTRACTED`` publiable -> ``PublishDocumentVersion`` (mêmes gardes
-  qu'à la finalisation) ;
+  qu'à la finalisation). ``COMPLETED_NOT_PUBLISHED`` ne compte que les
+  publications rattrapées (commit abouti) : un refus (constat périmé, ou
+  refus persistant que ``is_publishable_completed`` ne prévoit pas) est
+  journalisé sans compter, sinon un refus attendu rendrait chaque rapport
+  « non propre » sans qu'aucun cycle ne puisse le corriger ;
 - version ``EXTRACTED`` sans indexation dans un index vivant de la politique
   de son lot (code de journal ``EXTRACTED_WITHOUT_INDEXATION``) -> indexation
   ``PENDING`` et item ``index_version``, sous le verrou partagé du corpus
@@ -43,6 +47,7 @@ from knowledge_base.domain.exceptions.document_errors import (
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
 )
+from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.domain.providers.reconciliation_store import (
     CompletedIndexation,
     ReconciliationStore,
@@ -67,9 +72,6 @@ from knowledge_base.use_cases.publish_document_version.publish_document_version_
 )
 from knowledge_base.use_cases.publish_document_version.publish_document_version_handler import (  # noqa: E501
     PublishDocumentVersionHandler,
-)
-from knowledge_base.use_cases.reconcile_knowledge_base.point_reconciliation import (
-    ReconcilableIndex,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,28 +111,38 @@ class IndexationReconciliation:
                 index_status=candidate.index_status,
             ):
                 continue
-            counts[DiscrepancyKind.COMPLETED_NOT_PUBLISHED] += 1
-            command = PublishDocumentVersion(
-                candidate.document_id, candidate.version_id
-            )
-            try:
-                async with self._unit_of_work() as uow:
-                    await self._publisher.apply(uow, command)
-                    await uow.commit()
-            except (
-                PublicationRefusedError,
-                KnowledgeDocumentError,
-                DocumentNotFoundError,
-                ConcurrentModificationError,
-            ) as refusal:
-                # L'état a changé depuis le constat : le cycle suivant juge à
-                # nouveau.
-                logger.info(
-                    "publication perdue de la version %s non rattrapée : %s",
-                    candidate.version_id,
-                    refusal,
-                )
+            if await self._publish(candidate.document_id, candidate.version_id):
+                counts[DiscrepancyKind.COMPLETED_NOT_PUBLISHED] += 1
         return counts
+
+    async def _publish(self, document_id: UUID, version_id: UUID) -> bool:
+        """Vrai si la publication perdue est rattrapée (commit abouti)."""
+        try:
+            async with self._unit_of_work() as uow:
+                await self._publisher.apply(
+                    uow, PublishDocumentVersion(document_id, version_id)
+                )
+                await uow.commit()
+        except (
+            PublicationRefusedError,
+            KnowledgeDocumentError,
+            DocumentNotFoundError,
+            ConcurrentModificationError,
+        ) as refusal:
+            # Constat périmé (le cycle suivant ne le reverra pas) ou refus
+            # persistant : rien que ce cycle puisse corriger, donc pas un
+            # écart compté ; le journal garde la trace.
+            logger.warning(
+                "indexation COMPLETED de la version %s non publiée : %s",
+                version_id,
+                refusal,
+            )
+            return False
+        logger.warning(
+            "publication perdue de la version %s rattrapée par la réconciliation",
+            version_id,
+        )
+        return True
 
     # --- versions EXTRACTED sans indexation -------------------------------------------
 

@@ -125,6 +125,17 @@ class SqlAlchemyWorkQueue:
             key = f"{dedup_key}:{generation}"
         return await self.enqueue(kind, key, payload, correlation_id)
 
+    async def live_item(self, kind: str) -> UUID | None:
+        """Un item ``kind`` ``PENDING`` ou ``RUNNING`` (le plus ancien), s'il
+        y en a un (index ``(kind, status)``)."""
+        found: UUID | None = await self._session.scalar(
+            select(_c.id)
+            .where(_c.kind == kind, _c.status.in_((PENDING, RUNNING)))
+            .order_by(_c.created_at, _c.id)
+            .limit(1)
+        )
+        return found
+
     async def cancel(self, dedup_key: str) -> bool:
         cancelled = (
             await self._session.scalars(

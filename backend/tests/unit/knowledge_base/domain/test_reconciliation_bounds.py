@@ -27,7 +27,7 @@ from knowledge_base.domain.services.reconciliation import (
     decide_failed_item,
     points_beyond_manifest,
 )
-from knowledge_base.domain.value_objects.error_catalog import replayable_or_not_known
+from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.domain.value_objects.index_manifest import IndexManifest
 
 W = DocumentStatus.WITHDRAWN
@@ -110,4 +110,4 @@ def test_points_beyond_the_manifest_are_those_it_does_not_list() -> None:
 def test_a_code_missing_or_unknown_to_the_catalog_is_not_replayable(
     code: str | None, replayable: bool
 ) -> None:
-    assert replayable_or_not_known(code) is replayable
+    assert is_known_replayable(code) is replayable

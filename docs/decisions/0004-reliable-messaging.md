@@ -183,3 +183,17 @@ précisions S8](../conception/bounded-contexts/knowledge-base.md#6-workflow-de-t
 - **Point 1 (mécanismes non dupliqués dans les agrégats)** : la seule colonne
   ajoutée, `work_items.reopen_count`, appartient à la table de travail ; elle
   borne la réouverture automatique d'une purge en échec.
+- **Revue S8 (2026-11-18)** :
+  - *Point 9* : la tâche beat n'enregistre aucun cycle tant qu'un item
+    `reconcile_knowledge_base` est `PENDING` ou `RUNNING` (elle rend cet
+    item) : une file d'ingestion occupée ne cumule pas un cycle par créneau
+    manqué. Un cycle `FAILED` reste en base mais n'est ni listé par
+    `GET /failures` ni rejouable (409 `NOT_REPLAYABLE`) : il n'a pas d'objet
+    propre, le créneau suivant en planifie un neuf. Le point 10 (« échecs
+    relançables ») vaut pour les traitements métier, pas pour ce cycle.
+  - *Point 10* : `TOO_MANY_PAGES`, `DOCUMENT_TOO_LARGE`, `UNKNOWN_KIND` et
+    `NOT_FINALIZED` deviennent rejouables (borne relevée, correctif déployé) ;
+    ils restent des « erreurs déterministes : échec terminal immédiat »
+    (point 7) : aucun réessai automatique, seul un rejeu explicite.
+  - *Points 7 et 10* : `TerminalWorkError` refuse un code absent du
+    catalogue, à la construction (erreur de programmation).

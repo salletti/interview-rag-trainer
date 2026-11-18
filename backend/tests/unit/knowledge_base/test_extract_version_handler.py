@@ -24,10 +24,11 @@ API figée (``knowledge_base.adapters.controller.tasks.extract_version_handler``
   ``TerminalWorkError("INVALID_PAYLOAD")``.
 - ``on_terminal_failure(session, item, error: FailureInfo)`` : ``use_case.fail``
   avec ``FailureReason(error.code, error.message, retryable)`` ; ``retryable``
-  est faux pour tout code de ``DocumentParseError`` (``EMPTY_DOCUMENT``,
-  ``INVALID_DOCUMENT``, ``DOCUMENT_TOO_COMPLEX``) et pour ``CHUNKING_FAILED``
-  (déterministes), vrai pour tout autre code. Payload illisible : ne fait
-  rien et ne lève pas.
+  est celui du catalogue (S8) : faux pour les codes de contenu d'une
+  ``DocumentParseError`` (``EMPTY_DOCUMENT``, ``INVALID_DOCUMENT``,
+  ``DOCUMENT_TOO_COMPLEX``, ``OCR_REQUIRED``) et pour ``CHUNKING_FAILED``,
+  vrai pour ``TOO_MANY_PAGES`` (borne de configuration, revue S8 I1).
+  Payload illisible : ne fait rien et ne lève pas.
 """
 
 from __future__ import annotations
@@ -287,8 +288,15 @@ async def test_the_failure_hook_marks_the_version_failed_with_the_item_error(
     assert version.failure.retryable is retryable
 
 
-@pytest.mark.parametrize("code", list(ParseErrorCode))
-async def test_every_parse_error_code_fails_the_version_as_not_retryable(
+# TOO_MANY_PAGES dépend de la borne de pages configurée, pas du seul contenu :
+# rejouable une fois la borne relevée (revue S8, I1 ; O2 interdit le réimport).
+CONTENT_PARSE_ERRORS = [
+    c for c in ParseErrorCode if c is not ParseErrorCode.TOO_MANY_PAGES
+]
+
+
+@pytest.mark.parametrize("code", CONTENT_PARSE_ERRORS)
+async def test_every_content_parse_error_code_fails_the_version_as_not_retryable(
     code: ParseErrorCode,
 ) -> None:
     rig = make_rig()
@@ -300,6 +308,22 @@ async def test_every_parse_error_code_fails_the_version_as_not_retryable(
     failure = document.get_version(command.version_id).failure
     assert failure is not None
     assert failure.retryable is False
+
+
+async def test_a_page_limit_failure_is_replayable_once_the_limit_is_raised() -> None:
+    rig = make_rig()
+    command = await rig.import_document(COURSE)
+
+    await fail_with(
+        rig,
+        claimed(command),
+        FailureInfo(ParseErrorCode.TOO_MANY_PAGES.value, "301 pages"),
+    )
+
+    document = rig.harness.state.documents[command.document_id]
+    failure = document.get_version(command.version_id).failure
+    assert failure is not None
+    assert failure.retryable is True
 
 
 async def test_the_failure_hook_ignores_a_malformed_payload() -> None:

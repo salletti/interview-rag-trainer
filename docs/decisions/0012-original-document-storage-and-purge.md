@@ -305,3 +305,18 @@ Cette section ne modifie pas la décision ci-dessus. Détail :
   mesures S5/S6). Vérifié sur la stack de dev le 2026-11-18 : `celery inspect
   stats` rend `"max-tasks-per-child": 50`. Aucun redémarrage d'enfant n'a été
   observé ni mesuré (moins de 50 tâches pendant la vérification).
+- **Revue S8 (2026-11-18)** :
+  - *I1* : `TOO_MANY_PAGES` et `DOCUMENT_TOO_LARGE` deviennent **rejouables**
+    (toujours sans réessai automatique). Ils dépendent d'une borne
+    (`MAX_PDF_PAGES` du parseur, par déploiement ; `KB_MAX_DOCUMENT_TOKENS`,
+    par configuration), pas du seul contenu ; le même contenu ne pouvant être
+    réimporté (O2), le rejeu après relèvement de la borne est la seule voie
+    de reprise. Les mentions « non rejouable » de ce suivi (S6, S8) sont à
+    lire ainsi ([knowledge-base.md §15.5](../conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8)).
+  - *M9* : les cycles de réconciliation sont des tâches de `worker_ingestion`
+    et comptent dans les 50 : à vide, 12 cycles par heure (300 s), donc un
+    enfant remplacé toutes les ~4 h 10 min. Les modèles étant chargés
+    paresseusement, un enfant recyclé à vide ne recharge rien avant le
+    traitement suivant, qui paie au plus ~9 s (E5 ~4 s, Docling PDF ~5 s).
+    Défaut conservé à 50 : 100 doublerait le nombre de conversions qu'un
+    enfant peut enchaîner, au-delà de ce qui a été mesuré (cinq).

@@ -4,7 +4,7 @@ l'appelant. Ne valide ni n'annule jamais la transaction."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -15,7 +15,10 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
     FAILED,
     PENDING,
 )
-from knowledge_base.domain.providers.failed_work import WorkItemRecord
+from knowledge_base.domain.providers.failed_work import (
+    WorkItemRecord,
+    WorkItemStatus,
+)
 from knowledge_base.frameworks.sqlalchemy.tables import work_items
 
 _c = work_items.c
@@ -50,10 +53,12 @@ class SqlAlchemyFailedWorkRepository:
         )
         return reopened is not None
 
-    async def list_failed(self, limit: int) -> Sequence[WorkItemRecord]:
+    async def list_failed(
+        self, limit: int, *, excluding_kinds: Collection[str] = ()
+    ) -> Sequence[WorkItemRecord]:
         rows = await self._session.execute(
             _records()
-            .where(_c.status == FAILED)
+            .where(_c.status == FAILED, _c.kind.not_in(excluding_kinds))
             .order_by(_c.completed_at.desc().nulls_last(), _c.id)
             .limit(limit)
         )
@@ -84,7 +89,7 @@ def record_of(row: Any) -> WorkItemRecord:
     return WorkItemRecord(
         item_id=row.id,
         kind=row.kind,
-        status=row.status,
+        status=WorkItemStatus(row.status),
         payload=row.payload,
         attempts=row.attempts,
         max_attempts=row.max_attempts,

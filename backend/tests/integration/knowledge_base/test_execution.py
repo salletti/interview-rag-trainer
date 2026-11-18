@@ -427,7 +427,7 @@ async def test_the_failure_hook_is_rolled_back_when_the_item_was_cancelled_meanw
 
     async def behaviour(item: ClaimedWorkItem, ctx: WorkContext) -> None:
         await cancel_committed(session_factory, dedup_key)
-        raise TerminalWorkError("BAD_INPUT")
+        raise TerminalWorkError("INVALID_PAYLOAD")
 
     handler = new_handler(behaviour, hook)
     item_id = await enqueue_committed(session_factory, handler.kind, dedup_key)
@@ -466,7 +466,7 @@ async def test_a_failing_terminal_hook_is_rolled_back_and_retried_then_failed(
     session_factory: SessionFactory, new_handler: NewHandler
 ) -> None:
     async def behaviour(item: ClaimedWorkItem, ctx: WorkContext) -> None:
-        raise TerminalWorkError("BAD_INPUT", "illisible")
+        raise TerminalWorkError("INVALID_PAYLOAD", "illisible")
 
     async def hook(
         session: AsyncSession, item: ClaimedWorkItem, error: FailureInfo
@@ -487,7 +487,7 @@ async def test_a_failing_terminal_hook_is_rolled_back_and_retried_then_failed(
         1,
         "TERMINAL_HOOK_FAILED",
     )
-    assert "BAD_INPUT" in row["last_error_message"]
+    assert "INVALID_PAYLOAD" in row["last_error_message"]
     assert "table métier verrouillée" in row["last_error_message"]
     assert await effect_notes(session_factory, item_id) == []  # hook annulé
 
@@ -509,7 +509,7 @@ async def test_a_terminal_error_without_a_hook_still_fails_the_item(
     session_factory: SessionFactory, new_handler: NewHandler
 ) -> None:
     async def behaviour(item: ClaimedWorkItem, ctx: WorkContext) -> None:
-        raise TerminalWorkError("BAD_INPUT", "x")
+        raise TerminalWorkError("INVALID_PAYLOAD", "x")
 
     handler = new_handler(behaviour, hookless=True)
     item_id = await enqueue_committed(session_factory, handler.kind)
@@ -520,7 +520,7 @@ async def test_a_terminal_error_without_a_hook_still_fails_the_item(
     assert (outcome, row["status"], row["last_error_code"]) == (
         "failed",
         "FAILED",
-        "BAD_INPUT",
+        "INVALID_PAYLOAD",
     )
 
 

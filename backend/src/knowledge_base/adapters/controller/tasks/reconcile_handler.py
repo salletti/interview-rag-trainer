@@ -6,10 +6,14 @@ Planification : la tâche beat ``knowledge_base.work.reconcile`` (file par
 défaut, jamais derrière une extraction) n'exécute pas le cycle, elle
 l'ENREGISTRE (``enqueue_reconciliation``) : un item par créneau de
 ``reconcile_interval`` (clé ``reconcile_knowledge_base:<créneau>``, beat
-redémarré ou en double : même item). L'item suit le cycle de vie commun
-(lease, fencing, backoff, ``FAILED`` consultable et rejouable) et s'exécute sur
+redémarré : même item), et aucun tant qu'un cycle est encore ``PENDING`` ou
+``RUNNING`` : une file d'ingestion occupée (longue extraction) ne cumule pas
+un cycle par créneau manqué, le cycle en attente fera le travail de tous.
+L'item suit le cycle de vie commun (lease, fencing, backoff) et s'exécute sur
 la file d'ingestion : sérialisé avec les extractions, indexations et purges
-(``--concurrency=1``), il ne court avec aucun traitement en vol.
+(``--concurrency=1``), il ne court avec aucun traitement en vol. Un cycle
+``FAILED`` reste en base, mais n'est ni listé ni rejouable (``ListFailures``,
+``RetryIngestion``) : le créneau suivant en planifie un neuf.
 
 ``execute`` : le cycle hors transaction, sous ``keeping_lease`` (un cycle sur
 un grand corpus peut dépasser le lease ; un heartbeat refusé l'interrompt),
@@ -21,7 +25,7 @@ S0, jamais de finalisation. Pas de hook d'échec : aucun agrégat à marquer.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,11 +40,10 @@ from knowledge_base.adapters.controller.tasks.lease import keeping_lease
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
     SqlAlchemyWorkQueue,
 )
+from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
-from knowledge_base.use_cases.reconcile_knowledge_base.point_reconciliation import (
-    ReconcilableIndex,
-)
 from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_command import (  # noqa: E501
+    RECONCILE_KNOWLEDGE_BASE,
     ReconcileKnowledgeBase,
 )
 from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_handler import (  # noqa: E501
@@ -53,14 +56,20 @@ if TYPE_CHECKING:
         ClaimedWorkItem,
     )
 
-RECONCILE_KNOWLEDGE_BASE: Final = "reconcile_knowledge_base"
+__all__ = [
+    "RECONCILE_KNOWLEDGE_BASE",
+    "ReconcileWorkHandler",
+    "build_reconcile_work_handler",
+    "enqueue_reconciliation",
+    "reconciliation_key",
+]
 
 
 class ReconcileWorkHandler:
     kind: ClassVar[str] = RECONCILE_KNOWLEDGE_BASE
     queue: ClassVar[str] = INGESTION_QUEUE
-    # Trois tentatives : au-delà, l'item est FAILED (consultable, rejouable)
-    # et le créneau suivant planifie de toute façon un nouveau cycle.
+    # Trois tentatives : au-delà, l'item est FAILED (en base, non rejoué) et
+    # le créneau suivant planifie un nouveau cycle.
     max_attempts: ClassVar[int] = 3
 
     def __init__(
@@ -100,12 +109,19 @@ async def enqueue_reconciliation(
     now: datetime | None = None,
 ) -> UUID:
     """Enregistre le cycle du créneau courant (ou celui de ``now``) ; rend
-    l'item existant si ce créneau a déjà le sien."""
+    l'item existant si ce créneau a déjà le sien, ou le cycle encore en
+    attente ou en cours (d'un créneau antérieur) s'il y en a un.
+
+    Deux beats simultanés (erreur de déploiement, ADR 0004) pourraient
+    chacun ne voir aucun cycle vivant et en créer deux de créneaux voisins :
+    un cycle en double est inoffensif (corrections relues et idempotentes)."""
     key = reconciliation_key(now or datetime.now(UTC), settings.reconcile_interval)
     async with session_factory() as session, session.begin():
-        return await SqlAlchemyWorkQueue(session).enqueue(
-            RECONCILE_KNOWLEDGE_BASE, key, {}
-        )
+        queue = SqlAlchemyWorkQueue(session)
+        live = await queue.live_item(RECONCILE_KNOWLEDGE_BASE)
+        if live is not None:
+            return live
+        return await queue.enqueue(RECONCILE_KNOWLEDGE_BASE, key, {})
 
 
 def build_reconcile_work_handler(

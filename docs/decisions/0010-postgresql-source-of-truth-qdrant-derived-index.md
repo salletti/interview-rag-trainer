@@ -132,3 +132,17 @@ identifiant). La condition de réévaluation « volume rendant la vérification
 exhaustive du manifest trop coûteuse » est anticipée par l'échantillonnage ;
 le parcours complet des points à chaque cycle reste à mesurer sur un grand
 corpus.
+
+**Revue S8 (2026-11-18).** Le corps de l'ADR est inchangé, point 7 compris
+(tout point écrit l'est `visible=false`). Défaut corrigé : la réparation d'une
+dérive de manifest d'une version **publiée** réécrivait tous ses points,
+donc les rendait tous invisibles ; le document disparaissait de la recherche
+jusqu'au `sync_visibility` replanifié, placé derrière la file d'ingestion.
+Désormais `CompleteIndexation.prepare` relit le manifest attendu par
+identifiants avant d'écrire et ne réécrit, pour une version publiée, que les
+points absents ou d'empreinte différente : les points corrects restent
+visibles, le document reste trouvable pendant toute la réparation et ne perd
+que les passages des points réécrits, jusqu'à la synchronisation. Une version
+non publiée est toujours réécrite en entier. Vérifié contre Qdrant réel avec
+une barrière après l'upsert de réparation
+([knowledge-base.md §11, précisions S8](../conception/bounded-contexts/knowledge-base.md#11-visibilité-et-cohérence-postgresql--qdrant)).

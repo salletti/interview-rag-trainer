@@ -28,7 +28,10 @@ from typing import Final
 from knowledge_base.domain.entities.indexation import IndexationStatus
 from knowledge_base.domain.entities.knowledge_document import VersionStatus
 from knowledge_base.domain.exceptions.document_errors import VersionNotFoundError
-from knowledge_base.domain.providers.failed_work import WorkItemRecord
+from knowledge_base.domain.providers.failed_work import (
+    WorkItemRecord,
+    WorkItemStatus,
+)
 from knowledge_base.domain.providers.knowledge_document_repository import (
     ConcurrentModificationError,
 )
@@ -42,14 +45,13 @@ from knowledge_base.domain.services.reconciliation import (
     FailedItemAction,
     decide_failed_item,
 )
-from knowledge_base.domain.value_objects.error_catalog import replayable_or_not_known
+from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
 from knowledge_base.use_cases.indexing_steps import INDEX_VERSION, PURGE_DOCUMENT
 
 logger = logging.getLogger(__name__)
 
-_FAILED: Final = "FAILED"
 WATCHED_KINDS: Final = (EXTRACT_VERSION, INDEX_VERSION, PURGE_DOCUMENT)
 
 # Écrit l'échec métier dans la transaction de la correction ; faux si l'état
@@ -119,7 +121,7 @@ class FailedWorkReconciliation:
         try:
             async with self._unit_of_work() as uow:
                 current = await uow.failed_work.get_for_update(item.item_id)
-                if current is None or current.status != _FAILED:
+                if current is None or current.status is not WorkItemStatus.FAILED:
                     return False
                 if not await write(uow, current):
                     return False
@@ -179,17 +181,23 @@ class FailedWorkReconciliation:
         return True
 
     async def _reopen_purge(self, item: WorkItemRecord) -> bool:
+        """La borne est relue sous le verrou : le constat (``item``) a pu être
+        dépassé par un rejeu explicite, puis un nouvel échec, entre-temps."""
         async with self._unit_of_work() as uow:
             current = await uow.failed_work.get_for_update(item.item_id)
-            if current is None or current.status != _FAILED:
+            if (
+                current is None
+                or current.status is not WorkItemStatus.FAILED
+                or current.reopen_count >= self._max_purge_reopenings
+            ):
                 return False
             await uow.failed_work.reopen(item.item_id)
             await uow.commit()
         logger.warning(
             "purge %s FAILED (%s) rouverte par la réconciliation (réouverture %d/%d)",
             item.item_id,
-            item.last_error_code,
-            item.reopen_count + 1,
+            current.last_error_code,
+            current.reopen_count + 1,
             self._max_purge_reopenings,
         )
         return True
@@ -202,5 +210,5 @@ def _reason(item: WorkItemRecord) -> FailureReason | None:
     return FailureReason(
         code=code,
         message=item.last_error_message or code,
-        retryable=replayable_or_not_known(code),
+        retryable=is_known_replayable(code),
     )

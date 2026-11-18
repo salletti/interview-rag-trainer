@@ -6,12 +6,16 @@ Contrat vérifié :
 - ``enqueue_reconciliation(session_factory, settings, *, now=None) -> UUID`` :
   un item ``reconcile_knowledge_base`` par CRÉNEAU de ``reconcile_interval`` ;
   deux planifications dans le même créneau (beat redémarré, deux instances)
-  désignent le même item ; un autre créneau en crée un nouveau. Payload vide.
+  désignent le même item ; un autre créneau en crée un nouveau, sauf si un
+  cycle est encore ``PENDING`` ou ``RUNNING`` (revue S8, I2 : une file
+  d'ingestion occupée ne cumule pas un cycle par créneau manqué). Payload
+  vide.
 - Exécuté par la work queue, l'item applique un cycle complet puis passe
   ``SUCCEEDED``.
 - Un cycle qui échoue (Qdrant injoignable) n'est JAMAIS réussi : l'item est
-  rejoué avec backoff, puis ``FAILED`` à la dernière tentative, listé par
-  ``GET /failures`` et rejouable (O10 : l'état ``FAILED`` est la dead-letter).
+  rejoué avec backoff, puis ``FAILED`` à la dernière tentative. Il reste en
+  base, mais n'est ni listé par ``GET /failures`` ni rejouable (409
+  ``NOT_REPLAYABLE``) : le créneau suivant planifie un cycle neuf (I2).
 """
 
 from __future__ import annotations
@@ -81,12 +85,35 @@ async def test_one_item_per_slot_whoever_asks(rig: S8Rig) -> None:
     assert (item["status"], item["payload"]) == ("PENDING", {})
 
 
-async def test_the_next_slot_gets_its_own_item(rig: S8Rig) -> None:
+async def test_the_next_slot_gets_its_own_item_once_the_previous_cycle_ended(
+    rig: S8Rig,
+) -> None:
     first = await enqueue(rig, SLOT)
+    await rig.drain()
     second = await enqueue(rig, SLOT + timedelta(seconds=INTERVAL))
 
     assert second != first
-    assert len(await rig.items(KIND)) == 2
+    assert [i["status"] for i in await rig.items(KIND)] == ["SUCCEEDED", "PENDING"]
+
+
+@pytest.mark.parametrize("status", ["PENDING", "RUNNING"])
+async def test_missed_slots_add_nothing_while_a_cycle_is_waiting_or_running(
+    rig: S8Rig, status: str
+) -> None:
+    waiting = await enqueue(rig, SLOT)
+    await rig.execute(
+        "UPDATE knowledge_base.work_items SET status = :s, "
+        "lease_expires_at = CASE WHEN :s = 'RUNNING' "
+        "THEN now() + interval '1 hour' END WHERE id = :id",
+        s=status,
+        id=waiting,
+    )
+
+    later = [await enqueue(rig, SLOT + timedelta(seconds=INTERVAL * n)) for n in (1, 5)]
+
+    assert later == [waiting, waiting]
+    (item,) = await rig.items(KIND)
+    assert (item["id"], item["status"]) == (waiting, status)
 
 
 async def test_the_default_slot_is_the_current_time(rig: S8Rig) -> None:
@@ -130,7 +157,7 @@ class UnreachableQdrant:
         return getattr(self._inner, name)
 
 
-async def test_a_failing_cycle_is_retried_then_failed_listed_and_replayable(
+async def test_a_failing_cycle_is_retried_then_failed_and_replaced_not_replayed(
     rig: S8Rig,
 ) -> None:
     await rig.s7.publish(QA_SHEET)
@@ -161,6 +188,10 @@ async def test_a_failing_cycle_is_retried_then_failed_listed_and_replayable(
     assert failed["status"] == "FAILED"
     assert failed["attempts"] == broken.max_attempts
     listed = (await rig.http.get(f"{PREFIX}/failures")).json()["items"]
-    assert [(i["kind"], i["replayable"]) for i in listed] == [(KIND, True)]
+    assert [i["kind"] for i in listed] == []
     retried = await rig.http.post(f"{PREFIX}/failures/{item_id}/retry")
-    assert retried.status_code == 202, retried.text
+    assert retried.status_code == 409, retried.text
+    assert retried.json()["code"] == "NOT_REPLAYABLE"
+    assert (await rig.items(KIND))[0]["status"] == "FAILED"
+    replacement = await enqueue(rig, SLOT + timedelta(seconds=INTERVAL))
+    assert replacement != item_id

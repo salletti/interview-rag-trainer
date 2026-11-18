@@ -24,6 +24,7 @@ from knowledge_base.adapters.controller.tasks.retry_policy import (
     compute_backoff,
 )
 from knowledge_base.adapters.failure_policy import decide_recovery
+from knowledge_base.domain.value_objects.error_catalog import UnknownErrorCodeError
 
 BASE = timedelta(seconds=10)
 CAP = timedelta(seconds=900)
@@ -165,7 +166,9 @@ def test_error_classification_one_attempt_before_the_last_still_retries() -> Non
 
 
 def test_error_classification_terminal_error_fails_even_on_the_first_attempt() -> None:
-    decision = classify_error(TerminalWorkError("X"), attempts=1, max_attempts=5)
+    decision = classify_error(
+        TerminalWorkError("INVALID_DOCUMENT"), attempts=1, max_attempts=5
+    )
     assert decision.action == "fail"
 
 
@@ -177,9 +180,17 @@ def test_error_classification_stale_attempt_changes_nothing() -> None:
 
 
 def test_terminal_work_error_exposes_code_and_message() -> None:
-    error = TerminalWorkError("CODE", "message")
-    assert error.code == "CODE"
+    error = TerminalWorkError("INVALID_DOCUMENT", "message")
+    assert error.code == "INVALID_DOCUMENT"
     assert "message" in str(error)
+
+
+def test_a_terminal_work_error_refuses_a_code_outside_the_catalog() -> None:
+    """Revue S8, M5 : un code inconnu est une erreur de programmation, levée à
+    la construction, jamais écrite en base (où il passerait pour « non
+    rejouable » sans rien dire)."""
+    with pytest.raises(UnknownErrorCodeError):
+        TerminalWorkError("BAD_INPUT", "x")
 
 
 # --- décision de reprise d'un lease expiré --------------------------------------

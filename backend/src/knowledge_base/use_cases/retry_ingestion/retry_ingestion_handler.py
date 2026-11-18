@@ -16,9 +16,11 @@ remis en attente :
 
 Refus, sans aucune écriture : item inconnu, item qui n'est pas ``FAILED``
 (dont un rejeu concurrent déjà passé : la ligne de l'item est verrouillée,
-le second rejeu attend le premier et le voit), échec que le catalogue dit
-non rejouable ou ne connaît pas, travail sans objet (version supplantée,
-document retiré, index retiré, indexation annulée).
+le second rejeu attend le premier et le voit), cycle de réconciliation
+(``NOT_REPLAYABLE`` quel que soit son code : un vieux cycle n'a rien à
+apporter, le créneau suivant en planifie un neuf), échec que le catalogue
+dit non rejouable ou ne connaît pas, travail sans objet (version
+supplantée, document retiré, index retiré, indexation annulée).
 """
 
 from __future__ import annotations
@@ -39,15 +41,20 @@ from knowledge_base.domain.exceptions.document_errors import VersionNotFoundErro
 from knowledge_base.domain.providers.failed_work import (
     FailedWorkUnitOfWork,
     WorkItemRecord,
+    WorkItemStatus,
 )
-from knowledge_base.domain.value_objects.error_catalog import replayable_or_not_known
+from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
 from knowledge_base.use_cases.indexing_steps import INDEX_VERSION, PURGE_DOCUMENT
+from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_command import (  # noqa: E501
+    RECONCILE_KNOWLEDGE_BASE,
+)
 from knowledge_base.use_cases.retry_ingestion.errors import (
     FailureNotFoundError,
     ItemNotFailedError,
     NotReplayableError,
     ObsoleteWorkError,
+    SupersededCycleError,
 )
 from knowledge_base.use_cases.retry_ingestion.retry_ingestion_command import (
     RetryIngestion,
@@ -58,7 +65,6 @@ from knowledge_base.use_cases.retry_ingestion.retry_ingestion_result import (
 
 logger = logging.getLogger(__name__)
 
-_FAILED = "FAILED"
 _INDEXABLE_VERSIONS = frozenset({VersionStatus.EXTRACTED, VersionStatus.PUBLISHED})
 
 
@@ -71,9 +77,11 @@ class RetryIngestionHandler:
             item = await uow.failed_work.get_for_update(command.item_id)
             if item is None:
                 raise FailureNotFoundError(command.item_id)
-            if item.status != _FAILED:
+            if item.status is not WorkItemStatus.FAILED:
                 raise ItemNotFailedError(item.item_id, item.status)
-            if not replayable_or_not_known(item.last_error_code):
+            if item.kind == RECONCILE_KNOWLEDGE_BASE:
+                raise SupersededCycleError(item.item_id, item.last_error_code or "")
+            if not is_known_replayable(item.last_error_code):
                 raise NotReplayableError(item.item_id, item.last_error_code or "")
             if item.kind == EXTRACT_VERSION:
                 await _reset_extraction(uow, item)
