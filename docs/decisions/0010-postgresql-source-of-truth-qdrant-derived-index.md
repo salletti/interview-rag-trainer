@@ -81,3 +81,95 @@ de l'index au-delà d'un simple comptage.
   [0009](0009-pedagogical-chunking-knowledge-units.md),
   [0011](0011-embedding-profile-search-index-blue-green.md).
 - Conception : [knowledge-base.md §9–§12](../conception/bounded-contexts/knowledge-base.md#9-intégrité-de-lindex-qdrant).
+
+## Suivi (2026-11-18)
+
+Implémentation de S5, le corps de l'ADR est inchangé. Les points 5 et 6 sont
+en place : `visible=true` est ajouté à chaque recherche par l'adapter Qdrant ;
+le contrôle SQL final (`SqlAlchemyPublishedUnitReader`) ne garde que les
+unités de versions `PUBLISHED` de documents `ACTIVE` ; une passe de complément
+par défaut, `complete=false` quand des rejets laissent moins de `limit`
+passages. Les « paramètres de recherche Proposed jusqu'à S5 » sont tranchés
+dans [knowledge-base.md §16, O12](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts)
+(f = 2, une passe ; `max_passage_tokens` reste Proposed) et précisés au §12.
+Mesures sur le jeu de référence S5 : Recall@5 0,881, MRR 0,853, intégrité
+d'unité 1,000 ; recherche complète en 20 ms médians sur l'hôte (encodage
+13 ms, Qdrant 4 ms, contrôle SQL 2 ms). La condition de réévaluation
+« Recall mesuré en S5 insuffisant malgré le complément » n'est pas atteinte :
+avec 3 documents sur 10 écartés par le contrôle SQL, Recall@5 reste à 0,917
+dès f = 2. Détail : [README du contexte](../../backend/src/knowledge_base/README.md#s5--recherche-sémantique-provenance-et-évaluation).
+
+### S7 (2026-11-18)
+
+Le corps de l'ADR est inchangé. Point 8 vérifié sous concurrence réelle
+(`test_s7_withdrawal_purge`) : après le commit d'un retrait, aucune recherche
+ne rend le document, alors que Qdrant porte encore ses points visibles (le
+retrait ne planifie pas `sync_visibility`, la purge supprime les points). Le
+risque « tentative zombie réécrivant des points après une purge » est
+observé : points `visible=false`, jamais renvoyés ; leur suppression attend
+une nouvelle exécution de `purge_document`, que la réconciliation S8
+planifiera. Point 7 vérifié pendant une republication : aucun résultat ne mêle
+deux versions d'un document, y compris quand les deux sont visibles dans
+Qdrant. Défaut corrigé : un hit au payload incomplet (point supprimé pendant
+la requête) faisait échouer la recherche ; il est ignoré. Détail :
+[knowledge-base.md §8, §10, précisions S7](../conception/bounded-contexts/knowledge-base.md#10-publication-retrait-et-purge).
+
+### S8 (2026-11-18)
+
+Le corps de l'ADR est inchangé. Point 9 (« la réconciliation corrige les
+écarts ») mis en œuvre par `ReconcileKnowledgeBase`, un cycle par créneau
+([knowledge-base.md §9, §11, précisions S8](../conception/bounded-contexts/knowledge-base.md#9-intégrité-de-lindex-qdrant)) :
+Qdrant est lu **avant** PostgreSQL (parcours complet des index vivants, sans
+vecteur), si bien qu'un point écrit pendant le cycle n'est jamais pris pour
+un orphelin. Écarts corrigés et vérifiés contre Qdrant réel : points sans
+propriétaire ou de versions `SUPERSEDED`/`DISCARDED` (supprimés), points
+invisibles d'une version publiée (`sync_visibility` replanifiée : la fenêtre
+résiduelle de la tentative zombie de S4 est refermée), points écrits après
+une purge (`purge_document` replanifiée), manifests échantillonnés (au plus
+`KB_RECONCILE_MANIFEST_SAMPLE_SIZE` par cycle ; écart → indexation rouverte et
+refaite), points hors manifest d'une version vérifiée (supprimés par
+identifiant). La condition de réévaluation « volume rendant la vérification
+exhaustive du manifest trop coûteuse » est anticipée par l'échantillonnage ;
+le parcours complet des points à chaque cycle reste à mesurer sur un grand
+corpus.
+
+**Revue S8 (2026-11-18).** Le corps de l'ADR est inchangé, point 7 compris
+(tout point écrit l'est `visible=false`). Défaut corrigé : la réparation d'une
+dérive de manifest d'une version **publiée** réécrivait tous ses points,
+donc les rendait tous invisibles ; le document disparaissait de la recherche
+jusqu'au `sync_visibility` replanifié, placé derrière la file d'ingestion.
+Désormais `CompleteIndexation.prepare` relit le manifest attendu par
+identifiants avant d'écrire et ne réécrit, pour une version publiée, que les
+points absents ou d'empreinte différente : les points corrects restent
+visibles, le document reste trouvable pendant toute la réparation et ne perd
+que les passages des points réécrits, jusqu'à la synchronisation. Une version
+non publiée est toujours réécrite en entier. Vérifié contre Qdrant réel avec
+une barrière après l'upsert de réparation
+([knowledge-base.md §11, précisions S8](../conception/bounded-contexts/knowledge-base.md#11-visibilité-et-cohérence-postgresql--qdrant)).
+
+## S9 — migration blue/green (2026-11-18)
+
+Le corps de l'ADR est inchangé. Faits de S9 qui le touchent
+([knowledge-base.md §11, §13, précisions S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings)) :
+
+- PostgreSQL arbitre aussi l'index servi : la recherche relit l'index actif à
+  chaque requête et prend le modèle de son profil ; la bascule est le commit
+  d'`ActivateSearchIndex`, sans alias Qdrant (alternative écartée par
+  l'ADR 0011). Des recherches en boucle pendant la bascule n'échouent jamais et
+  passent de l'ancien index au nouveau sans retour (`test_s9_search_continuity`).
+- Point 7 (points écrits `visible=false`) : le backfill d'une version publiée
+  dans l'index `BUILDING` écrit ses points invisibles et replanifie sa
+  synchronisation (règle S8) ; l'activation est refusée tant qu'une
+  synchronisation d'un document publié est en attente
+  (`SynchronizationPendingError`), sinon le document manquerait des résultats
+  juste après la bascule.
+- La collection d'un index `RETIRED` est supprimée par un work item
+  (`drop_index_collection`) disponible après `KB_INDEX_DROP_DELAY_SECONDS`
+  (300 s par défaut, Proposed) ; jamais celle d'un index vivant
+  (`INDEX_STILL_LIVE`). Ses points ne sont plus parcourus par la
+  réconciliation (index vivants seulement) ; une collection supprimée n'est
+  pas un écart.
+- Point 9 : la réconciliation couvre l'index `BUILDING` (points orphelins,
+  manifests) et ajoute une règle propre à la migration : une version publiée
+  (ou extraite sous une autre politique) sans indexation dans l'index
+  `BUILDING` est replanifiée, sans quoi l'activation resterait refusée.

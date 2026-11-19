@@ -154,3 +154,55 @@ Le schéma, les transitions, les paramètres et les tests sont décrits dans
   [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md).
 - [002 — Flux](../conception/002-event-flows.md),
   [knowledge-base.md §6–§7](../conception/bounded-contexts/knowledge-base.md#6-workflow-de-traitement-avec-work_items).
+
+## Suivi (2026-11-18) — S8
+
+Cette section ne modifie pas la décision ci-dessus ; elle constate sa mise en
+œuvre par la slice S8 de Knowledge Base ([knowledge-base.md §6, §16,
+précisions S8](../conception/bounded-contexts/knowledge-base.md#6-workflow-de-traitement-avec-work_items)).
+
+- **Point 9 (réconciliation planifiée)** : tâche beat
+  `knowledge_base.work.reconcile` (file par défaut) qui enregistre un work
+  item `reconcile_knowledge_base` par créneau de
+  `KB_RECONCILE_INTERVAL_SECONDS` (défaut 300 s, Proposed) ; le cycle est
+  exécuté par la work queue sur la file d'ingestion, donc sérialisé avec les
+  extractions et indexations, avec lease, backoff et état `FAILED`. Il ne
+  duplique pas `recover` (items `RUNNING` au-delà de leur lease).
+- **Point 10 (échecs terminaux relançables par commande explicite)** :
+  `RetryIngestion`, `POST /api/v1/knowledge-base/failures/{item_id}/retry`.
+  L'item est rouvert (transition `reopen` de S0 §3, jeton de fencing jamais
+  reculé), l'état métier remis en attente dans la même transaction ; refus si
+  le catalogue des erreurs dit l'échec non rejouable ou si le travail n'a
+  plus d'objet. Catalogue unique des codes, deux axes (réessayé seul,
+  rejouable) : [knowledge-base.md §15.5](../conception/bounded-contexts/knowledge-base.md#155-catalogue-des-codes-derreur-s8).
+- **Point 11 (pas de DLQ)** : confirmé ; O10 est tranché par ce point. La
+  consultation est `GET /api/v1/knowledge-base/failures`.
+- **Point 7 (erreurs déterministes : échec terminal immédiat)** : vérifié de
+  bout en bout, un `EMPTY_DOCUMENT` fait une tentative et n'est jamais
+  rouvert, ni par la work queue ni par la réconciliation.
+- **Point 1 (mécanismes non dupliqués dans les agrégats)** : la seule colonne
+  ajoutée, `work_items.reopen_count`, appartient à la table de travail ; elle
+  borne la réouverture automatique d'une purge en échec.
+- **Revue S8 (2026-11-18)** :
+  - *Point 9* : la tâche beat n'enregistre aucun cycle tant qu'un item
+    `reconcile_knowledge_base` est `PENDING` ou `RUNNING` (elle rend cet
+    item) : une file d'ingestion occupée ne cumule pas un cycle par créneau
+    manqué. Un cycle `FAILED` reste en base mais n'est ni listé par
+    `GET /failures` ni rejouable (409 `NOT_REPLAYABLE`) : il n'a pas d'objet
+    propre, le créneau suivant en planifie un neuf. Le point 10 (« échecs
+    relançables ») vaut pour les traitements métier, pas pour ce cycle.
+  - *Point 10* : `TOO_MANY_PAGES`, `DOCUMENT_TOO_LARGE`, `UNKNOWN_KIND` et
+    `NOT_FINALIZED` deviennent rejouables (borne relevée, correctif déployé) ;
+    ils restent des « erreurs déterministes : échec terminal immédiat »
+    (point 7) : aucun réessai automatique, seul un rejeu explicite.
+  - *Points 7 et 10* : `TerminalWorkError` refuse un code absent du
+    catalogue, à la construction (erreur de programmation).
+- **Revue S9 (2026-11-19)**, sans modification de la décision : le port
+  `WorkQueue.enqueue_again` accepte `reuse_running=False`, qui ne réutilise
+  qu'un item `PENDING` de la famille et crée la génération suivante si
+  l'item vivant est `RUNNING` ; réservé à `sync_visibility` (idempotent),
+  dont un item déjà en cours a pu lire l'état avant l'écriture qui rend la
+  synchronisation nécessaire ([knowledge-base.md §13, précisions revue
+  S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings)).
+  L'abandon d'une migration annule ses items par `cancel` (point 5 : fencing
+  incrémenté, une tentative en cours ne finalise plus).

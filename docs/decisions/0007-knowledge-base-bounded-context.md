@@ -84,3 +84,15 @@ a validé ce troisième contexte.
 - ADR [0008](0008-custom-pipeline-docling-extraction.md) à
   [0012](0012-original-document-storage-and-purge.md).
 - Conception : [knowledge-base.md](../conception/bounded-contexts/knowledge-base.md).
+
+## Suivi (2026-11-18)
+
+S5 livre le contrat du point 2, le corps de l'ADR est inchangé :
+`knowledge_base.contracts.providers.KnowledgeSearch` et les DTO de
+`knowledge_base.contracts.result` (bibliothèque standard seulement, vérifié
+par `backend/tests/architecture/test_knowledge_search_contract.py`), fabrique
+publique `knowledge_base.build_knowledge_search`. Le contrat publie aussi son
+erreur d'indisponibilité (`KnowledgeSearchUnavailableError`), un consommateur
+ne pouvant importer les erreurs internes du contexte. Aucun consommateur n'est
+câblé en S5 ; l'API REST de recherche passe par le même contrat. Précisions :
+[knowledge-base.md §14](../conception/bounded-contexts/knowledge-base.md#14-contrat-public-knowledgesearch).

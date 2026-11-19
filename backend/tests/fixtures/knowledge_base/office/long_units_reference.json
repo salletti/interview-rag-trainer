@@ -1,0 +1,213 @@
+{
+  "_description": "Jeu des unités longues (S6, hors du jeu de S5) : un cours PDF dont la section « Exécuter du code bloquant depuis une application asyncio » (~1 300 tokens E5, pages 1 et 2) dépasse le budget d'un chunk (508) et max_passage_tokens (1024), parmi quatre documents Markdown du corpus S3/S5 qui traitent des mêmes notions (boucle bloquée, run_in_executor, GIL, pool de threads de FastAPI) : négatifs proches. Mêmes conventions que retrieval/retrieval_reference.json ; tags : long_unit = l'unité attendue est la section longue, code_identifier = la requête nomme un identifiant de code exact, near_negative = un document voisin traite la même notion, cross_language = requête EN sur un document FR.",
+  "documents": [
+    {
+      "file": "office/cours_concurrence_long_fr.pdf",
+      "title": "Concurrence en Python",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "python",
+        "concurrence"
+      ]
+    },
+    {
+      "file": "cours_asyncio_fr.md",
+      "title": "Cours asyncio",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "python",
+        "asyncio"
+      ]
+    },
+    {
+      "file": "fiche_revision_python_fr.md",
+      "title": "Fiche de révision Python",
+      "kind": "REVISION_SHEET",
+      "language": "fr",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "qa_python_en.md",
+      "title": "Python interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "qa_python_fastapi_fr.md",
+      "title": "Fiche de révision FastAPI",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "python",
+        "fastapi"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "l01",
+      "text": "Comment appeler une fonction synchrone qui lit un fichier depuis une coroutine sans bloquer la boucle ?",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "La fonction asyncio.to_thread est la manière la plus simple de déporter un appel bloquant",
+        "code_snippet": "contenu = await asyncio.to_thread(lire_rapport, chemin)"
+      }
+    },
+    {
+      "id": "l02",
+      "text": "Pourquoi un thread ne suffit-il pas pour un calcul intensif lancé depuis asyncio, et quel exécuteur utiliser ?",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "Pour ce cas, on confie le travail à un exécuteur de processus.",
+        "code_snippet": "boucle.run_in_executor(executeur, calculer_empreinte, lot)"
+      }
+    },
+    {
+      "id": "l03",
+      "text": "Annuler la coroutine qui attend to_thread arrête-t-il le thread qui exécute la fonction ?",
+      "language": "fr",
+      "tags": [
+        "long_unit"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "n'interrompt pas le thread ou le processus qui exécute la fonction",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l04",
+      "text": "slow_callback_duration",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "qui dépasse le seuil slow_callback_duration",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l05",
+      "text": "ProcessPoolExecutor pickle fonction locale lambda",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "ils doivent être sérialisables par pickle",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l06",
+      "text": "Quel symptôme observe-t-on quand un serveur asynchrone appelle une bibliothèque HTTP synchrone ?",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "ne traite plus qu'une requête à la fois",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l07",
+      "text": "loop.set_default_executor taille du pool de threads",
+      "language": "fr",
+      "tags": [
+        "long_unit",
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "le déclarer comme exécuteur par défaut de la boucle avec loop.set_default_executor",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l08",
+      "text": "How do I call a blocking function from asyncio without freezing the event loop?",
+      "language": "en",
+      "tags": [
+        "long_unit",
+        "near_negative",
+        "cross_language"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "La fonction asyncio.to_thread est la manière la plus simple de déporter un appel bloquant",
+        "code_snippet": "contenu = await asyncio.to_thread(lire_rapport, chemin)"
+      }
+    },
+    {
+      "id": "l09",
+      "text": "Pourquoi les threads n'accélèrent-ils pas un calcul en Python pur ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "ils n'accélèrent pas un calcul pur en Python",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "l10",
+      "text": "Pourquoi faut-il la garde if __name__ == \"__main__\" avec multiprocessing ?",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "office/cours_concurrence_long_fr.pdf",
+        "question": null,
+        "answer_snippet": "réimporte le module principal",
+        "code_snippet": null
+      }
+    }
+  ]
+}

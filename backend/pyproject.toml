@@ -13,6 +13,16 @@ dependencies = [
     "alembic>=1.20,<2",
     "celery>=5.7,<6",
     "qdrant-client>=1.20,<2",
+    "python-multipart>=0.0.34",
+    "docling-slim[convert-core,format-docx,format-markdown,format-pdf,models-local]==2.150.1",
+    "torch>=2.15,<3",
+    "sentence-transformers>=6.3,<7",
+    # Requis par TableFormer (structure des tableaux PDF), absent des extras
+    # de docling-slim ; la variante headless évite les bibliothèques X11.
+    "opencv-python-headless>=5.1,<6",
+    # Requis par les modèles de layout et TableFormer de Docling (S6) ; direct
+    # pour que la source CPU ci-dessous s'applique.
+    "torchvision>=0.29,<1",
 ]
 
 [dependency-groups]
@@ -24,23 +34,44 @@ dev = [
     "mypy>=2.4",
 ]
 
+# torch et torchvision viennent de l'index CPU de PyTorch (ADR 0008, point 6) :
+# les roues PyPI Linux tirent les bibliothèques CUDA (nvidia-*), inutiles sans
+# GPU.
+# ``explicit`` : cet index ne sert qu'aux paquets qui le désignent.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Seuls les packages Python réels sont listés : les Bounded Contexts
-# (interview_training, assessment) et shared ne contiennent encore que leur
-# README et seront ajoutés ici avec leur premier vertical slice.
-packages = ["src/runtime"]
+# Seuls les packages Python réels sont listés : interview_training,
+# assessment et shared ne contiennent encore que leur README et seront ajoutés
+# ici avec leur premier vertical slice.
+packages = ["src/runtime", "src/knowledge_base"]
 
 [tool.ruff]
 target-version = "py313"
 src = ["src", "."]
 line-length = 88
+# Données d'entrée des golden tests, comparées octet pour octet : ruff (qui
+# formate aussi les blocs de code du Markdown) ne doit jamais les réécrire.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "N", "C4", "SIM", "ASYNC", "RUF", "T20"]
+
+[tool.ruff.lint.isort]
+# Les Bounded Contexts sont first-party même avant que leur dossier n'existe
+# (les tests de S0 précèdent le code).
+known-first-party = ["knowledge_base", "assessment", "interview_training", "runtime", "shared"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends"]
@@ -49,20 +80,41 @@ extend-immutable-calls = ["fastapi.Depends"]
 python_version = "3.13"
 strict = true
 mypy_path = "src"
-files = ["src", "tests", "alembic"]
+files = ["src", "tests", "alembic", "scripts"]
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-# Celery et Kombu sont partiellement typés : les deux modules du runtime qui
-# les appellent directement tolèrent leurs appels et décorateurs non typés.
-module = ["runtime.worker", "runtime.messaging"]
+# Celery et Kombu sont partiellement typés : les modules qui les appellent
+# directement tolèrent leurs appels et décorateurs non typés.
+module = [
+    "runtime.worker",
+    "runtime.worker_factory",
+    "runtime.messaging",
+    "knowledge_base.adapters.controller.dependencies",
+]
 disallow_untyped_calls = false
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-# Celery n'embarque ni stubs ni marqueur py.typed.
-module = ["celery", "celery.*"]
+# Les tests d'intégration de Knowledge Base pilotent Kombu et Celery
+# (files, worker in-process) : mêmes tolérances que le runtime.
+module = ["tests.integration.knowledge_base.*"]
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# docling_core expose ses types publics par ``docling_core.types.doc`` sans
+# ``__all__`` : sans cela, mypy strict obligerait à importer leurs modules
+# internes (``items.text``, ``items.code``…), moins stables d'une version à
+# l'autre.
+module = ["docling_core.types.doc"]
+implicit_reexport = true
+
+[[tool.mypy.overrides]]
+# Celery et pypdfium2 (comptage des pages et couche texte des PDF, S6)
+# n'embarquent ni stubs ni marqueur py.typed.
+module = ["celery", "celery.*", "pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -73,4 +125,6 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra -m 'not integration' --import-mode=importlib"
 markers = [
     "integration: nécessite les services de compose.test.yaml (PostgreSQL, Qdrant, RabbitMQ)",
+    "model: charge de vrais poids de modèles : embeddings multilingual-e5-base (cache SENTENCE_TRANSFORMERS_HOME) ou layout et TableFormer de Docling (cache HF_HOME)",
+    "retrieval: évaluation de la récupération sur le jeu de référence S5 (Recall, MRR, intégrité ; rapport dans KB_RETRIEVAL_REPORT_DIR)",
 ]

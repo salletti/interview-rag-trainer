@@ -1,0 +1,137 @@
+{
+  "title": "Cours asyncio",
+  "kind": "COURSE",
+  "language": "fr",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Introduction"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Asyncio permet d'écrire du code"
+        ]
+      ]
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Coroutines"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Heading",
+          "Définir une coroutine"
+        ],
+        [
+          "Paragraph",
+          "Une coroutine se définit avec"
+        ],
+        [
+          "CodeBlock",
+          "async def saluer(nom): await asyncio.sleep(0.1)"
+        ],
+        [
+          "Heading",
+          "Exécuter une coroutine"
+        ],
+        [
+          "Paragraph",
+          "Le point d'entrée habituel est"
+        ]
+      ]
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Créer une tâche"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Une tâche enveloppe une coroutine"
+        ]
+      ]
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Annuler une tâche"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "L'annulation passe par la méthode"
+        ]
+      ]
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Tâches et annulation",
+        "Groupes de tâches"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "TaskGroup lance plusieurs tâches et"
+        ]
+      ]
+    },
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Cours asyncio",
+        "Boucle d'événements"
+      ],
+      "chunks": 3,
+      "blocks": [
+        [
+          "Paragraph",
+          "La boucle d'événements est le"
+        ],
+        [
+          "Paragraph",
+          "Une coroutine qui effectue un"
+        ],
+        [
+          "Paragraph",
+          "Pour les calculs intensifs, on"
+        ],
+        [
+          "Paragraph",
+          "Le mode debug de la"
+        ],
+        [
+          "Paragraph",
+          "Enfin, il faut éviter d'appeler"
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,472 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "1.11.0",
+  "name": "cours_git_fr",
+  "origin": {
+    "mimetype": "application/pdf",
+    "binary_hash": 13206265315476806451,
+    "filename": "cours_git_fr.pdf"
+  },
+  "furniture": {
+    "self_ref": "#/furniture",
+    "children": [],
+    "content_layer": "furniture",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {
+        "$ref": "#/texts/0"
+      },
+      {
+        "$ref": "#/texts/1"
+      },
+      {
+        "$ref": "#/texts/2"
+      },
+      {
+        "$ref": "#/texts/3"
+      },
+      {
+        "$ref": "#/texts/4"
+      },
+      {
+        "$ref": "#/texts/5"
+      },
+      {
+        "$ref": "#/texts/6"
+      },
+      {
+        "$ref": "#/texts/7"
+      },
+      {
+        "$ref": "#/texts/8"
+      },
+      {
+        "$ref": "#/texts/9"
+      },
+      {
+        "$ref": "#/texts/10"
+      },
+      {
+        "$ref": "#/texts/11"
+      },
+      {
+        "$ref": "#/texts/12"
+      },
+      {
+        "$ref": "#/texts/13"
+      }
+    ],
+    "content_layer": "body",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "groups": [],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 757.6858000000001,
+            "r": 178.232,
+            "b": 737.3358000000001,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            9
+          ]
+        }
+      ],
+      "orig": "Cours Git",
+      "text": "Cours Git",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/1",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 717.3778,
+            "r": 150.912,
+            "b": 702.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            8
+          ]
+        }
+      ],
+      "orig": "Branches",
+      "text": "Branches",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/2",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 690.7878000000001,
+            "r": 520.322592,
+            "b": 650.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            195
+          ]
+        }
+      ],
+      "orig": "Une branche est un pointeur mobile vers un commit. Cr\u00e9er une branche ne copie rien : on peut donc en ouvrir une par fonctionnalit\u00e9 sans co\u00fbt, travailler en isolation puis la proposer \u00e0 la fusion.",
+      "text": "Une branche est un pointeur mobile vers un commit. Cr\u00e9er une branche ne copie rien : on peut donc en ouvrir une par fonctionnalit\u00e9 sans co\u00fbt, travailler en isolation puis la proposer \u00e0 la fusion."
+    },
+    {
+      "self_ref": "#/texts/3",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 630.3778,
+            "r": 205.15200000000002,
+            "b": 615.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            16
+          ]
+        }
+      ],
+      "orig": "Fusion et rebase",
+      "text": "Fusion et rebase",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/4",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 603.7878000000001,
+            "r": 518.8139999999999,
+            "b": 548.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            299
+          ]
+        }
+      ],
+      "orig": "La fusion cr\u00e9e un commit de fusion qui relie deux historiques et conserve la chronologie r\u00e9elle. Le rebase rejoue les commits d'une branche au-dessus d'une autre pour obtenir un historique lin\u00e9aire, mais il r\u00e9\u00e9crit les commits : on ne rebase jamais une branche d\u00e9j\u00e0 partag\u00e9e avec d'autres personnes.",
+      "text": "La fusion cr\u00e9e un commit de fusion qui relie deux historiques et conserve la chronologie r\u00e9elle. Le rebase rejoue les commits d'une branche au-dessus d'une autre pour obtenir un historique lin\u00e9aire, mais il r\u00e9\u00e9crit les commits : on ne rebase jamais une branche d\u00e9j\u00e0 partag\u00e9e avec d'autres personnes."
+    },
+    {
+      "self_ref": "#/texts/5",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "code",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 90.0,
+            "t": 534.9478,
+            "r": 225.00000000000006,
+            "b": 516.6273103338633,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            41
+          ]
+        }
+      ],
+      "orig": "git switch fonctionnalite git rebase main",
+      "text": "git switch fonctionnalite git rebase main",
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "code_language": "unknown"
+    },
+    {
+      "self_ref": "#/texts/6",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 496.3778,
+            "r": 270.91200000000003,
+            "b": 481.57779999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            24
+          ]
+        }
+      ],
+      "orig": "Annuler une modification",
+      "text": "Annuler une modification",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/7",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 469.78779999999995,
+            "r": 522.444,
+            "b": 414.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            289
+          ]
+        }
+      ],
+      "orig": "Pour d\u00e9faire un commit d\u00e9j\u00e0 publi\u00e9, on utilise git revert, qui ajoute un commit inverse sans toucher \u00e0 l'historique. Pour abandonner des commits locaux, git reset d\u00e9place la branche ; avec l'option --hard il d\u00e9truit aussi les modifications du r\u00e9pertoire de travail, \u00e0 manier avec prudence.",
+      "text": "Pour d\u00e9faire un commit d\u00e9j\u00e0 publi\u00e9, on utilise git revert, qui ajoute un commit inverse sans toucher \u00e0 l'historique. Pour abandonner des commits locaux, git reset d\u00e9place la branche ; avec l'option --hard il d\u00e9truit aussi les modifications du r\u00e9pertoire de travail, \u00e0 manier avec prudence."
+    },
+    {
+      "self_ref": "#/texts/8",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 394.3778,
+            "r": 334.9600000000001,
+            "b": 379.57779999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            34
+          ]
+        }
+      ],
+      "orig": "Mettre de c\u00f4t\u00e9 du travail en cours",
+      "text": "Mettre de c\u00f4t\u00e9 du travail en cours",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/9",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 367.78779999999995,
+            "r": 514.5239999999999,
+            "b": 327.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            216
+          ]
+        }
+      ],
+      "orig": "La commande git stash enregistre les modifications non valid\u00e9es dans une pile et r\u00e9tablit un r\u00e9pertoire propre, ce qui permet de changer de branche pour une urgence. On r\u00e9cup\u00e8re ensuite le travail avec git stash pop.",
+      "text": "La commande git stash enregistre les modifications non valid\u00e9es dans une pile et r\u00e9tablit un r\u00e9pertoire propre, ce qui permet de changer de branche pour une urgence. On r\u00e9cup\u00e8re ensuite le travail avec git stash pop."
+    },
+    {
+      "self_ref": "#/texts/10",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 307.3778,
+            "r": 276.256,
+            "b": 292.5777999999999,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            26
+          ]
+        }
+      ],
+      "orig": "Retrouver le commit fautif",
+      "text": "Retrouver le commit fautif",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/11",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 280.78779999999995,
+            "r": 496.132,
+            "b": 240.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            238
+          ]
+        }
+      ],
+      "orig": "git bisect cherche par dichotomie le commit qui a introduit un bogue : on d\u00e9signe un commit sain et un commit d\u00e9fectueux, puis Git propose des commits interm\u00e9diaires \u00e0 tester jusqu'\u00e0 isoler le coupable en un nombre logarithmique d'\u00e9tapes.",
+      "text": "git bisect cherche par dichotomie le commit qui a introduit un bogue : on d\u00e9signe un commit sain et un commit d\u00e9fectueux, puis Git propose des commits interm\u00e9diaires \u00e0 tester jusqu'\u00e0 isoler le coupable en un nombre logarithmique d'\u00e9tapes."
+    },
+    {
+      "self_ref": "#/texts/12",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 220.37779999999998,
+            "r": 286.048,
+            "b": 205.57780000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            24
+          ]
+        }
+      ],
+      "orig": "R\u00e9cup\u00e9rer un seul commit",
+      "text": "R\u00e9cup\u00e9rer un seul commit",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/13",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 193.78779999999995,
+            "r": 517.957588,
+            "b": 153.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            233
+          ]
+        }
+      ],
+      "orig": "git cherry-pick applique sur la branche courante les changements d'un commit choisi d'une autre branche, en cr\u00e9ant un nouveau commit. C'est utile pour reporter un correctif sur une branche de maintenance sans fusionner tout le reste.",
+      "text": "git cherry-pick applique sur la branche courante les changements d'un commit choisi d'une autre branche, en cr\u00e9ant un nouveau commit. C'est utile pour reporter un correctif sur une branche de maintenance sans fusionner tout le reste."
+    }
+  ],
+  "pictures": [],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {
+    "1": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 1
+    }
+  }
+}

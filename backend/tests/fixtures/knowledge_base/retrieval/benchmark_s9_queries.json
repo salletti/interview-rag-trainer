@@ -1,0 +1,392 @@
+{
+  "_description": "Jeu complémentaire du benchmark des embeddings (S9, roadmap S6/S9 et O6), sur le corpus du jeu de S5 (mêmes documents, mêmes conventions que retrieval_reference.json). tags : code_identifier = la requête n'est (presque) qu'un identifiant de code exact présent dans l'unité attendue ; near_negative = une autre unité du corpus traite une notion voisine (décorateur, remplacement de dépendance, boucle d'événements, expiration/éviction Redis, index/plan, annulation git) ; cross_language = requête et document dans des langues différentes. Écrit pour S9, non vu par les choix de S0 à S8.",
+  "documents": [
+    {
+      "file": "qa_python_fastapi_fr.md",
+      "title": "Fiche de révision FastAPI",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "python",
+        "fastapi"
+      ]
+    },
+    {
+      "file": "qa_python_en.md",
+      "title": "Python interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "cours_asyncio_fr.md",
+      "title": "Cours asyncio",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "python",
+        "asyncio"
+      ]
+    },
+    {
+      "file": "fiche_revision_python_fr.md",
+      "title": "Fiche de révision Python",
+      "kind": "REVISION_SHEET",
+      "language": "fr",
+      "topics": [
+        "python"
+      ]
+    },
+    {
+      "file": "retrieval/qa_postgres_fr.md",
+      "title": "Fiche de révision PostgreSQL",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "postgresql",
+        "sql"
+      ]
+    },
+    {
+      "file": "retrieval/qa_pytest_fr.md",
+      "title": "Fiche de révision pytest",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "python",
+        "testing"
+      ]
+    },
+    {
+      "file": "retrieval/cours_git_fr.md",
+      "title": "Cours Git",
+      "kind": "COURSE",
+      "language": "fr",
+      "topics": [
+        "git"
+      ]
+    },
+    {
+      "file": "retrieval/qa_docker_en.md",
+      "title": "Docker interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "docker",
+        "devops"
+      ]
+    },
+    {
+      "file": "retrieval/qa_system_design_en.md",
+      "title": "System design interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "architecture"
+      ]
+    },
+    {
+      "file": "retrieval/course_http_en.md",
+      "title": "HTTP and REST course",
+      "kind": "COURSE",
+      "language": "en",
+      "topics": [
+        "http",
+        "api"
+      ]
+    },
+    {
+      "file": "retrieval/qa_kubernetes_en.md",
+      "title": "Kubernetes interview notes",
+      "kind": "QA_SHEET",
+      "language": "en",
+      "topics": [
+        "kubernetes",
+        "devops"
+      ]
+    },
+    {
+      "file": "retrieval/qa_redis_fr.md",
+      "title": "Fiche de révision Redis",
+      "kind": "QA_SHEET",
+      "language": "fr",
+      "topics": [
+        "redis"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "c01",
+      "text": "dependency_overrides",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "answer_snippet": "dictionnaire dependency_overrides de l'application",
+        "question": "Comment tester un endpoint qui dépend d'une base de données ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c02",
+      "text": "selectinload",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "answer_snippet": "en chargeant la relation d'avance",
+        "question": "Qu'est-ce que le problème N+1 et comment l'éviter avec un ORM ?",
+        "code_snippet": "selectinload(Commande.lignes)"
+      }
+    },
+    {
+      "id": "c03",
+      "text": "pytest.raises match",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "answer_snippet": "le gestionnaire de contexte pytest.raises",
+        "question": "Comment vérifier qu'une fonction lève une exception ?",
+        "code_snippet": "pytest.raises(ValueError"
+      }
+    },
+    {
+      "id": "c04",
+      "text": "maxmemory allkeys-lru",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_redis_fr.md",
+        "answer_snippet": "On fixe une limite avec maxmemory et une politique d'éviction",
+        "question": "Comment éviter la saturation de la mémoire de Redis ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c05",
+      "text": "asyncio.create_task",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "answer_snippet": "On l'obtient avec asyncio.create_task",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c06",
+      "text": "CancelledError",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "answer_snippet": "lève CancelledError à l'intérieur de la coroutine",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c07",
+      "text": "PYTHONASYNCIODEBUG",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "answer_snippet": "On l'active avec la variable d'environnement PYTHONASYNCIODEBUG",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c08",
+      "text": "TaskGroup ExceptionGroup",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "cours_asyncio_fr.md",
+        "answer_snippet": "TaskGroup lance plusieurs tâches et attend leur fin comme un bloc",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c09",
+      "text": "git cherry-pick",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "answer_snippet": "git cherry-pick applique sur la branche courante les changements d'un commit",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c10",
+      "text": "git stash pop",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "answer_snippet": "La commande git stash enregistre les modifications non validées",
+        "question": null,
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "c11",
+      "text": "RUN uv sync --frozen",
+      "language": "en",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_docker_en.md",
+        "answer_snippet": "keeps the expensive install layer cached while only the code changes",
+        "question": "Why does the order of instructions in a Dockerfile matter?",
+        "code_snippet": "RUN uv sync --frozen"
+      }
+    },
+    {
+      "id": "c12",
+      "text": "@pytest.mark.parametrize",
+      "language": "fr",
+      "tags": [
+        "code_identifier"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "answer_snippet": "Le décorateur parametrize exécute le test une fois par jeu de valeurs",
+        "question": "Comment exécuter le même test avec plusieurs jeux de données ?",
+        "code_snippet": "pytest.mark.parametrize"
+      }
+    },
+    {
+      "id": "n01",
+      "text": "Quel décorateur fait tourner un test une fois par jeu de valeurs ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_pytest_fr.md",
+        "answer_snippet": "Le décorateur parametrize exécute le test une fois par jeu de valeurs",
+        "question": "Comment exécuter le même test avec plusieurs jeux de données ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "n02",
+      "text": "Comment éviter qu'un remplacement de dépendance FastAPI fuie vers les tests suivants ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "answer_snippet": "Il faut penser à vider dependency_overrides à la fin de chaque test",
+        "question": "Comment tester un endpoint qui dépend d'une base de données ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "n03",
+      "text": "Un endpoint FastAPI synchrone bloque-t-il la boucle d'événements ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "qa_python_fastapi_fr.md",
+        "answer_snippet": "un endpoint déclaré avec def est exécuté dans un pool de threads",
+        "question": "Quelle différence entre async def et def pour un endpoint ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "n04",
+      "text": "Quelle commande Redis donne une durée de vie à une clé de session ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_redis_fr.md",
+        "answer_snippet": "On associe une durée de vie à la clé avec EXPIRE",
+        "question": "Comment Redis expire-t-il une clé ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "n05",
+      "text": "Pourquoi PostgreSQL préfère-t-il parfois un parcours séquentiel à un index ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/qa_postgres_fr.md",
+        "answer_snippet": "le planificateur préfère alors un parcours séquentiel",
+        "question": "À quoi sert un index B-tree et quand ne sert-il à rien ?",
+        "code_snippet": null
+      }
+    },
+    {
+      "id": "n06",
+      "text": "Comment abandonner des commits locaux en déplaçant la branche ?",
+      "language": "fr",
+      "tags": [
+        "near_negative"
+      ],
+      "filters": null,
+      "expected": {
+        "file": "retrieval/cours_git_fr.md",
+        "answer_snippet": "git reset déplace la branche",
+        "question": null,
+        "code_snippet": null
+      }
+    }
+  ]
+}

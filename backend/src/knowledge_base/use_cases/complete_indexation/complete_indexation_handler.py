@@ -1,0 +1,496 @@
+"""``CompleteIndexation`` : écrire les points d'une version dans un index,
+les vérifier, puis finaliser l'``Indexation`` et tenter la publication
+(knowledge-base.md §6, §7.3, §8, §9 ; I8, I9, I14).
+
+Coupé en deux pour la work queue (S0 §5) :
+
+- ``prepare`` : lecture brève (transaction fermée avant tout effet externe),
+  puis vérification de la collection (une fois), embeddings et upserts
+  ``visible=false`` par lots (``wait=true``), relecture par identifiants et
+  égalité exacte avec le manifest attendu. N'écrit rien dans PostgreSQL.
+  Pour une version déjà ``PUBLISHED`` (réparation d'une dérive de manifest,
+  S8), seuls les points absents ou d'empreinte différente sont réécrits : les
+  points corrects restent tels quels, visibles, et le document reste
+  trouvable pendant la réparation (§11, précision S8).
+- ``apply`` : dans la transaction de finalisation, revérification métier puis
+  ``COMPLETED`` (I8) et tentative de publication ; une publication refusée
+  (indexation d'un index ``BUILDING``, I5…) laisse l'indexation ``COMPLETED``.
+  Une version déjà publiée (réindexation après un écart de manifest, S8) n'est
+  pas republiée : sa synchronisation de visibilité est replanifiée.
+
+Effets externes rejouables : points ``uuid5(index_id, chunk_id)`` écrasés à
+l'identique, jamais ajoutés (§7.3).
+
+Modèle (S9) : ``embedders`` rend le modèle du profil de l'index visé, pour
+qu'un worker remplisse l'index ``BUILDING`` d'une migration avec son propre
+modèle ; un profil qu'il ne sait pas charger est le refus terminal
+``CollectionMismatchError``, avant tout encodage.
+Les chunks lus sont ceux du lot de la politique de l'INDEX
+(``chunking_policy_version`` de l'indexation) : un lot absent (rechunking non
+fait) est le refus terminal ``ChunkBatchMissingError``, jamais une indexation
+vide.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from itertools import batched
+from typing import Final
+from uuid import UUID
+
+from knowledge_base.domain.entities.indexation import Indexation, IndexationStatus
+from knowledge_base.domain.entities.knowledge_corpus import (
+    IndexStatus,
+    KnowledgeCorpus,
+    SearchIndex,
+)
+from knowledge_base.domain.entities.knowledge_document import (
+    DocumentStatus,
+    DocumentVersion,
+    KnowledgeDocument,
+    VersionStatus,
+)
+from knowledge_base.domain.exceptions.corpus_errors import UnknownIndexError
+from knowledge_base.domain.exceptions.document_errors import (
+    KnowledgeDocumentError,
+    VersionNotFoundError,
+)
+from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.embedder_provider import (
+    EmbedderProvider,
+    UnknownEmbeddingProfileError,
+)
+from knowledge_base.domain.providers.indexing_transaction import (
+    IndexingTransaction,
+    IndexingUnitOfWork,
+)
+from knowledge_base.domain.providers.vector_index import VectorIndex
+from knowledge_base.domain.services.point_id import point_id
+from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
+from knowledge_base.domain.value_objects.failure_reason import FailureReason
+from knowledge_base.domain.value_objects.index_manifest import IndexManifest
+from knowledge_base.domain.value_objects.indexed_point import IndexedPoint
+from knowledge_base.use_cases.complete_indexation.complete_indexation_command import (
+    CompleteIndexation,
+)
+from knowledge_base.use_cases.complete_indexation.errors import (
+    ChunkBatchMissingError,
+    CollectionMismatchError,
+    IndexManifestMismatchError,
+)
+from knowledge_base.use_cases.indexing_steps import reschedule_visibility_sync
+from knowledge_base.use_cases.publish_document_version.errors import (
+    PublicationRefusedError,
+)
+from knowledge_base.use_cases.publish_document_version.publish_document_version_command import (  # noqa: E501
+    PublishDocumentVersion,
+)
+from knowledge_base.use_cases.publish_document_version.publish_document_version_handler import (  # noqa: E501
+    PublishDocumentVersionHandler,
+)
+
+logger = logging.getLogger(__name__)
+
+# Relecture du manifest : identifiants par requête ``retrieve``.
+RETRIEVE_BATCH: Final = 256
+
+_INDEXABLE_VERSIONS: Final = frozenset(
+    {VersionStatus.EXTRACTED, VersionStatus.PUBLISHED}
+)
+
+
+@dataclass(frozen=True)
+class PreparedIndexation:
+    document_id: UUID
+    version_id: UUID
+    index_id: UUID
+    manifest: IndexManifest
+    point_count: int
+
+
+@dataclass(frozen=True)
+class _Indexable:
+    """Une indexation encore à faire, lue dans la transaction de ``prepare`` :
+    la version, son document, l'index visé et l'indexation."""
+
+    document: KnowledgeDocument
+    version: DocumentVersion
+    index: SearchIndex
+    indexation: Indexation
+
+
+@dataclass(frozen=True)
+class _Target:
+    """Ce que ``prepare`` doit indexer : la version, son document, l'index et
+    le modèle de son profil."""
+
+    document: KnowledgeDocument
+    version: DocumentVersion
+    index: SearchIndex
+    indexation: Indexation
+    embedder: Embedder
+
+
+class CompleteIndexationHandler:
+    def __init__(
+        self,
+        *,
+        unit_of_work: Callable[[], IndexingUnitOfWork],
+        vector_index: VectorIndex,
+        publisher: PublishDocumentVersionHandler,
+        clock: Callable[[], datetime],
+        embedders: EmbedderProvider,
+        batch_size: int = 32,
+    ) -> None:
+        """``embedders`` : le modèle du profil de chaque index."""
+        if batch_size <= 0:
+            raise ValueError(f"batch_size doit être positif : {batch_size}")
+        self._unit_of_work = unit_of_work
+        self._embedders = embedders
+        self._vector_index = vector_index
+        self._publisher = publisher
+        self._clock = clock
+        self._batch_size = batch_size
+
+    # --- hors transaction -------------------------------------------------------
+
+    async def prepare(self, command: CompleteIndexation) -> PreparedIndexation | None:
+        """``None`` (aucun appel externe) s'il n'y a rien à indexer. Lève
+        ``CollectionMismatchError`` (terminal) ou
+        ``IndexManifestMismatchError`` (transitoire)."""
+        async with self._unit_of_work() as uow:
+            found = _indexable(
+                command,
+                await uow.documents.get(command.document_id),
+                await uow.corpus.get_shared(),
+                await uow.indexations.get(command.version_id, command.index_id),
+            )
+            chunks = (
+                ()
+                if found is None
+                else await uow.chunks.list_chunks(
+                    command.version_id, found.indexation.chunking_policy_version
+                )
+            )
+        if found is None:
+            logger.info(
+                "indexation de la version %s dans l'index %s ignorée : rien à "
+                "indexer (version, document, index ou indexation hors d'état)",
+                command.version_id,
+                command.index_id,
+            )
+            return None
+        if not chunks:
+            raise ChunkBatchMissingError(
+                command.version_id,
+                command.index_id,
+                found.indexation.chunking_policy_version,
+            )
+        target = _Target(
+            document=found.document,
+            version=found.version,
+            index=found.index,
+            indexation=found.indexation,
+            embedder=self._embedder_for(found.index),
+        )
+        await self._check_collection(target)
+        manifest = IndexManifest.for_chunks(target.index.index_id, chunks)
+        to_write = await self._chunks_to_write(target, chunks, manifest)
+        for batch in batched(to_write, self._batch_size, strict=False):
+            await self._write(target, batch)
+        await self._verify(command, manifest)
+        return PreparedIndexation(
+            document_id=command.document_id,
+            version_id=command.version_id,
+            index_id=command.index_id,
+            manifest=manifest,
+            point_count=len(manifest),
+        )
+
+    def _embedder_for(self, index: SearchIndex) -> Embedder:
+        try:
+            return self._embedders.for_profile(index.profile)
+        except UnknownEmbeddingProfileError as error:
+            raise CollectionMismatchError(index.index_id, str(error)) from error
+
+    async def _check_collection(self, target: _Target) -> None:
+        index, embedder = target.index, target.embedder
+        if embedder.profile != index.profile:
+            raise CollectionMismatchError(
+                index.index_id,
+                f"modèle chargé {embedder.profile.model}@"
+                f"{embedder.profile.revision}, profil de l'index "
+                f"{index.profile.model}@{index.profile.revision}",
+            )
+        if not await self._vector_index.check_collection(index.index_id, index.profile):
+            raise CollectionMismatchError(
+                index.index_id,
+                f"collection absente ou autre que {index.profile.dimension} "
+                f"dimensions, distance {index.profile.distance}",
+            )
+
+    async def _chunks_to_write(
+        self,
+        target: _Target,
+        chunks: Sequence[DocumentChunk],
+        manifest: IndexManifest,
+    ) -> Sequence[DocumentChunk]:
+        """Tous les chunks, sauf pour une version déjà publiée : ceux dont le
+        point manque ou porte une autre empreinte. Un upsert écrit
+        ``visible=false`` (ADR 0010, point 7) ; réécrire un point correct
+        d'une version publiée le cacherait jusqu'à la synchronisation et
+        retirerait le document des résultats sans raison. Les points hors
+        manifest sont l'affaire de la réconciliation (§9)."""
+        if target.version.status is not VersionStatus.PUBLISHED:
+            return chunks
+        index_id = target.index.index_id
+        found = await self._read_hashes(index_id, manifest)
+        stale = [
+            chunk
+            for chunk in chunks
+            if found.get(point_id(index_id, chunk.chunk_id)) != chunk.chunk_hash
+        ]
+        logger.info(
+            "version %s publiée, index %s : %d point(s) à réécrire sur %d, les "
+            "autres restent visibles",
+            target.version.version_id,
+            target.index.index_id,
+            len(stale),
+            len(chunks),
+        )
+        return stale
+
+    async def _read_hashes(
+        self, index_id: UUID, manifest: IndexManifest
+    ) -> dict[UUID, str]:
+        """``chunk_hash`` des points du manifest présents dans l'index, relus
+        par identifiants (``retrieve``, par lots)."""
+        found: dict[UUID, str] = {}
+        for ids in batched(dict(manifest.entries), RETRIEVE_BATCH, strict=False):
+            found.update(await self._vector_index.retrieve(index_id, ids))
+        return found
+
+    async def _write(self, target: _Target, batch: Sequence[DocumentChunk]) -> None:
+        index = target.index
+        vectors = await target.embedder.embed_passages(
+            [c.contextual_text for c in batch]
+        )
+        for vector in vectors:
+            if len(vector) != index.profile.dimension:
+                raise CollectionMismatchError(
+                    index.index_id,
+                    f"vecteur de dimension {len(vector)}, profil "
+                    f"{index.profile.dimension}",
+                )
+        document = target.document
+        points = [
+            IndexedPoint(
+                point_id=point_id(index.index_id, chunk.chunk_id),
+                vector=tuple(vector),
+                chunk_id=chunk.chunk_id,
+                unit_id=chunk.unit_id,
+                version_id=target.version.version_id,
+                document_id=document.document_id,
+                chunk_hash=chunk.chunk_hash,
+                index_id=index.index_id,
+                topics=document.topics,
+                kind=document.kind.value,
+                language=document.language,
+            )
+            for chunk, vector in zip(batch, vectors, strict=True)
+        ]
+        await self._vector_index.upsert(index.index_id, points, wait=True)
+
+    async def _verify(
+        self, command: CompleteIndexation, manifest: IndexManifest
+    ) -> None:
+        """I8 : égalité exacte des couples ``(point_id, chunk_hash)`` relus et
+        attendus ; un ``count`` ne suffirait pas (ADR 0010 §3)."""
+        expected = dict(manifest.entries)
+        found = await self._read_hashes(command.index_id, manifest)
+        missing = len(expected.keys() - found.keys())
+        different = sum(
+            1 for point, digest in found.items() if expected.get(point) != digest
+        )
+        if missing or different:
+            raise IndexManifestMismatchError(
+                command.version_id,
+                command.index_id,
+                missing=missing,
+                different=different,
+            )
+
+    # --- transaction de finalisation ----------------------------------------------
+
+    async def apply(
+        self, transaction: IndexingTransaction, prepared: PreparedIndexation
+    ) -> bool:
+        """Vrai si l'indexation est passée ``COMPLETED`` ; faux si l'état a
+        changé depuis ``prepare`` (elle est alors annulée si la version, le
+        document ou l'index ne la justifient plus). Ne valide jamais la
+        transaction."""
+        command = CompleteIndexation(
+            prepared.document_id, prepared.version_id, prepared.index_id
+        )
+        indexation = await self.cancel_if_obsolete(transaction, command)
+        if indexation is None:
+            return False
+        indexation.complete(
+            manifest_digest=prepared.manifest.digest,
+            point_count=prepared.point_count,
+            completed_at=self._clock(),
+        )
+        await transaction.indexations.save(indexation)
+        logger.info(
+            "indexation de la version %s dans l'index %s terminée : %d points, "
+            "manifest %s",
+            prepared.version_id,
+            prepared.index_id,
+            prepared.point_count,
+            prepared.manifest.digest,
+        )
+        document = await transaction.documents.get(command.document_id)
+        version = _version(document, command.version_id)
+        if (
+            document is not None
+            and version is not None
+            and version.status is VersionStatus.PUBLISHED
+        ):
+            await self._resynchronize(transaction, document, command.version_id)
+        else:
+            await self._try_publish(transaction, command)
+        return True
+
+    @staticmethod
+    async def _resynchronize(
+        transaction: IndexingTransaction, document: KnowledgeDocument, version_id: UUID
+    ) -> None:
+        """Réindexation d'une version déjà publiée (S8 : manifest rouvert par la
+        réconciliation) : ``prepare`` vient de réécrire invisibles les points
+        manquants ou divergents (§11) et la publication, déjà faite, ne
+        planifiera aucune synchronisation."""
+        await reschedule_visibility_sync(
+            transaction.work_queue, document.document_id, document.visibility_revision
+        )
+        logger.info(
+            "version %s déjà publiée, réindexée : synchronisation de la "
+            "visibilité replanifiée (révision %d)",
+            version_id,
+            document.visibility_revision,
+        )
+
+    async def cancel_if_obsolete(
+        self, transaction: IndexingTransaction, command: CompleteIndexation
+    ) -> Indexation | None:
+        """L'indexation si elle est toujours à finaliser (``PENDING``, version
+        indexable, document actif, index vivant). Sinon ``None`` ; une
+        indexation ``PENDING`` qui n'a plus d'objet passe ``CANCELLED`` (§5.3)."""
+        indexation = await transaction.indexations.get(
+            command.version_id, command.index_id
+        )
+        if indexation is None or indexation.status is not IndexationStatus.PENDING:
+            return None
+        document = await transaction.documents.get(command.document_id)
+        version = _version(document, command.version_id)
+        index = _index(await transaction.corpus.get_shared(), command.index_id)
+        if (
+            document is None
+            or version is None
+            or index is None
+            or document.status is not DocumentStatus.ACTIVE
+            or version.status not in _INDEXABLE_VERSIONS
+            or index.status is IndexStatus.RETIRED
+        ):
+            indexation.cancel()
+            await transaction.indexations.save(indexation)
+            logger.info(
+                "indexation de la version %s dans l'index %s annulée : version, "
+                "document ou index hors d'état",
+                command.version_id,
+                command.index_id,
+            )
+            return None
+        return indexation
+
+    async def _try_publish(
+        self, transaction: IndexingTransaction, command: CompleteIndexation
+    ) -> None:
+        try:
+            await self._publisher.apply(
+                transaction,
+                PublishDocumentVersion(command.document_id, command.version_id),
+            )
+        except (PublicationRefusedError, KnowledgeDocumentError) as refusal:
+            # Les refus sont levés avant toute écriture : la transaction ne
+            # contient que l'indexation COMPLETED.
+            logger.info("version %s non publiée : %s", command.version_id, refusal)
+
+    async def fail(
+        self,
+        transaction: IndexingTransaction,
+        command: CompleteIndexation,
+        reason: FailureReason,
+    ) -> None:
+        """``FailIndexation`` : ``PENDING`` -> ``FAILED`` ; sans effet sinon
+        (lever ferait boucler l'item sur son hook, O14). La version reste
+        ``EXTRACTED`` : ses chunks sont valides (§5.2)."""
+        indexation = await transaction.indexations.get(
+            command.version_id, command.index_id
+        )
+        if indexation is None or indexation.status is not IndexationStatus.PENDING:
+            logger.info(
+                "échec %s de l'indexation (%s, %s) non enregistré : absente ou "
+                "plus PENDING",
+                reason.code,
+                command.version_id,
+                command.index_id,
+            )
+            return
+        indexation.fail(reason)
+        await transaction.indexations.save(indexation)
+
+
+def _indexable(
+    command: CompleteIndexation,
+    document: KnowledgeDocument | None,
+    corpus: KnowledgeCorpus | None,
+    indexation: Indexation | None,
+) -> _Indexable | None:
+    """Ce que ``prepare`` doit indexer, ou ``None`` s'il n'y a rien à faire."""
+    version = _version(document, command.version_id)
+    index = _index(corpus, command.index_id)
+    if (
+        document is None
+        or version is None
+        or index is None
+        or indexation is None
+        or document.status is not DocumentStatus.ACTIVE
+        or version.status not in _INDEXABLE_VERSIONS
+        or indexation.status is not IndexationStatus.PENDING
+        or index.status is IndexStatus.RETIRED
+    ):
+        return None
+    return _Indexable(document, version, index, indexation)
+
+
+def _version(
+    document: KnowledgeDocument | None, version_id: UUID
+) -> DocumentVersion | None:
+    if document is None:
+        return None
+    try:
+        return document.get_version(version_id)
+    except VersionNotFoundError:
+        return None
+
+
+def _index(corpus: KnowledgeCorpus | None, index_id: UUID) -> SearchIndex | None:
+    if corpus is None:
+        return None
+    try:
+        return corpus.get_index(index_id)
+    except UnknownIndexError:
+        return None

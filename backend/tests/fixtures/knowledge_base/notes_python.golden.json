@@ -1,0 +1,40 @@
+{
+  "title": "Notes Python",
+  "kind": "TECHNICAL",
+  "language": "fr",
+  "media_type": "text/plain",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [],
+      "chunks": 2,
+      "blocks": [
+        [
+          "Paragraph",
+          "Les listes en compréhension construisent"
+        ],
+        [
+          "Paragraph",
+          "Les dictionnaires conservent l'ordre d'insertion"
+        ],
+        [
+          "Paragraph",
+          "Un contexte with garantit la"
+        ],
+        [
+          "CodeBlock",
+          "with open(\"notes.txt\") as fichier: contenu"
+        ],
+        [
+          "Paragraph",
+          "Les exceptions se propagent dans"
+        ]
+      ]
+    }
+  ]
+}

@@ -86,3 +86,54 @@ l'explication, et citer précisément sa source.
   [0010](0010-postgresql-source-of-truth-qdrant-derived-index.md),
   [0011](0011-embedding-profile-search-index-blue-green.md).
 - Conception : [knowledge-base.md §15.2](../conception/bounded-contexts/knowledge-base.md#152-chunking-pédagogique-résumé--détail-dans-ladr-0009).
+
+## Suivi (2026-11-18)
+
+Précision d'implémentation (S3), sans changement de décision : l'identité de
+la `ChunkingPolicy` (point 7) comprend le **tokenizer** utilisé pour compter le
+budget, puisque le budget effectif en dépend : `identity = version+tokenizer`
+(production : `kb-chunking-v1+approx-xlmr-v1`, compteur provisoire majorant).
+Le passage au tokenizer réel du profil (S4) produit donc une nouvelle identité
+de lot. Revue du commit S3 : voir
+[suivi Knowledge Base](../conception/bounded-contexts/knowledge-base-progress.md).
+
+S4 (2026-11-18) : le compteur de production est le tokenizer du profil
+(`SentenceTransformersEmbedder.token_counter`) ; identité de production
+`kb-chunking-v1+xlmr-d1287505`, budget inchangé (508). Les lots de l'identité
+provisoire ne sont pas réindexés (pas de backfill avant S9).
+
+S5 (2026-11-18) : small-to-big (point 6) implémenté
+(`domain/services/passage_assembler.py`) ; le budget d'une unité complète
+compte la question ; une fenêtre ne répète pas l'en-tête contextuel des
+chunks (précisions au [§12](../conception/bounded-contexts/knowledge-base.md#12-stratégie-de-recherche-et-limites-de-recall)).
+Première mesure des conditions de réévaluation : intégrité d'unité 1,000
+(37 unités retrouvées sur 37) et Recall@5 0,881 sur le jeu de référence
+(42 requêtes) ; seuils de non-régression dans
+`backend/tests/fixtures/knowledge_base/retrieval/retrieval_thresholds.json`.
+Le jeu n'exerce ni les unités multi-chunks ni la troncature (49 unités, toutes
+en un chunk) : `max_passage_tokens` et l'overlap (point 5) restent à mesurer
+sur des cours longs (S6, S9).
+
+Revue S5 (2026-11-18), requalification sans changement de décision :
+l'intégrité d'unité 1,000 est **non exercée** en S5. Avec des unités d'un seul
+chunk, retrouver l'unité suffit à rendre l'unité entière : la mesure ne peut
+pas échouer et ne dit rien du point 6 (small-to-big). Le seuil (0,94) est
+conservé ; la condition de réévaluation qui en dépend ne sera significative
+qu'avec les unités multi-chunks de S6. Le budget compte désormais la question
+avec le tokenizer du profil, dans le domaine (`passage_assembler`), et la
+fenêtre retire aussi un en-tête contextuel tronqué par le `ChunkPlanner`.
+
+S9 (2026-11-18), rechunking (point 7), sans changement de décision : la
+`ChunkingPolicy` appartient au `SearchIndex` ; une version que l'index ne peut
+servir avec un lot existant reçoit un **second lot** `(version, politique)`
+produit par `rechunk_version` : l'original est re-parsé (O4 : aucun
+`StructuredDocument` persisté), segmenté et découpé selon la politique de
+l'index, budget compté par le tokenizer de **son** profil ; le lot d'origine
+et l'état de la version ne changent pas (I7), les citations restent celles de
+la version. Parsing, segmentation et découpage sont communs à l'extraction et
+au rechunking (`use_cases/extraction_steps.VersionExtractor`). Le budget de
+508 tokens est conservé pour toutes les cibles du catalogue : un modèle à
+contexte plus long n'impose pas de chunks plus longs (unité pédagogique), il
+ne change que le tokenizer qui les compte ; mesure et justification dans le
+[rapport de benchmark](../conception/bounded-contexts/knowledge-base-embedding-benchmark.md).
+`max_passage_tokens` et l'overlap ne sont pas remesurés en S9.

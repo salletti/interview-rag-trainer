@@ -100,7 +100,18 @@ sur eux :
 - Les règles d'architecture (point 11) seront étendues aux bibliothèques
   d'extraction et d'embeddings (ADR 0008) et au troisième contexte (ADR 0007)
   lors de la slice S0.
-- La slice S0 ajoutera deux processus de la même image (`worker_ingestion`,
-  `scheduler`) et deux volumes ; le décompte « sept services » des
-  Conséquences sera alors actualisé
+- La slice S0 ajoute deux processus de la même image (`worker_ingestion`,
+  `scheduler`) et deux volumes (`kb_blobs`, `models_cache`)
   ([knowledge-base-s0.md §11](../conception/bounded-contexts/knowledge-base-s0.md#11-configuration-docker-compose)).
+  Décompte actualisé des Conséquences : `docker compose up --build -d`
+  démarre **neuf** services (migrate, api, worker, worker_ingestion,
+  scheduler, frontend, postgres, qdrant, rabbitmq) ; aucun nouveau service
+  d'infrastructure, les exclusions de cet ADR (Redis, pgvector actif) sont
+  inchangées.
+- Readiness (point 7), revue S5 de Knowledge Base (2026-11-18), décision
+  inchangée, motif actualisé : la recherche (`POST
+  /api/v1/knowledge-base/search`) est le premier cas d'usage synchrone qui
+  dépend de Qdrant. Qdrant reste **non bloquant** : l'API sert aussi l'import
+  de documents, qui n'en dépend pas ; la rendre `not_ready` sans Qdrant
+  couperait l'import sans rendre la recherche possible. La recherche échoue
+  alors en 500, jamais en résultat vide (`backend/src/runtime/health.py`).
