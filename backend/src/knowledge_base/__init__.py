@@ -6,6 +6,7 @@ contexte.
 """
 
 from knowledge_base.adapters.controller.dependencies import (
+    IndexOperationRefusedError,
     KnowledgeBaseResources,
     KnowledgeBaseSettings,
     KnowledgeBaseWorkerResources,
@@ -22,6 +23,7 @@ from knowledge_base.adapters.controller.dependencies import (
 )
 
 __all__ = [
+    "IndexOperationRefusedError",
     "KnowledgeBaseResources",
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",

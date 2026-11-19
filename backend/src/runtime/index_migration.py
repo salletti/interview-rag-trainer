@@ -21,8 +21,10 @@ index=<index_id>``) :
   index qui n'est pas ``BUILDING``.
 
 Pas de route HTTP : une bascule est une opération rare, volontaire et lourde.
-Un refus (cible inconnue, migration en cours, couverture incomplète…) sort en
-erreur avec son message ; rien n'est écrit.
+Un refus (``knowledge_base.IndexOperationRefusedError`` : cible ou index
+inconnu, migration en cours, couverture incomplète, synchronisation en
+attente…) écrit une ligne ``refusé : <motif>`` sur stderr et sort en code 1,
+sans trace ; rien n'est écrit. Toute autre erreur garde sa trace.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -99,6 +102,14 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = parser().parse_args(argv)
     configure_logging(get_settings().log_level)
+    try:
+        run(arguments)
+    except knowledge_base.IndexOperationRefusedError as refusal:
+        print(f"refusé : {refusal}", file=sys.stderr)  # noqa: T201 - message d'opérateur
+        raise SystemExit(1) from None
+
+
+def run(arguments: argparse.Namespace) -> None:
     if arguments.action == "start":
         print(asyncio.run(start(arguments.target)))  # noqa: T201 - sortie de la commande
     elif arguments.action == "activate":

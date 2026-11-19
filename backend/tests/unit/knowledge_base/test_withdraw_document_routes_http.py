@@ -54,6 +54,7 @@ async def client(rig: S7Rig) -> AsyncIterator[AsyncClient]:
         import_document_handler=lambda: rig.base.harness.import_document,
         import_version_handler=rig.import_version_handler,
         withdraw_document_handler=rig.withdraw_handler,
+        max_upload_bytes=lambda: 1_000_000,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

@@ -196,6 +196,12 @@ services:
   # enregistre le work item du cycle.
   # Une seule instance (S0 §8.5) ; état éphémère, les planifications sont des
   # intervalles.
+  # Santé : beat réécrit son fichier de schedule toutes les 180 s
+  # (Scheduler.sync_every de Celery), à chaque tick qui suit ce délai ; un
+  # beat arrêté ou bloqué ne l'écrit plus. Le backend dbm de Python 3.13
+  # (sqlite3, journal WAL) n'écrit que dans -wal entre deux checkpoints :
+  # l'âge retenu est celui du plus récent des fichiers. Seuil 300 s = 180 s
+  # de synchronisation + marge.
   scheduler:
     build: *backend-build
     command: ["celery", "-A", "runtime.worker:celery_app", "beat", "--loglevel=INFO", "--schedule", "/tmp/celerybeat-schedule"]
@@ -205,6 +211,12 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import glob, os, sys, time; ages = [time.time() - os.path.getmtime(p) for p in glob.glob('/tmp/celerybeat-schedule*')]; sys.exit(not ages or min(ages) > 300)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     networks: [backend]
 
   frontend:

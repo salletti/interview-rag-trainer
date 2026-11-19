@@ -84,7 +84,9 @@ make test-integration         # PostgreSQL, Qdrant, RabbitMQ, E5 réels (compose
 
 Consignés dans [le suivi](knowledge-base-progress.md) (« Écarts et
 décisions ») et au §16 de [la conception](knowledge-base.md) :
-- refus anticipé sur `Content-Length` non traité (M-1 de S2) ;
+- refus anticipé sur `Content-Length` (M-1 de S2) : traité depuis (413 avant
+  lecture du corps au-delà de `KB_MAX_UPLOAD_BYTES` + 64 Kio de marge
+  multipart, voir le [README du contexte](../../../backend/src/knowledge_base/README.md)) ;
 - pic RSS du worker d'ingestion (`--max-tasks-per-child=50`, effet non mesuré) ;
 - purge des work items terminés non implémentée (Open S0) ;
 - coût du parcours complet des points Qdrant sur un grand corpus non mesuré ;

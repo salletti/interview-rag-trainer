@@ -15,6 +15,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from knowledge_base.adapters.controller.rest.documents_router import (
+    MULTIPART_ALLOWANCE_BYTES,
+)
 from runtime.database import SessionFactory
 from runtime.settings import Settings
 from tests.integration.knowledge_base.import_support import (
@@ -204,6 +207,36 @@ async def test_a_file_over_the_limit_is_a_413_without_blob_or_row(
     assert await rig.count("document_versions") == 0
     assert await rig.count("work_items") == 0
     assert await rig.count("idempotency_keys") == 0
+
+
+async def test_a_declared_length_over_the_limit_is_a_413_without_reading_the_body(
+    rig: ImportRig,
+) -> None:
+    """Revue S2, M-1 : la limite vient de ``KB_MAX_UPLOAD_BYTES`` (assemblage
+    réel de ``register``) ; le corps n'est jamais lu."""
+    read: list[bool] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        read.append(True)
+        yield b"--x--\r\n"
+
+    declared = MAX_UPLOAD_BYTES + MULTIPART_ALLOWANCE_BYTES + 1
+    response = await rig.client.post(
+        f"{PREFIX}/documents",
+        content=body(),
+        headers={
+            "Content-Type": "multipart/form-data; boundary=x",
+            "Content-Length": str(declared),
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "PAYLOAD_TOO_LARGE"
+    assert response.json()["max_bytes"] == MAX_UPLOAD_BYTES
+    assert read == []
+    assert rig.blob_files() == []
+    assert await rig.count("documents") == 0
+    assert await rig.count("work_items") == 0
 
 
 @pytest.mark.parametrize(

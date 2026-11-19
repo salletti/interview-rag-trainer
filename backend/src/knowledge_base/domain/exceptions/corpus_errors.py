@@ -10,7 +10,15 @@ if TYPE_CHECKING:
     from knowledge_base.domain.entities.knowledge_corpus import IndexStatus
 
 
-class KnowledgeCorpusError(Exception):
+class IndexOperationRefusedError(Exception):
+    """Base publique des refus d'une opération sur les index de recherche
+    (provisionnement, démarrage, activation, abandon d'une migration) :
+    l'opération n'a eu aucun effet et le message s'adresse à l'opérateur.
+    ``runtime`` ne voit que la racine du contexte : il reconnaît un refus par
+    cette seule base, qui la réexporte."""
+
+
+class KnowledgeCorpusError(IndexOperationRefusedError):
     """Base : l'opération est refusée et le corpus est inchangé."""
 
     def __init__(self, index_id: UUID, message: str) -> None:

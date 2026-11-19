@@ -33,10 +33,15 @@ from knowledge_base.adapters.controller.tasks.resources import (
 from knowledge_base.adapters.controller.tasks.retry_policy import (
     StaleAttempt,
     TerminalWorkError,
+    TransientWorkError,
     classify_error,
     compute_backoff,
 )
-from knowledge_base.adapters.failure_policy import FailureDecision, has_attempts_left
+from knowledge_base.adapters.failure_policy import (
+    FailureAction,
+    FailureDecision,
+    has_attempts_left,
+)
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_work_queue import (
     ClaimedWorkItem,
     SqlAlchemyWorkLifecycle,
@@ -155,16 +160,7 @@ async def _apply_failure(
         )
         return "stale"
 
-    logger.warning(
-        "work item %s (%s) tentative %s/%s : %s → %s",
-        item.id,
-        item.kind,
-        item.attempts,
-        item.max_attempts,
-        failure.code,
-        decision.action,
-        exc_info=error,
-    )
+    log_failed_attempt(item, failure, decision.action, error)
     if decision.action == "retry":
         return await _retry_later(item, failure, lifecycle, settings)
     hook = handler if isinstance(handler, HandlesTerminalFailure) else None
@@ -178,6 +174,44 @@ async def _apply_failure(
         return "failed"
     logger.info("work item %s : échec non enregistré, tentative périmée", item.id)
     return "stale"
+
+
+def log_failed_attempt(
+    item: ClaimedWorkItem,
+    failure: FailureInfo,
+    action: FailureAction,
+    error: Exception,
+) -> None:
+    """Un échec métier attendu (``TerminalWorkError``, code du catalogue :
+    ``OCR_REQUIRED``, ``EMPTY_DOCUMENT``…) tient en une ligne, sans trace : sa
+    cause est dans son code et son message, et la trace chaînée de l'erreur
+    d'origine n'apprend rien sur un cas normal. Une erreur transitoire
+    déclarée reste un WARNING tracé ; une erreur inattendue, un ERROR tracé."""
+    if isinstance(error, TerminalWorkError):
+        # %r : un message de parseur peut contenir des retours à la ligne.
+        logger.warning(
+            "work item %s (%s) tentative %s/%s : %s → %s : %r",
+            item.id,
+            item.kind,
+            item.attempts,
+            item.max_attempts,
+            failure.code,
+            action,
+            failure.message,
+        )
+        return
+    level = logging.WARNING if isinstance(error, TransientWorkError) else logging.ERROR
+    logger.log(
+        level,
+        "work item %s (%s) tentative %s/%s : %s → %s",
+        item.id,
+        item.kind,
+        item.attempts,
+        item.max_attempts,
+        failure.code,
+        action,
+        exc_info=error,
+    )
 
 
 async def _retry_later(
@@ -227,7 +261,7 @@ async def _after_hook_failure(
     """Le hook n'a pas pu écrire l'échec métier : nouvelle tentative tant qu'il
     en reste (l'item repasse par le handler puis le hook), sinon ``FAILED``
     sans hook. L'état métier de ce dernier cas est le point ouvert O14."""
-    logger.warning(
+    logger.error(
         "work item %s : hook d'échec terminal en erreur après %s",
         item.id,
         failure.code,

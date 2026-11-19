@@ -84,7 +84,7 @@ En-tête facultatif `Idempotency-Key` (1 à 255 caractères). Erreurs `{code, me
 | HTTP | `code` | Champs complémentaires | Cause |
 |---|---|---|---|
 | 422 | `INVALID_FILENAME` | `reason` | nom de fichier vide une fois réduit à son nom final, de plus de 255 caractères ou avec un caractère de contrôle ; ni blob ni ligne |
-| 413 | `PAYLOAD_TOO_LARGE` | `max_bytes` | fichier au-delà de `KB_MAX_UPLOAD_BYTES` ; ni blob ni ligne |
+| 413 | `PAYLOAD_TOO_LARGE` | `max_bytes` | fichier au-delà de `KB_MAX_UPLOAD_BYTES`, ou `Content-Length` déclaré au-delà de `KB_MAX_UPLOAD_BYTES` + 64 Kio (refus anticipé, corps non lu) ; ni blob ni ligne |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | `filename`, `media_type` | couple type / extension hors liste blanche |
 | 404 | `DOCUMENT_NOT_FOUND` | `document_id` | document cible inconnu |
 | 409 | `DUPLICATE_CONTENT` | `document_id`, `version_id` (version existante) | contenu déjà présent dans ce document (I3) ou dans un autre (O2) |
@@ -93,7 +93,9 @@ En-tête facultatif `Idempotency-Key` (1 à 255 caractères). Erreurs `{code, me
 | 409 | `CONCURRENT_MODIFICATION` | — | course perdue deux fois de suite (la première est rejouée par le handler) ; le client rejoue |
 | 422 | format FastAPI (`detail`) | — | formulaire invalide (champ manquant, `kind` inconnu, identifiant non UUID) |
 
-Le fichier n'est jamais lu en entier en mémoire : Starlette stocke la partie multipart dans un fichier temporaire (en mémoire jusqu'à 1 Mio, sur disque au-delà) **avant** l'appel de la route, puis le routeur la transmet au blob store par morceaux de 64 Kio. Pic mesuré (`tracemalloc`) pour un dépôt de 20 Mio : environ 120 Kio. La limite ne s'applique donc qu'après la réception complète par Starlette ; borner le corps HTTP lui-même relève du serveur ou du proxy.
+Le fichier n'est jamais lu en entier en mémoire : Starlette stocke la partie multipart dans un fichier temporaire (en mémoire jusqu'à 1 Mio, sur disque au-delà) **avant** l'appel de la route, puis le routeur la transmet au blob store par morceaux de 64 Kio. Pic mesuré (`tracemalloc`) pour un dépôt de 20 Mio : environ 120 Kio. La limite exacte ne s'applique donc qu'après la réception complète par Starlette.
+
+**Refus anticipé sur `Content-Length`** (revue S2, M-1) : les deux routes d'import refusent en 413 `PAYLOAD_TOO_LARGE`, **sans lire le corps**, une requête dont le `Content-Length` déclare plus que `KB_MAX_UPLOAD_BYTES` + `MULTIPART_ALLOWANCE_BYTES` (64 Kio). La marge couvre l'enveloppe multipart (frontières, en-têtes des parties, titre, sujets), que l'en-tête compte en plus du fichier : sans elle, un fichier à la limite serait refusé d'avance ; un formulaire de plus de 64 Kio de métadonnées avec un fichier proche de la limite l'est. FastAPI lisant le formulaire avant toute dépendance, le contrôle est porté par la classe de route (`documents_router._declared_length_limited_route`) ; la limite est lue à chaque requête dans les réglages des ressources. Un en-tête absent (`Transfer-Encoding: chunked`), illisible ou mensonger laisse la décision au contrôle au fil du flux, qui reste la seule borne exacte. Borner le corps HTTP lui-même (sans `Content-Length`) relève toujours du serveur ou du proxy.
 
 Stockage (`adapters/gateway/blob/filesystem_blob_store.py`, ADR 0012) : flux écrit sous `KB_BLOB_ROOT/tmp/`, `fsync`, puis `os.replace` vers `KB_BLOB_ROOT/sha256/<aa>/<bb>/<empreinte>` et `fsync` du répertoire ; aucun fichier n'apparaît au chemin final avant la fin du flux ; écriture idempotente, y compris pour des dépôts concurrents du même contenu ; I/O disque via `asyncio.to_thread`.
 
@@ -485,7 +487,9 @@ worker_ingestion : drop_index_collection ─► collection de l'index RETIRED su
 
 **Réglage** : `KB_INDEX_DROP_DELAY_SECONDS` (défaut 300, Proposed) : une recherche lit l'index actif puis interroge Qdrant ; commencée avant la bascule, elle peut encore lire l'ancienne collection.
 
-**Surface publique** : `start_index_migration(session_factory, qdrant_client, target_name) -> UUID`, `activate_search_index(session_factory, index_id, settings=None)`, `abandon_index_migration(session_factory, index_id, settings=None)` (revue S9), `migration_target_names()`.
+**Surface publique** : `start_index_migration(session_factory, qdrant_client, target_name) -> UUID`, `activate_search_index(session_factory, index_id, settings=None)`, `abandon_index_migration(session_factory, index_id, settings=None)` (revue S9), `migration_target_names()`, `IndexOperationRefusedError`.
+
+**Refus d'opération** (défaut D2 de la validation globale) : `IndexOperationRefusedError` (`domain/exceptions/corpus_errors.py`, réexportée par la racine) est la base de tous les refus des trois commandes : `KnowledgeCorpusError` (`UnknownIndexError`, `InvalidIndexTransitionError`, `IndexAlreadyBuildingError`, `IncompleteCoverageError`, `DuplicateIndexError`), `StartIndexMigrationError` (`NoActiveIndexToMigrateError`, `MigrationInProgressError`, `NothingToMigrateError`), `SynchronizationPendingError`, `SynchronizationFailedError` et `UnknownMigrationTargetError` (qui reste une `LookupError`). `python -m runtime.index_migration` l'attrape seule : une ligne `refusé : <motif>` sur stderr, code de sortie 1, sans trace ; toute autre erreur garde sa trace.
 
 **Limites connues** (revue S9) : un démarrage refusé par une migration concurrente laisse une collection Qdrant vide et orpheline ([§16, O17](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
 
@@ -561,6 +565,7 @@ POST /api/v1/knowledge-base/failures/{id}/retry ──► item rouvert + version
 | `start_index_migration(session_factory, qdrant_client, target_name)` | démarre une migration blue/green vers une cible du catalogue (S9) ; rend l'index `BUILDING` ; rejouable |
 | `activate_search_index(session_factory, index_id, settings=None)` | bascule la recherche sur l'index `BUILDING` (couverture et synchronisations vérifiées), collection de l'ancien supprimée après `KB_INDEX_DROP_DELAY_SECONDS` (S9) |
 | `migration_target_names()` | noms des cibles du catalogue (aide de `python -m runtime.index_migration`) |
+| `IndexOperationRefusedError` | base des refus d'opération sur les index (provisionnement, démarrage, activation, abandon d'une migration) : sans effet, message destiné à l'opérateur |
 
 `runtime` n'importe que cette racine (`backend/tests/architecture/`). `alembic/env.py` importe `knowledge_base.frameworks.sqlalchemy.metadata` (exception documentée dans [005](../../../docs/conception/005-project-structure.md#transmission-dun-contrat-public-à-un-autre-contexte)).
 
@@ -668,7 +673,8 @@ knowledge_base/
 2. `await ctx.finalize(callback)` : `callback(session)` écrit l'état métier ; le passage `SUCCEEDED` est ajouté dans la même transaction, conditionné au fencing token. Un token périmé annule toute la transaction (`StaleAttempt`).
 3. Erreurs : `TerminalWorkError(code, message)` → `FAILED` ; `TransientWorkError` et toute autre exception → nouvelle tentative avec backoff tant que `attempts < max_attempts`. Un handler qui se termine sans `ctx.finalize` est un échec terminal `NOT_FINALIZED` (le hook est appelé).
 4. Aucune écriture PostgreSQL métier hors de `ctx.finalize` (ou du hook `on_terminal_failure`, exécuté dans la transaction de `fail`).
-5. Si `on_terminal_failure` lève : la transaction de `fail` est annulée (aucune écriture du hook), puis nouvelle tentative avec backoff et le code `TERMINAL_HOOK_FAILED` ; à la dernière tentative, `FAILED` (`TERMINAL_HOOK_FAILED`) **sans** hook. L'état métier de ce cas, comme celui d'un `FAILED` par `recover`, est le point ouvert O14 ([knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
+5. Journal d'une tentative en échec (`execution.log_failed_attempt`, défaut D5) : une `TerminalWorkError` (échec métier attendu, code du catalogue : `OCR_REQUIRED`, `EMPTY_DOCUMENT`…) donne **une** ligne WARNING avec son code et son message (`%r`), sans trace, même chaînée à l'erreur du parseur ; une `TransientWorkError` reste un WARNING avec trace ; toute autre exception (`UNEXPECTED_ERROR`) et l'erreur d'un hook `on_terminal_failure` sont des ERROR avec trace.
+6. Si `on_terminal_failure` lève : la transaction de `fail` est annulée (aucune écriture du hook), puis nouvelle tentative avec backoff et le code `TERMINAL_HOOK_FAILED` ; à la dernière tentative, `FAILED` (`TERMINAL_HOOK_FAILED`) **sans** hook. L'état métier de ce cas, comme celui d'un `FAILED` par `recover`, est le point ouvert O14 ([knowledge-base.md §16](../../../docs/conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
 
 `max_attempts` : `enqueue(max_attempts=None)` applique le défaut de la colonne (5) ; le **claim** remplace cette valeur par celle du handler du `kind`, dans le même `UPDATE`. `retry_later` et `recover` lisent la colonne.
 

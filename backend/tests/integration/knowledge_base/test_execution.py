@@ -17,6 +17,7 @@ API figée (``adapters/controller/tasks/execution.py``) :
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -503,6 +504,61 @@ async def test_a_failing_terminal_hook_is_rolled_back_and_retried_then_failed(
     )
     assert row["completed_at"] is not None
     assert await effect_notes(session_factory, item_id) == []
+
+
+EXECUTION_LOGGER = "knowledge_base.adapters.controller.tasks.execution"
+
+
+async def test_an_expected_terminal_failure_is_logged_on_one_line_without_traceback(
+    session_factory: SessionFactory,
+    new_handler: NewHandler,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Défaut D5 : refus métier chaîné (comme ``OCR_REQUIRED``), une ligne."""
+
+    async def behaviour(item: ClaimedWorkItem, ctx: WorkContext) -> None:
+        try:
+            raise ValueError("cause interne du parseur")
+        except ValueError as error:
+            raise TerminalWorkError("OCR_REQUIRED", "PDF sans texte") from error
+
+    handler = new_handler(behaviour, hookless=True)
+    item_id = await enqueue_committed(session_factory, handler.kind)
+
+    with caplog.at_level(logging.INFO, logger=EXECUTION_LOGGER):
+        outcome = await run(session_factory, handler, item_id)
+
+    assert outcome == "failed"
+    [failure] = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert failure.levelno == logging.WARNING
+    assert failure.exc_info is None
+    assert "OCR_REQUIRED" in failure.getMessage()
+    assert "Traceback" not in caplog.text
+
+
+async def test_a_failing_terminal_hook_is_logged_as_an_error_with_its_traceback(
+    session_factory: SessionFactory,
+    new_handler: NewHandler,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def behaviour(item: ClaimedWorkItem, ctx: WorkContext) -> None:
+        raise TerminalWorkError("INVALID_PAYLOAD", "illisible")
+
+    async def hook(
+        session: AsyncSession, item: ClaimedWorkItem, error: FailureInfo
+    ) -> None:
+        raise RuntimeError("table métier verrouillée")
+
+    handler = new_handler(behaviour, hook, max_attempts=1)
+    item_id = await enqueue_committed(session_factory, handler.kind)
+
+    with caplog.at_level(logging.INFO, logger=EXECUTION_LOGGER):
+        outcome = await run(session_factory, handler, item_id)
+
+    assert outcome == "failed"
+    [hook_error] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert hook_error.exc_info is not None
+    assert "table métier verrouillée" in caplog.text
 
 
 async def test_a_terminal_error_without_a_hook_still_fails_the_item(

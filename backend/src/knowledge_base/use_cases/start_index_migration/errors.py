@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from knowledge_base.domain.exceptions.corpus_errors import IndexOperationRefusedError
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.embedding_profile import EmbeddingProfile
 
 
-class StartIndexMigrationError(Exception):
+class StartIndexMigrationError(IndexOperationRefusedError):
     """Base des refus du démarrage d'une migration."""
 
 

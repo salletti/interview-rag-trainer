@@ -6,6 +6,8 @@ from __future__ import annotations
 from collections.abc import Collection
 from uuid import UUID
 
+from knowledge_base.domain.exceptions.corpus_errors import IndexOperationRefusedError
+
 
 def _listed(document_ids: Collection[UUID]) -> str:
     shown = ", ".join(str(d) for d in sorted(document_ids)[:5])
@@ -13,7 +15,7 @@ def _listed(document_ids: Collection[UUID]) -> str:
     return shown + (f" (et {more} autre(s))" if more > 0 else "")
 
 
-class SynchronizationPendingError(Exception):
+class SynchronizationPendingError(IndexOperationRefusedError):
     """Couverture complète, mais une synchronisation de visibilité est encore
     en attente pour des documents publiés : leurs points dans l'index
     candidat peuvent être invisibles (écrits ``visible=false``, §11). Activer
@@ -31,7 +33,7 @@ class SynchronizationPendingError(Exception):
         self.document_ids = frozenset(document_ids)
 
 
-class SynchronizationFailedError(Exception):
+class SynchronizationFailedError(IndexOperationRefusedError):
     """Couverture complète, mais la dernière synchronisation de visibilité de
     documents publiés est ``FAILED`` : rien n'a rendu visibles leurs points
     depuis, dans l'index candidat comme ailleurs. Activer maintenant les

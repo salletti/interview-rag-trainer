@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
+from knowledge_base.domain.exceptions.corpus_errors import IndexOperationRefusedError
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.embedding_profile import (
     MULTILINGUAL_E5_BASE,
@@ -69,7 +70,7 @@ CATALOGUE: Final[Mapping[str, MigrationTarget]] = MappingProxyType(
 )
 
 
-class UnknownMigrationTargetError(LookupError):
+class UnknownMigrationTargetError(IndexOperationRefusedError, LookupError):
     def __init__(self, name: str) -> None:
         super().__init__(
             f"cible de migration inconnue : {name!r} ; cibles du catalogue : "

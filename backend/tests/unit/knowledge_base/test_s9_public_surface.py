@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib
 import inspect
 
+import pytest
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -37,8 +38,26 @@ import knowledge_base
 from knowledge_base import KnowledgeBaseSettings
 from knowledge_base.adapters.controller.dependencies import build_work_handlers
 from knowledge_base.adapters.controller.tasks.registry import HandlerRegistry
+from knowledge_base.domain.exceptions.corpus_errors import (
+    IncompleteCoverageError,
+    IndexAlreadyBuildingError,
+    InvalidIndexTransitionError,
+    UnknownIndexError,
+)
 from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
+from knowledge_base.frameworks.configuration.embedding_targets import (
+    UnknownMigrationTargetError,
+)
+from knowledge_base.use_cases.activate_search_index.errors import (
+    SynchronizationFailedError,
+    SynchronizationPendingError,
+)
+from knowledge_base.use_cases.start_index_migration.errors import (
+    MigrationInProgressError,
+    NoActiveIndexToMigrateError,
+    NothingToMigrateError,
+)
 from tests.unit.knowledge_base.use_cases.s9_support import contract
 
 INGESTION = "knowledge_base.ingestion"
@@ -54,6 +73,34 @@ def test_the_public_surface_exposes_the_migration_entry_points() -> None:
         assert inspect.iscoroutinefunction(getattr(knowledge_base, name))
     assert "migration_target_names" in knowledge_base.__all__
     assert "multilingual-e5-base" in knowledge_base.migration_target_names()
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        UnknownMigrationTargetError,
+        NoActiveIndexToMigrateError,
+        MigrationInProgressError,
+        NothingToMigrateError,
+        UnknownIndexError,
+        InvalidIndexTransitionError,
+        IndexAlreadyBuildingError,
+        IncompleteCoverageError,
+        SynchronizationPendingError,
+        SynchronizationFailedError,
+    ],
+)
+def test_every_refusal_of_the_migration_commands_shares_the_public_base(
+    refusal: type[Exception],
+) -> None:
+    """``runtime`` ne voit que la racine : il reconnaît un refus d'opération
+    (défaut D2) par la seule base publique, sans importer le domaine."""
+    assert "IndexOperationRefusedError" in knowledge_base.__all__
+    assert issubclass(refusal, knowledge_base.IndexOperationRefusedError)
+
+
+def test_an_unknown_target_is_still_a_lookup_error() -> None:
+    assert issubclass(UnknownMigrationTargetError, LookupError)
 
 
 def test_the_operations_command_exists() -> None:

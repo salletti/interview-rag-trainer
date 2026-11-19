@@ -5,16 +5,23 @@ Elle ne fait qu'analyser ses arguments et appeler la surface publique de
 Knowledge Base (``start_index_migration``, ``activate_search_index``,
 ``abandon_index_migration``, revue S9) : la migration elle-même est vérifiée
 par les tests du contexte.
+
+Un refus d'opération (``knowledge_base.IndexOperationRefusedError``, défaut D2
+de la validation globale) sort en code 1 avec un message d'opérateur d'une
+ligne sur stderr, sans trace ; une erreur inattendue garde sa trace.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
 import pytest
 
 import knowledge_base
+from knowledge_base.domain.entities.knowledge_corpus import IndexStatus
+from knowledge_base.domain.exceptions.corpus_errors import InvalidIndexTransitionError
 from runtime import index_migration
 
 INDEX = UUID(int=42)
@@ -86,3 +93,66 @@ def test_abandon_calls_the_public_surface(monkeypatch: pytest.MonkeyPatch) -> No
     index_migration.main(["abandon", str(INDEX)])
 
     assert calls == [INDEX]
+
+
+def refusing(error: Exception) -> Callable[..., Any]:
+    async def operation(*_args: Any) -> None:
+        raise error
+
+    return operation
+
+
+@pytest.mark.parametrize(
+    ("action", "entry_point", "argument"),
+    [
+        ("start", "start_index_migration", "multilingual-e5-small"),
+        ("activate", "activate_search_index", str(INDEX)),
+        ("abandon", "abandon_index_migration", str(INDEX)),
+    ],
+)
+def test_a_refusal_is_a_one_line_operator_message_and_exit_code_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+    entry_point: str,
+    argument: str,
+) -> None:
+    refusal = knowledge_base.IndexOperationRefusedError("migration déjà en cours")
+    monkeypatch.setattr(knowledge_base, entry_point, refusing(refusal))
+
+    with pytest.raises(SystemExit) as exited:
+        index_migration.main([action, argument])
+
+    assert exited.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "refusé : migration déjà en cours\n"
+
+
+def test_the_refusal_of_an_already_retired_index_has_no_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reproduction de D2 : second ``abandon`` d'un index ``RETIRED``."""
+    refusal = InvalidIndexTransitionError(INDEX, IndexStatus.RETIRED, "retrait")
+    monkeypatch.setattr(knowledge_base, "abandon_index_migration", refusing(refusal))
+
+    with pytest.raises(SystemExit) as exited:
+        index_migration.main(["abandon", str(INDEX)])
+
+    assert exited.value.code == 1
+    err = capsys.readouterr().err
+    assert err == f"refusé : index {INDEX} : retrait interdit depuis RETIRED\n"
+    assert "Traceback" not in err
+
+
+def test_an_unexpected_error_keeps_its_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        knowledge_base,
+        "activate_search_index",
+        refusing(RuntimeError("base injoignable")),
+    )
+
+    with pytest.raises(RuntimeError, match="base injoignable"):
+        index_migration.main(["activate", str(INDEX)])

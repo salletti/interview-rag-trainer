@@ -319,10 +319,33 @@ Aucun n'est bloquant. Aucun n'a été corrigé (consigne : pas de modification d
 | Absence de preuve globale S0–S9 sur un même commit | Validations faites slice par slice ; aucun rapport sur `91c5b8c` | Ce rapport : points 1 à 9 exécutés sur `91c5b8c`, tous OK |
 | Index actif de la stack de dev | `76ebad1e-b26d-4a00-a3cc-deb6471a786e`, e5-base, ACTIVE | `8aaafbf0-0b1b-4102-a6c6-e1e6bcf1da47`, e5-base, ACTIVE, après l'aller-retour (0 erreur sur 3 555 recherches) |
 | Fixture de test collectée comme test (D1) | Avertissement `PytestReturnNotNoneWarning` sur `test_extraction_failures.py::test_parser` | Corrigé après la validation par l'orchestrateur (`test_parser.__test__ = False`) ; plus collectée |
-| Refus de la CLI de migration en trace brute (D2) | `InvalidIndexTransitionError` affichée en trace Python, `make` en erreur | Inchangé : décrit, non corrigé |
-| Scheduler sans healthcheck (D3) | `health=none` ; `--wait` affiche `Healthy` | Inchangé : décrit, non corrigé |
+| Refus de la CLI de migration en trace brute (D2) | `InvalidIndexTransitionError` affichée en trace Python, `make` en erreur | Corrigé après la validation : base publique `knowledge_base.IndexOperationRefusedError`, une ligne `refusé : …` sur stderr, code 1, sans trace (voir « Suites ») |
+| Scheduler sans healthcheck (D3) | `health=none` ; `--wait` affiche `Healthy` | Corrigé après la validation : healthcheck sur l'âge du fichier de schedule de beat, `health=healthy` (voir « Suites ») |
 | Pas de lecture d'état d'un document par REST (D4) | Seules routes : imports, retrait, recherche, échecs | Inchangé : à décider |
-| Refus terminal journalisé avec trace (D5) | Deux traces pour `OCR_REQUIRED` | Inchangé : décrit, non corrigé |
+| Refus terminal journalisé avec trace (D5) | Deux traces pour `OCR_REQUIRED` | Corrigé après la validation : une ligne WARNING avec le code, sans trace ; ERROR tracé pour une erreur inattendue (voir « Suites ») |
+
+## Suites (corrections postérieures à la validation)
+
+Corrections apportées après ce rapport, sur la même branche ; les constats
+ci-dessus restent ceux du commit `91c5b8c`.
+
+- **D2** : `IndexOperationRefusedError` (`domain/exceptions/corpus_errors.py`,
+  réexportée par la racine `knowledge_base`) est la base de tous les refus de
+  `start`, `activate` et `abandon` ; `runtime.index_migration.main` l'attrape
+  seule. `make kb-migration-abandon index=00000000-0000-0000-0000-000000000000`
+  sur la stack de dev : `refusé : index 00000000-… : inconnu du corpus`, puis
+  `make: *** [kb-migration-abandon] Error 1`, sans trace.
+- **D3** : healthcheck du service `scheduler` : le plus récent des fichiers
+  `/tmp/celerybeat-schedule*` doit avoir moins de 300 s. Constaté dans le
+  conteneur : beat réécrit `celerybeat-schedule-wal` toutes les 180 s
+  (`Scheduler.sync_every`, Celery 5.7.0 ; dbm `sqlite3` en WAL sous Python
+  3.13), le fichier principal n'est écrit qu'au démarrage. Après `docker
+  compose up -d --build --wait`, `docker inspect` donne `healthy`. Dans un
+  conteneur éphémère : sans fichier, code 1 ; fichiers de 400 s, code 1 ;
+  `-wal` frais, code 0.
+- **D5** : `execution.log_failed_attempt` : une `TerminalWorkError` donne une
+  ligne WARNING avec son code et son message, sans trace ; une erreur
+  inattendue et l'erreur d'un hook d'échec sont des ERROR tracés.
 
 ## Non exécuté
 

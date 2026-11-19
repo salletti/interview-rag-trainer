@@ -236,7 +236,8 @@ Revue tech lead du commit S9 (`50b12ba`) : aucun bloquant, 4 importants, 10 mine
 Validation globale (commit `91c5b8c`, [rapport](knowledge-base-validation.md)) : 9 points OK, 5 défauts mineurs.
 
 - D1 — fabrique `test_parser` collectée comme test : `__test__ = False`. **Fait** (revalidation finale : 1 735 unitaires/architecture, 545 intégration — le test fantôme en moins —, 31 avertissements).
-- D2 — refus du domaine affichés en trace Python brute par `runtime.index_migration` (les erreurs de migration ne sont ni exportées par la racine ni rattachées à une base commune). Reporté.
-- D3 — scheduler sans healthcheck dans `compose.yaml`. Reporté.
+- D2 — refus du domaine en trace brute par `runtime.index_migration` → base publique `IndexOperationRefusedError`, message `refusé : …` sur stderr, code 1. **Fait.**
+- D3 — healthcheck du scheduler sur l'âge du fichier de planification beat (WAL `dbm.sqlite3`, réécrit toutes les 180 s ; seuil 300 s). **Fait** (healthy sur la stack de dev).
 - D4 — aucune route REST d'état d'un document/version (suivi par psql). À décider par l'utilisateur.
-- D5 — refus terminal attendu (`OCR_REQUIRED`) journalisé en WARNING avec deux traces. Reporté.
+- D5 — `TerminalWorkError` journalisée en une ligne WARNING avec son code, sans trace ; erreurs inattendues et hook en échec en ERROR avec trace. **Fait.** (`NOT_FINALIZED`/`UNKNOWN_KIND` suivent aussi ce chemin.)
+- M-1 (S2) — refus anticipé 413 `PAYLOAD_TOO_LARGE` avant lecture du corps quand `Content-Length` > `KB_MAX_UPLOAD_BYTES` + 64 Kio (enveloppe multipart) ; contrôle en flux conservé. **Fait.** Revalidation : 1 759 unitaires/architecture, 548 intégration.

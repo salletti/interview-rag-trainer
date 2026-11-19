@@ -7,17 +7,33 @@ stocké la partie multipart dans un fichier temporaire (en mémoire jusqu'à
 1 Mio, sur disque au-delà) ; il n'est jamais lu en entier en mémoire et la
 limite de taille s'applique pendant la copie vers le volume des blobs.
 
+Avant cela, un import dont le ``Content-Length`` déclare plus que la limite
+(marge du multipart comprise) est refusé sans que son corps soit lu (revue
+S2, M-1) : FastAPI lit le formulaire avant toute dépendance, le contrôle est
+donc porté par la classe de route. Un en-tête absent ou mensonger laisse le
+contrôle au fil du flux, qui reste la seule borne exacte.
+
 Pas de ``from __future__ import annotations`` ici : FastAPI doit résoudre les
 annotations des routes, qui référencent des dépendances définies localement.
 """
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from enum import Enum
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Header, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    Header,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from knowledge_base.adapters.controller.rest.errors import (
     IMPORT_REFUSALS,
@@ -29,6 +45,7 @@ from knowledge_base.adapters.controller.rest.schemas import (
     ImportResponse,
     WithdrawResponse,
 )
+from knowledge_base.domain.providers.document_blob_store import BlobTooLargeError
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from knowledge_base.use_cases.import_document.import_document_command import (
     ImportDocument,
@@ -55,10 +72,16 @@ from knowledge_base.use_cases.withdraw_document.withdraw_document_handler import
 PREFIX: Final = "/api/v1/knowledge-base"
 TAGS: Final[list[str | Enum]] = ["knowledge-base"]
 UPLOAD_CHUNK_BYTES: Final = 64 * 1024
+# Le Content-Length compte tout le corps multipart (frontières, en-têtes des
+# parties, titre, sujets…), pas le seul fichier : sans marge, un fichier à la
+# limite serait refusé d'avance. La borne exacte reste celle du flux.
+MULTIPART_ALLOWANCE_BYTES: Final = 64 * 1024
 
 ImportDocumentHandlerFactory = Callable[[], ImportDocumentHandler]
 ImportVersionHandlerFactory = Callable[[], ImportDocumentVersionHandler]
 WithdrawDocumentHandlerFactory = Callable[[], WithdrawDocumentHandler]
+MaxUploadBytes = Callable[[], int]
+RouteHandler = Callable[[Request], Coroutine[Any, Any, Response]]
 IdempotencyKey = Annotated[str | None, Header(min_length=1, max_length=255)]
 
 _RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
@@ -79,21 +102,16 @@ def add_document_routes(
     import_document_handler: ImportDocumentHandlerFactory,
     import_version_handler: ImportVersionHandlerFactory,
     withdraw_document_handler: WithdrawDocumentHandlerFactory,
+    max_upload_bytes: MaxUploadBytes,
 ) -> None:
     """Déclare les routes directement sur ``router`` (le routeur de
     l'application) : FastAPI ≥ 0.163 n'aplatit plus les routeurs inclus.
     Les fabriques sont appelées à chaque requête (dépendances FastAPI) :
     l'assemblage des handlers appartient à l'appelant, qui peut les
-    substituer."""
+    substituer. ``max_upload_bytes`` (appelé à chaque import) borne le
+    ``Content-Length`` déclaré des routes d'import."""
+    import_route = _declared_length_limited_route(max_upload_bytes)
 
-    @router.post(
-        f"{PREFIX}/documents",
-        tags=TAGS,
-        status_code=status.HTTP_202_ACCEPTED,
-        response_model=ImportResponse,
-        responses=_RESPONSES,
-        summary="Importer un document Markdown ou texte",
-    )
     async def import_document(
         response: Response,
         handler: Annotated[ImportDocumentHandler, Depends(import_document_handler)],
@@ -121,14 +139,18 @@ def add_document_routes(
             return refusal_response(refused)
         return _accepted(result, response)
 
-    @router.post(
-        f"{PREFIX}/documents/{{document_id}}/versions",
+    router.add_api_route(
+        f"{PREFIX}/documents",
+        import_document,
+        methods=["POST"],
         tags=TAGS,
         status_code=status.HTTP_202_ACCEPTED,
         response_model=ImportResponse,
         responses=_RESPONSES,
-        summary="Importer une nouvelle version d'un document",
+        summary="Importer un document Markdown ou texte",
+        route_class_override=import_route,
     )
+
     async def import_document_version(
         document_id: UUID,
         response: Response,
@@ -150,6 +172,18 @@ def add_document_routes(
         except IMPORT_REFUSALS as refused:
             return refusal_response(refused)
         return _accepted(result, response)
+
+    router.add_api_route(
+        f"{PREFIX}/documents/{{document_id}}/versions",
+        import_document_version,
+        methods=["POST"],
+        tags=TAGS,
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=ImportResponse,
+        responses=_RESPONSES,
+        summary="Importer une nouvelle version d'un document",
+        route_class_override=import_route,
+    )
 
     @router.delete(
         f"{PREFIX}/documents/{{document_id}}",
@@ -177,6 +211,34 @@ def add_document_routes(
             document_id=result.document_id,
             visibility_revision=result.visibility_revision,
         )
+
+
+def _declared_length_limited_route(max_upload_bytes: MaxUploadBytes) -> type[APIRoute]:
+    """Classe de route qui refuse en 413 ``PAYLOAD_TOO_LARGE``, avant toute
+    lecture du corps, un ``Content-Length`` au-delà de la limite et de la
+    marge du multipart."""
+
+    class DeclaredLengthLimitedRoute(APIRoute):
+        def get_route_handler(self) -> RouteHandler:
+            handle = super().get_route_handler()
+
+            async def refuse_declared_excess(request: Request) -> Response:
+                limit = max_upload_bytes()
+                declared = _declared_length(request)
+                ceiling = limit + MULTIPART_ALLOWANCE_BYTES
+                if declared is not None and declared > ceiling:
+                    return refusal_response(BlobTooLargeError(limit))
+                return await handle(request)
+
+            return refuse_declared_excess
+
+    return DeclaredLengthLimitedRoute
+
+
+def _declared_length(request: Request) -> int | None:
+    """``None`` si l'en-tête est absent ou illisible : le flux tranchera."""
+    value = request.headers.get("content-length", "")
+    return int(value) if value.isdecimal() else None
 
 
 async def _chunks(upload: UploadFile) -> AsyncIterator[bytes]:

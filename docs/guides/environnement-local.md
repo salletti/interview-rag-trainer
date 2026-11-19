@@ -21,7 +21,7 @@ docker compose up --build -d
 | RabbitMQ | `localhost:5672`, management http://localhost:15672 | broker Celery |
 | Worker Celery (`worker`) | — | file `interview_rag_trainer.default` : `runtime.ping`, tâches `dispatch` et `recover` de Knowledge Base |
 | Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility`, `purge_document`, `reconcile_knowledge_base`, `rechunk_version` et `drop_index_collection` (S9) ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) et Docling PDF à son premier PDF (pic de RSS mesuré : 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) |
-| Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` |
+| Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` ; healthcheck : le plus récent des fichiers `/tmp/celerybeat-schedule*` a moins de 300 s (beat le réécrit toutes les 180 s) |
 | migrate | — | `alembic upgrade head`, s'arrête une fois terminé |
 | kb_provision | — | `python -m runtime.provision` : crée la collection Qdrant et active l'index initial de Knowledge Base s'il n'existe pas (idempotent), s'arrête une fois terminé |
 
@@ -75,7 +75,7 @@ Le modèle `intfloat/multilingual-e5-base` (révision épinglée dans le profil)
 ## Vérifications
 
 ```bash
-make ps                                  # état et healthchecks
+make ps                                  # état et healthchecks (scheduler compris)
 curl -s localhost:8010/health/ready      # {"status":"ready", "checks": {...}}
 make worker-ping                         # pong : broker → worker → result backend
 docker compose run --rm kb_provision     # relance le provisionnement : sans effet si l'index existe
@@ -261,6 +261,16 @@ Changer de profil d'embeddings sans interrompre la recherche (blue/green ; cible
    Refus sans effet, à relancer plus tard : `IncompleteCoverageError` (une version publiée n'est pas encore `COMPLETED` dans le nouvel index), `SynchronizationPendingError` (synchronisation de visibilité en attente), `SynchronizationFailedError` (dernière synchronisation de visibilité d'un document publié en échec : la rejouer par `/failures`, ou attendre que la réconciliation la replanifie, puis relancer l'activation). La première recherche après la bascule charge le nouveau modèle dans l'API (~2 à 3 s mesurées) ; l'API garde les deux modèles jusqu'à son redémarrage (1 277 → 1 666 Mio mesurés).
 
 5. **Retrait** : la collection de l'ancien index est supprimée par `drop_index_collection` après `KB_INDEX_DROP_DELAY_SECONDS` (300 s) ; `curl -s localhost:6333/collections` ne montre plus que le nouvel index.
+
+Un refus de l'une des trois commandes (`start`, `activate`, `abandon`) tient en une ligne sur stderr, sans trace Python, et sort en code 1 (`make` en erreur) ; par exemple, pour un index inconnu :
+
+```bash
+make kb-migration-abandon index=00000000-0000-0000-0000-000000000000
+# refusé : index 00000000-0000-0000-0000-000000000000 : inconnu du corpus
+# make: *** [kb-migration-abandon] Error 1
+```
+
+Une erreur inattendue (base injoignable…) garde sa trace complète.
 
 **Abandonner une migration** (bloquée, ou vers une cible non voulue) : seule issue d'un index `BUILDING` qu'on ne veut ou ne peut pas activer, et préalable à toute autre migration (un seul index `BUILDING` par corpus).
 

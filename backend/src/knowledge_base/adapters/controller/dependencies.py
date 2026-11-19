@@ -77,6 +77,7 @@ from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
 from knowledge_base.contracts.providers import KnowledgeSearch
+from knowledge_base.domain.exceptions.corpus_errors import IndexOperationRefusedError
 from knowledge_base.domain.value_objects.embedding_profile import MULTILINGUAL_E5_BASE
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.embedding_targets import (
@@ -108,6 +109,7 @@ from knowledge_base.use_cases.withdraw_document.withdraw_document_handler import
 )
 
 __all__ = [
+    "IndexOperationRefusedError",
     "KnowledgeBaseResources",
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
@@ -149,6 +151,7 @@ def register(app: FastAPI, resources: Callable[[], KnowledgeBaseResources]) -> N
         import_document_handler=lambda: build_import_document_handler(resources()),
         import_version_handler=lambda: build_import_version_handler(resources()),
         withdraw_document_handler=lambda: build_withdraw_document_handler(resources()),
+        max_upload_bytes=lambda: resources().settings.max_upload_bytes,
     )
     add_search_routes(
         app.router, knowledge_search=lambda: build_knowledge_search(resources())
@@ -285,7 +288,8 @@ async def start_index_migration(
     """Démarre une migration blue/green vers la cible ``target_name`` du
     catalogue : index ``BUILDING``, sa collection et le backfill du corpus.
     Rejouable : la même cible rend le même index. Rend l'index ``BUILDING``.
-    Lève ``LookupError`` pour une cible inconnue."""
+    Lève ``IndexOperationRefusedError`` pour un refus (cible inconnue, aussi
+    ``LookupError``, migration en cours, rien à migrer…)."""
     target = migration_target(target_name)
     handler = build_start_index_migration_handler(
         session_factory, QdrantVectorIndex(qdrant_client)
@@ -305,7 +309,9 @@ async def activate_search_index(
     """Bascule la recherche sur l'index ``BUILDING`` ``index_id`` si sa
     couverture est complète et qu'aucune synchronisation n'est en attente ;
     l'ancien index est retiré, sa collection supprimée après
-    ``KB_INDEX_DROP_DELAY_SECONDS``."""
+    ``KB_INDEX_DROP_DELAY_SECONDS``. Lève ``IndexOperationRefusedError``
+    pour un refus (index inconnu ou non ``BUILDING``, couverture incomplète,
+    synchronisation en attente ou en échec)."""
     settings = settings or KnowledgeBaseSettings()
     handler = build_activate_search_index_handler(
         session_factory, drop_delay=settings.index_drop_delay
@@ -321,7 +327,9 @@ async def abandon_index_migration(
     """Abandonne la migration vers l'index ``BUILDING`` ``index_id`` : index
     ``RETIRED``, son travail d'indexation annulé, sa collection supprimée
     après ``KB_INDEX_DROP_DELAY_SECONDS``. L'index actif n'est pas touché ;
-    une autre migration peut ensuite démarrer."""
+    une autre migration peut ensuite démarrer. Lève
+    ``IndexOperationRefusedError`` pour un index inconnu ou non
+    ``BUILDING``."""
     settings = settings or KnowledgeBaseSettings()
     handler = build_abandon_index_migration_handler(
         session_factory, drop_delay=settings.index_drop_delay

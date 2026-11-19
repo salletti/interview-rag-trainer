@@ -440,6 +440,12 @@ Tâche périodique `knowledge_base.work.recover` : applique la transition
   d'ingestion : elles ne doivent pas attendre derrière une extraction longue.
 - Fichier d'état de beat éphémère (`/tmp`) : les planifications sont des
   intervalles, rien n'est à conserver.
+- Santé (ajout du 2026-11-19, défaut D3 de la
+  [validation globale](knowledge-base-validation.md)) : beat réécrit son
+  fichier d'état toutes les 180 s (`Scheduler.sync_every` de Celery) ; le
+  healthcheck Compose exige que le plus récent des fichiers
+  `/tmp/celerybeat-schedule*` (le backend dbm `sqlite3` écrit dans `-wal`)
+  ait moins de 300 s. Un beat arrêté ou bloqué devient `unhealthy`.
 - Délai maximal de prise en charge d'un item, sans panne :
   `intervalle de dispatch + attente en file`. Avec perte d'un message :
   `+ redispatch_after`. Après crash d'un worker : `+ lease_ttl + intervalle de

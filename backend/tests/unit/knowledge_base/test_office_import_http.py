@@ -46,6 +46,7 @@ async def client(harness: Harness) -> AsyncIterator[AsyncClient]:
         import_document_handler=lambda: harness.import_document,
         import_version_handler=lambda: harness.import_version,
         withdraw_document_handler=lambda: harness.withdraw_document,
+        max_upload_bytes=lambda: 1_000_000,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
