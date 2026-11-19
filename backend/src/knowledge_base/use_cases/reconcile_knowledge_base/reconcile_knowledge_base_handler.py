@@ -7,7 +7,8 @@ pas ; il ne reprend PAS les items ``RUNNING`` dont le lease a expiré (tâche
 ``recover`` de S0). Ordre :
 
 1. points de chaque index vivant (Qdrant lu AVANT PostgreSQL) ;
-2. publications perdues, versions ``EXTRACTED`` sans indexation, manifests
+2. publications perdues, versions ``EXTRACTED`` sans indexation, versions
+   que le backfill d'un index ``BUILDING`` ne couvre pas (S9), manifests
    échantillonnés ;
 3. items ``FAILED`` sans état métier (O14) et purges en échec ;
 4. quarantaine, blobs orphelins, temporaires, clés d'idempotence (O15).
@@ -89,6 +90,7 @@ class ReconcileKnowledgeBaseHandler:
         counts += await self._points.run(indexes)
         counts += await self._indexations.publish_lost_publications()
         counts += await self._indexations.index_unindexed_versions(indexes)
+        counts += await self._indexations.cover_building_indexes(indexes)
         counts += await self._indexations.verify_manifests(
             self._policy.manifest_sample_size
         )

@@ -5,13 +5,14 @@ Composition root technique du monolithe. Aucune règle métier.
 | Module | Rôle |
 |---|---|
 | `settings.py` | Pydantic Settings : hôtes, ports, secrets (`SecretStr`), délais |
-| `app.py` | `create_app()` : FastAPI, `lifespan` (moteur SQLAlchemy, client Qdrant), routeurs ; `knowledge_base.register(app, ressources)` monte les routes d'import et de recherche, `KnowledgeBaseResources` reçoit la fabrique de sessions, les réglages `KB_*` (seule source de réglages de Knowledge Base dans l'API) et le client Qdrant du processus, et porte le modèle d'embeddings paresseux de la recherche |
+| `app.py` | `create_app()` : FastAPI, `lifespan` (moteur SQLAlchemy, client Qdrant), routeurs ; `knowledge_base.register(app, ressources)` monte les routes d'import et de recherche, `KnowledgeBaseResources` reçoit la fabrique de sessions, les réglages `KB_*` (seule source de réglages de Knowledge Base dans l'API) et le client Qdrant du processus, et porte les modèles d'embeddings paresseux de la recherche (un par profil du catalogue des cibles, S9) |
 | `database.py` | `AsyncEngine`, fabrique de sessions, dépendance « une `AsyncSession` par requête », sonde |
 | `vector_store.py` | client `AsyncQdrantClient` et sonde |
 | `messaging.py` | sonde RabbitMQ (Kombu dans un thread, bornée) |
 | `worker.py` | application Celery de production (`celery -A runtime.worker:celery_app worker` / `beat`), tâche technique `runtime.ping` |
 | `worker_factory.py` | `create_celery_app(settings=None, *, work_handlers=None)` : configuration Celery (dont `worker_prefetch_multiplier=1`), `knowledge_base.register_worker`, ressources des processus enfants (signaux) ; `work_handlers=None` = handlers de production (`knowledge_base.build_work_handlers`), une séquence les remplace (tests) |
 | `provision.py` | `python -m runtime.provision` : provisionne l'index initial de Knowledge Base (`knowledge_base.provision_search_index`), idempotent ; service Compose `kb_provision`, avant l'API et les workers ; code de sortie non nul si PostgreSQL ou Qdrant manquent |
+| `index_migration.py` | `python -m runtime.index_migration start <cible>` / `activate <index_id>` (S9) : migration blue/green de l'index de recherche par la surface publique (`knowledge_base.start_index_migration`, `activate_search_index`, `migration_target_names`) ; `start` affiche l'index `BUILDING` (rejouable), `activate` bascule ou sort en erreur avec le refus (couverture incomplète, synchronisation en attente) ; cibles `make kb-migration-start target=…` et `make kb-migration-activate index=…`. Pas de route HTTP (décision S9) |
 | `health.py` | `/health/live`, `/health/ready` (PostgreSQL requis, Qdrant/RabbitMQ informatifs : sans Qdrant, l'API sert encore l'import, seule la recherche échoue, en 500) ; ni l'un ni l'autre ne charge le modèle d'embeddings |
 | `system.py` | `/api/v1/system/info` (données non sensibles) |
 | `logging_config.py` | logging standard, format unique |
@@ -23,7 +24,7 @@ Détail : [knowledge-base-s0.md §9](../../../docs/conception/bounded-contexts/k
 | Moment | Processus | Ce que fait `runtime.worker_factory` |
 |---|---|---|
 | construction de l'application (import de `runtime.worker`) | maître | `knowledge_base.register_worker(app, fournisseur)` : tâches, routes (`dispatch`, `recover` et, depuis S8, `reconcile` sur `interview_rag_trainer.default`), `beat_schedule`. Aucune connexion, aucune boucle. |
-| `worker_process_init` | chaque enfant prefork (et le processus d'un pool solo) | une boucle `asyncio.new_event_loop()` persistante, puis le moteur asyncpg (`pool_size=2`), le client Qdrant, les handlers de production construits sur la fabrique de sessions et ce client (`knowledge_base.build_work_handlers` : `extract_version`, `index_version`, `sync_visibility`, `purge_document`, `reconcile_knowledge_base` ; le modèle d'embeddings n'est chargé qu'à la première tâche) et `KnowledgeBaseWorkerResources` |
+| `worker_process_init` | chaque enfant prefork (et le processus d'un pool solo) | une boucle `asyncio.new_event_loop()` persistante, puis le moteur asyncpg (`pool_size=2`), le client Qdrant, les handlers de production construits sur la fabrique de sessions et ce client (`knowledge_base.build_work_handlers` : `extract_version`, `index_version`, `sync_visibility`, `purge_document`, `reconcile_knowledge_base`, et depuis S9 `rechunk_version`, `drop_index_collection` ; chaque modèle d'embeddings n'est chargé qu'à la première tâche qui en a besoin) et `KnowledgeBaseWorkerResources` |
 | exécution d'une tâche | enfant | `loop.run_until_complete(...)` sur cette boucle ; jamais `asyncio.run()` par tâche |
 | `worker_process_shutdown` | enfant | fermeture du client Qdrant, `engine.dispose()`, fermeture de la boucle |
 

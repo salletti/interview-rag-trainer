@@ -303,6 +303,8 @@ flowchart LR
 
 ## S9 — Benchmark des embeddings et migration blue/green
 
+> **Statut : implémentée (2026-11-19)** sur `feature/knowledge-base-v1` — unitaires, architecture et intégration verts ; benchmark : [rapport](knowledge-base-embedding-benchmark.md) ; profil définitif : [ADR 0013](../../decisions/0013-definitive-embedding-profile.md) (Proposed) ; migration aller-retour démontrée sur la stack de dev.
+
 - **Objectif :** choisir le profil définitif sur mesures et migrer sans
   interruption.
 - **Périmètre :** benchmark `multilingual-e5-small`, `multilingual-e5-base`,

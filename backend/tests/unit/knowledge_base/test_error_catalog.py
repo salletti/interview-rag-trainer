@@ -52,6 +52,8 @@ EXPECTED: dict[str, tuple[bool, bool]] = {
     # déterministes mais réparables hors de l'item
     "BLOB_MISSING": (False, True),
     "COLLECTION_MISMATCH": (False, True),
+    # S9 : lot de la politique d'un index absent (rejouable après rechunking).
+    "CHUNK_BATCH_MISSING": (False, True),
     # bornes de configuration (revue S8, I1) : le même contenu ne peut pas
     # être réimporté (O2 : contenu connu -> version existante) ; non
     # rejouables, ils bloqueraient ce contenu pour toujours. Rejeu manuel
@@ -68,6 +70,8 @@ EXPECTED: dict[str, tuple[bool, bool]] = {
     "DOCUMENT_TOO_COMPLEX": (False, False),
     "OCR_REQUIRED": (False, False),
     "CHUNKING_FAILED": (False, False),
+    # S9 : suppression demandée pour la collection d'un index vivant.
+    "INDEX_STILL_LIVE": (False, False),
     # payload illisible : l'item ne désigne rien, un rejeu relirait le même
     "INVALID_PAYLOAD": (False, False),
 }

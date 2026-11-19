@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Final, Protocol
 from uuid import UUID
 
@@ -76,9 +77,12 @@ class WorkQueue(Protocol):
         correlation_id: UUID | None = None,
         *,
         max_attempts: int | None = None,
+        delay: timedelta | None = None,
     ) -> UUID:
         """Identifiant de l'item ; celui de l'item existant si ``dedup_key``
-        est déjà connue (y compris pour un item terminé)."""
+        est déjà connue (y compris pour un item terminé). ``delay`` : l'item
+        n'est disponible qu'après ce délai (S9 : suppression différée d'une
+        collection retirée) ; immédiatement sinon."""
         ...
 
     async def enqueue_again(

@@ -56,8 +56,15 @@ CHUNKING_FAILED: Final = "CHUNKING_FAILED"
 # DOCUMENT_TOO_COMPLEX (imbrication, XML décompressé d'un DOCX).
 DOCUMENT_TOO_LARGE: Final = "DOCUMENT_TOO_LARGE"
 
-# --- indexation (S4) -----------------------------------------------------------
+# --- indexation (S4, S9) -------------------------------------------------------
 COLLECTION_MISMATCH: Final = "COLLECTION_MISMATCH"
+# Indexation sans lot de chunks de sa politique : le rechunking qui devait le
+# produire n'a pas eu lieu (S9).
+CHUNK_BATCH_MISSING: Final = "CHUNK_BATCH_MISSING"
+
+# --- maintenance des index (S9) -------------------------------------------------
+# Suppression demandée pour la collection d'un index encore ACTIVE ou BUILDING.
+INDEX_STILL_LIVE: Final = "INDEX_STILL_LIVE"
 
 
 class UnknownErrorCodeError(KeyError):
@@ -105,6 +112,8 @@ ERROR_CATALOG: Final[Mapping[str, ErrorSpec]] = MappingProxyType(
             # Déterministes, mais réparables hors de l'item.
             _spec(BLOB_MISSING, automatic_retry=False, replayable=True),
             _spec(COLLECTION_MISMATCH, automatic_retry=False, replayable=True),
+            # Rejouable une fois le lot écrit (rechunking rejoué ou terminé).
+            _spec(CHUNK_BATCH_MISSING, automatic_retry=False, replayable=True),
             # Bornes (KB_MAX_DOCUMENT_TOKENS ; MAX_PDF_PAGES du parseur) :
             # rejouables une fois la borne relevée (O2 interdit le réimport).
             _spec(TOO_MANY_PAGES, automatic_retry=False, replayable=True),
@@ -119,6 +128,9 @@ ERROR_CATALOG: Final[Mapping[str, ErrorSpec]] = MappingProxyType(
             _spec(DOCUMENT_TOO_COMPLEX, automatic_retry=False, replayable=False),
             _spec(OCR_REQUIRED, automatic_retry=False, replayable=False),
             _spec(CHUNKING_FAILED, automatic_retry=False, replayable=False),
+            # Une collection vivante n'est jamais supprimée : rejouer la même
+            # demande ne changerait rien (l'activation planifie la sienne).
+            _spec(INDEX_STILL_LIVE, automatic_retry=False, replayable=False),
             # Payload illisible : l'item ne désigne rien, un rejeu relirait le
             # même payload.
             _spec(INVALID_PAYLOAD, automatic_retry=False, replayable=False),

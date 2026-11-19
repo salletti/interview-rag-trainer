@@ -9,7 +9,9 @@ Le travail est coupé en deux pour la work queue (S0 §5) :
 - ``apply`` : dans la transaction de finalisation fournie par l'appelant,
   revérification métier (version toujours ``RECEIVED``, document ``ACTIVE``)
   puis ``EXTRACTED``, le lot d'unités et de chunks, et (S4) une
-  ``Indexation PENDING`` et un item ``index_version`` par index vivant.
+  ``Indexation PENDING`` et un item ``index_version`` par index vivant ; pour
+  un index d'une autre politique (S9), l'indexation porte la politique de
+  l'index et l'item est ``rechunk_version``.
 
 Une version supplantée ou un document retiré entre-temps est ignoré : il n'y a
 plus rien à extraire, ce n'est pas une erreur.
@@ -44,18 +46,15 @@ from knowledge_base.domain.providers.extraction_transaction import (
     ExtractionTransaction,
 )
 from knowledge_base.domain.providers.token_counter import TokenCounter
-from knowledge_base.domain.services.chunk_planner import ChunkPlanner
-from knowledge_base.domain.services.knowledge_unit_segmenter import (
-    KnowledgeUnitSegmenter,
-)
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
-from knowledge_base.domain.value_objects.citation import Citation
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
-from knowledge_base.domain.value_objects.section_path import SectionPath
-from knowledge_base.use_cases.indexing_steps import schedule_indexation
-from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
+from knowledge_base.use_cases.extraction_steps import VersionExtractor
+from knowledge_base.use_cases.indexing_steps import (
+    schedule_indexation,
+    schedule_rechunk,
+)
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -63,8 +62,9 @@ from knowledge_base.use_cases.record_extraction.record_extraction_command import
 logger = logging.getLogger(__name__)
 
 # Code de journal d'une version passée ``EXTRACTED`` sans aucune indexation
-# (aucun corpus, aucun index vivant, ou politique de chunking d'aucun index) :
-# elle ne sera jamais publiée seule. Repère stable pour la réconciliation S8.
+# (aucun corpus ou aucun index vivant ; depuis S9, un index d'une autre
+# politique reçoit un rechunking) : elle ne sera jamais publiée seule. Repère
+# stable pour la réconciliation S8.
 EXTRACTED_WITHOUT_INDEXATION: Final = "EXTRACTED_WITHOUT_INDEXATION"
 
 
@@ -92,17 +92,15 @@ class RecordExtractionHandler:
     ) -> None:
         """``max_document_tokens`` : borne du volume de texte extrait (O16),
         ``None`` pour n'en appliquer aucune."""
-        if max_document_tokens is not None and max_document_tokens <= 0:
-            raise ValueError(
-                f"max_document_tokens doit être positif : {max_document_tokens}"
-            )
         self._unit_of_work = unit_of_work
         self._blob_reader = blob_reader
-        self._parser = parser
-        self._segmenter = KnowledgeUnitSegmenter(token_counter, policy)
-        self._planner = ChunkPlanner(token_counter, policy)
+        self._extractor = VersionExtractor(
+            parser=parser,
+            token_counter=token_counter,
+            policy=policy,
+            max_document_tokens=max_document_tokens,
+        )
         self._policy = policy
-        self._max_document_tokens = max_document_tokens
 
     async def prepare(self, command: RecordExtraction) -> PreparedExtraction | None:
         """Tout le calcul, aucune écriture. ``None`` s'il n'y a rien à
@@ -120,7 +118,7 @@ class RecordExtractionHandler:
             return None
         content = await self._blob_reader.read(version.source.content_hash)
         units, chunks = await asyncio.to_thread(
-            self._extract, content, document, version
+            self._extractor.extract, content, document, version
         )
         return PreparedExtraction(
             document_id=document.document_id,
@@ -162,29 +160,27 @@ class RecordExtractionHandler:
     async def _schedule_indexations(
         self, transaction: ExtractionTransaction, prepared: PreparedExtraction
     ) -> int:
-        """Nombre d'indexations créées."""
+        """Nombre d'indexations créées : une par index vivant. Un index d'une
+        autre politique que ce lot (index ``BUILDING`` d'une migration, S9)
+        reçoit une indexation de SA politique et un rechunking qui produira
+        son lot, puis planifiera son indexation."""
         scheduled = 0
         corpus = await transaction.corpus.get_shared()
         for index in () if corpus is None else corpus.live_indexes():
-            if index.chunking_policy.identity != prepared.policy_version:
-                # Ce lot n'est pas celui de l'index : il lui faut une
-                # ré-extraction avec sa propre politique (rechunking, S9).
-                logger.warning(
-                    "version %s non indexée dans %s : politique de l'index %s, lot %s",
-                    prepared.version_id,
-                    index.index_id,
-                    index.chunking_policy.identity,
-                    prepared.policy_version,
-                )
-                continue
+            index_policy = index.chunking_policy.identity
             await transaction.indexations.add(
                 Indexation.pending(
                     version_id=prepared.version_id,
                     index_id=index.index_id,
-                    chunking_policy_version=prepared.policy_version,
+                    chunking_policy_version=index_policy,
                 )
             )
-            await schedule_indexation(
+            schedule = (
+                schedule_indexation
+                if index_policy == prepared.policy_version
+                else schedule_rechunk
+            )
+            await schedule(
                 transaction.work_queue,
                 prepared.document_id,
                 prepared.version_id,
@@ -217,43 +213,6 @@ class RecordExtractionHandler:
             return
         document.fail_extraction(command.version_id, reason)
         await transaction.documents.save(document)
-
-    def _extract(
-        self, content: bytes, document: KnowledgeDocument, version: DocumentVersion
-    ) -> tuple[tuple[KnowledgeUnit, ...], tuple[DocumentChunk, ...]]:
-        """CPU pur, exécuté hors de la boucle asyncio."""
-        structured = self._parser.parse(
-            content, version.source.media_type, version.source.filename
-        )
-        units = tuple(
-            self._segmenter.segment(
-                structured, kind=document.kind, version_id=version.version_id
-            )
-        )
-        self._ensure_within_volume(version.version_id, units)
-        citation = Citation(
-            document_id=document.document_id,
-            document_title=document.title,
-            version_id=version.version_id,
-            version_number=version.number,
-            section_path=SectionPath(),
-            page_start=None,
-            page_end=None,
-            source_filename=version.source.filename,
-        )
-        chunks = tuple(c for unit in units for c in self._planner.plan(unit, citation))
-        return units, chunks
-
-    def _ensure_within_volume(
-        self, version_id: UUID, units: tuple[KnowledgeUnit, ...]
-    ) -> None:
-        """O16 : avant le chunking et toute écriture. La mesure est le texte
-        des unités, sans les en-têtes contextuels que chaque chunk répète."""
-        if self._max_document_tokens is None:
-            return
-        tokens = sum(unit.token_count for unit in units)
-        if tokens > self._max_document_tokens:
-            raise DocumentTooLargeError(version_id, tokens, self._max_document_tokens)
 
 
 def _version(

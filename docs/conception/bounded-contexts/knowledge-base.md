@@ -135,6 +135,17 @@ port technique vers le moteur vectoriel), `DocumentStatus` comme concept autonom
   La preuve de couverture d'I11 n'est pas portée par l'agrégat, qui reçoit
   `coverage_complete` de l'appelant ; elle arrive avec `ActivateSearchIndex`
   en S9 ([ADR 0011, suivi](../../decisions/0011-embedding-profile-search-index-blue-green.md#suivi-2026-11-18)).*
+- *Précision S9 (2026-11-18) : la preuve de couverture est calculée par
+  `ActivateSearchIndex` dans la transaction qui tient la ligne du corpus
+  `FOR UPDATE` (lecture des versions publiées de documents actifs et de leur
+  indexation dans le candidat), puis transmise à `activate_index`. **Un seul
+  index `BUILDING` à la fois** (décision 2 de l'orchestrateur) : règle de
+  `StartIndexMigration`, sous le même verrou ; démarrer de nouveau le même
+  couple (profil, politique) rend l'index en construction sans rien écrire,
+  un autre couple est refusé (`MigrationInProgressError`). L'agrégat reste
+  général (`provision_index` n'interdit pas un second `BUILDING`) : la règle
+  ne porte que sur le démarrage d'une migration, seul chemin de production qui
+  crée un index `BUILDING`.*
 
 ### 3.3 `Indexation` — Aggregate Root [Accepted]
 
@@ -293,6 +304,13 @@ stateDiagram-v2
   FAILED --> CANCELLED: idem
 ```
 
+*Précision S9 (2026-11-18) : `PENDING` est aussi créé par
+`StartIndexMigration` (backfill) et par la réconciliation
+(`MISSING_FROM_BUILDING_INDEX`) ; l'indexation porte la politique de
+l'INDEX. `PENDING --> FAILED` : aussi par le hook de `rechunk_version`
+(lot de la politique de l'index impossible à produire) et par
+`index_version` en `CHUNK_BATCH_MISSING`.*
+
 *Précision S8 (2026-11-18) : l'arête `COMPLETED --> PENDING`
 (`Indexation.reopen()`, distincte de `retry()`) est réservée à la
 réconciliation, quand le manifest échantillonné ne se vérifie plus (§9) ;
@@ -313,6 +331,15 @@ stateDiagram-v2
 
 Cas initial (S4) : le premier index est créé puis activé alors que le corpus
 est vide ; l'invariant I11 est trivialement satisfait.
+
+*Précision S9 (2026-11-18) : `[*] --> BUILDING` d'une migration est
+`StartIndexMigration` (le `ProvisionSearchIndex` de S4 reste la commande de
+démarrage de la stack, idempotente, qui ne crée que le premier index et ne
+démarre jamais de migration : un redémarrage avec une autre configuration ne
+lance pas de backfill). `BUILDING --> RETIRED` (abandon) existe dans
+l'agrégat mais n'est exposé par aucune commande en V1. Après `ACTIVE -->
+RETIRED`, la collection de l'index est supprimée par `drop_index_collection`
+(la ligne `RETIRED` reste : ses indexations y renvoient).*
 
 ### 5.5 `WorkItem`
 
@@ -336,7 +363,8 @@ récupération repose sur la table et le scheduler, jamais sur une redélivrance
 | `index_version` | claim | embeddings par lots, upserts Qdrant `visible=false`, vérification du manifest | fencing + `Indexation COMPLETED`, puis tentative de publication (§8) | `sync_visibility` si publiée |
 | `sync_visibility` | claim | convergence Qdrant vers l'état SQL du document (§11) | fencing + item `SUCCEEDED` | — |
 | `purge_document` | claim | suppression des points | fencing + chunks supprimés, `purged_at` ; après le commit, au mieux : blobs non référencés | — |
-| `build_index` (S9) | claim | création de la collection, planification du backfill | fencing + `Indexation PENDING` pour le corpus éligible | `index_version`, éventuellement `extract_version` (rechunking) |
+| `rechunk_version` (S9) | claim | lecture du blob, re-parsing, découpage selon la politique de l'index (tokenizer de son profil) | fencing + index vivant, indexation `PENDING` → lot `(version, politique)` s'il manque | `index_version` |
+| `drop_index_collection` (S9) | claim | suppression de la collection d'un index `RETIRED` | fencing seul | — |
 
 *Précision S7 (2026-11-18, ordre rétabli par la revue S7) : `purge_document`
 (file d'ingestion, 5 tentatives, dedup `purge_document:<document_id>`) suit
@@ -347,6 +375,34 @@ le commit de la finalisation, hors de toute transaction : un échec n'est que
 journalisé (l'item est déjà `SUCCEEDED`) et le fichier, plus détenu par aucun
 document non purgé, est repris par `CleanBlobOrphans`. Détail : précisions
 S7 du §10.*
+
+*Précisions S9 (2026-11-18), décisions de l'orchestrateur ([README du
+contexte](../../../backend/src/knowledge_base/README.md#s9--benchmark-des-embeddings-et-migration-bluegreen)) :*
+
+- *La ligne `build_index` prévue ci-dessus n'existe pas : le provisionnement
+  d'un index `BUILDING` et la planification de son backfill sont faits par la
+  commande `StartIndexMigration`, dans une transaction (collection Qdrant
+  créée juste avant, hors transaction), et non par un work item. Le backfill
+  est une `Indexation PENDING` par version `PUBLISHED`/`EXTRACTED` de
+  document actif, avec `index_version` si la version a déjà un lot de la
+  politique de l'index, `rechunk_version` sinon (la ré-extraction
+  `extract_version` prévue ne convenait pas : elle exige une version
+  `RECEIVED` et réécrirait son état).*
+- *Pilotage (décision 1) : `python -m runtime.index_migration start <cible>`
+  et `… activate <index_id>` (cibles Make `kb-migration-start`,
+  `kb-migration-activate`), par la surface publique ; pas de route HTTP.*
+- *`rechunk_version` (dedup `rechunk_version:<version_id>:<index_id>`,
+  payload `document_id`, `version_id`, `index_id`) et `drop_index_collection`
+  (dedup `drop_index_collection:<index_id>`, payload `index_id`) : file
+  d'ingestion, 5 tentatives, codes du catalogue (§15.5), rejouables par
+  `/failures` selon le catalogue (décision 7). Hook de `rechunk_version` :
+  indexation `FAILED` (comme `index_version`) ; `drop_index_collection` n'a
+  pas d'état métier.*
+- *`drop_index_collection` est planifié par l'activation, **disponible après
+  `KB_INDEX_DROP_DELAY_SECONDS`** (`WorkQueue.enqueue(…, delay=)`, défaut
+  300 s, Proposed ; décision 6) : une recherche lit l'index actif puis
+  interroge Qdrant ; commencée avant le commit de la bascule, elle peut
+  encore lire l'ancienne collection pendant au plus la durée d'une recherche.*
 
 *Précisions S8 (2026-11-18), décisions de l'orchestrateur ([README du
 contexte](../../../backend/src/knowledge_base/README.md#s8--réconciliation-et-gestion-des-erreurs)) :*
@@ -403,7 +459,10 @@ introduit. S0 ne livre que le mécanisme générique, sans aucun `kind` métier.
 
 **Commandes de processus (handlers de `WorkItem`) :** `RecordExtraction`,
 `CompleteIndexation`, `FailExtraction`, `FailIndexation`,
-`SyncDocumentVisibility`, `PurgeDocument`, `ReconcileKnowledgeBase`.
+`SyncDocumentVisibility`, `PurgeDocument`, `ReconcileKnowledgeBase`,
+`RechunkVersion` et `DropIndexCollection` (S9). *Précision S9 : la commande
+métier de démarrage d'une migration est `StartIndexMigration` ;
+`ProvisionSearchIndex` reste celle du premier index.*
 
 **Domain Events locaux :** `DocumentImported`, `DocumentVersionExtracted`,
 `DocumentVersionDiscarded`, `IndexationCompleted`, `DocumentVersionPublished`,
@@ -762,6 +821,20 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   barrière après l'upsert de réparation, un seul point réécrit et invisible,
   les deux autres visibles, la recherche rend le document ; après la
   synchronisation, les trois points sont visibles.*
+  *Précision S9 (2026-11-18), décision 5 de l'orchestrateur : le backfill
+  d'une version déjà publiée écrit ses points `visible=false` dans l'index
+  `BUILDING` et sa finalisation replanifie `sync_visibility` (règle S8 ci-
+  dessus). L'activation est donc **refusée** (`SynchronizationPendingError`)
+  tant qu'un item `sync_visibility` d'un document publié est `PENDING` ou
+  `RUNNING` : sans cela, une recherche juste après la bascule pourrait ne pas
+  rendre ce document. La garde est lue sous le verrou `FOR UPDATE` du
+  corpus ; une publication (qui planifie une synchronisation) ne peut pas
+  s'intercaler entre elle et la bascule. Les items `index_version` et
+  `rechunk_version` en attente du candidat ne sont pas une garde séparée :
+  pour une version publiée, son indexation n'est pas `COMPLETED` et la
+  couverture (I11) refuse déjà ; pour une version seulement `EXTRACTED`, ils
+  ne bloquent pas (elle sera publiée d'après l'index actif). Vérifié contre
+  PostgreSQL et Qdrant réels (`test_s9_guards_and_failures`).*
 
 ## 12. Stratégie de recherche et limites de Recall
 
@@ -795,6 +868,14 @@ contexte](../../../backend/src/knowledge_base/README.md#s7--versions-concurrente
   encodage : jamais de résultat silencieusement faux sur des vecteurs
   incomparables (ADR 0011 §2). Le choix du modèle d'après l'index arrive avec
   S9.*
+  *Précision S9 (2026-11-18), décision 4 : le modèle est choisi d'après le
+  profil de l'index actif (`EmbedderProvider.for_profile`, un modèle par
+  profil du catalogue, chargé à la première recherche sur cet index), et son
+  tokenizer compte la question du passage. Un profil que le processus ne sait
+  pas charger reste `SearchProfileMismatchError` (503
+  `SEARCH_PROFILE_MISMATCH`), jamais un repli silencieux sur un autre
+  modèle. Pendant et après une bascule, l'API garde les deux modèles en
+  mémoire (aucun déchargement en V1) ; un redémarrage libère l'ancien.*
 - *Étape 3 : Qdrant `query_points_groups` groupé par `unit_id`, au plus
   3 chunks par unité (constante `CHUNKS_PER_UNIT` de l'adapter, non mesurée :
   le jeu S5 n'a que des unités d'un chunk ; à mesurer avec les unités
@@ -881,6 +962,55 @@ Limites connues, documentées et mesurées :
   longueur maximale plus courte entraîne un nouveau lot de chunks pour ce seul
   index. Les citations restent stables, car elles référencent version, section
   et pages, jamais `chunk_id`.
+
+*Précisions S9 (2026-11-18), implémentation de la migration ([README du
+contexte](../../../backend/src/knowledge_base/README.md#s9--benchmark-des-embeddings-et-migration-bluegreen),
+[ADR 0011, suivi S9](../../decisions/0011-embedding-profile-search-index-blue-green.md#s9--migration-bluegreen-2026-11-18),
+profil définitif : [ADR 0013, Proposed](../../decisions/0013-definitive-embedding-profile.md),
+mesures : [benchmark](knowledge-base-embedding-benchmark.md)) :*
+
+- *Barrière : en place des trois côtés. `StartIndexMigration` et
+  `ActivateSearchIndex` lisent le corpus `FOR UPDATE` dès leur première
+  lecture (vérifié par `NOWAIT` et `pg_stat_activity`, sans délai,
+  `test_s9_concurrency`) ; une extraction en cours (`FOR SHARE`) retarde le
+  provisionnement, dont le backfill voit alors sa version ; une publication en
+  cours retarde l'activation, dont la preuve voit alors la version publiée et
+  refuse tant qu'elle n'est pas `COMPLETED` dans le candidat.*
+- *`ProvisionSearchIndex(profile, policy)` décrit ci-dessus est
+  `StartIndexMigration` (§5.4, précision S9) ; le backfill couvre les
+  versions `PUBLISHED` **et** `EXTRACTED` de documents actifs ; la
+  ré-extraction est un `rechunk_version` (O4 : re-parsing de l'original), pas
+  un `extract_version`.*
+- *Une version extraite pendant la construction reçoit une indexation dans
+  chaque index vivant ; pour un index d'une autre politique, `RecordExtraction`
+  planifie `rechunk_version` (S4 ignorait l'index, avec un avertissement).*
+- *Activation (I11 calculée) : chaque version `PUBLISHED` de document actif
+  a une indexation `COMPLETED` dans le candidat, sinon
+  `IncompleteCoverageError` ; puis aucune `sync_visibility` en attente pour
+  un document publié (§11, précision S9), sinon `SynchronizationPendingError`.
+  Les deux refus n'écrivent rien ; l'activation se relance.*
+- *Décision 9 : une version `EXTRACTED`, `COMPLETED` dans le nouvel index mais
+  pas dans l'ancien (donc jamais publiée, I9), n'est pas exigée par
+  l'activation ; après la bascule, la règle S8 « publication perdue »
+  (`COMPLETED_NOT_PUBLISHED`) la publie au cycle suivant. Accepté : pendant ce
+  délai (au plus `KB_RECONCILE_INTERVAL_SECONDS`), la version précédente reste
+  servie ; vérifié (`test_a_version_completed_in_the_new_index_is_published_after_the_switch`).*
+- *Décision 8 : la réconciliation retrouve une version qu'un index `BUILDING`
+  ne couvre pas (`MISSING_FROM_BUILDING_INDEX`, règle distincte de
+  `EXTRACTED_WITHOUT_INDEXATION`, qui reste inchangée) : version `PUBLISHED`
+  sans indexation dans cet index, ou `EXTRACTED` sans lot ni indexation de sa
+  politique → indexation `PENDING` + `index_version` ou `rechunk_version`.
+  Sans elle, une indexation perdue bloquerait l'activation pour toujours.*
+- *Retrait de l'ancien index : `drop_index_collection` après le délai (§6,
+  précision S9) ; une recherche servie par le nouvel index n'est pas dérangée
+  (`test_s9_search_continuity`). Hors périmètre, non mesuré : une requête
+  commencée avant le commit qui interrogerait l'ancienne collection plus de
+  `KB_INDEX_DROP_DELAY_SECONDS` après.*
+- *Un worker qui ne sait pas charger le profil d'un index échoue en
+  `COLLECTION_MISMATCH` terminal pour cet index seulement, sans rien écrire
+  (report S4 M3) ; le catalogue des cibles (`frameworks/configuration/
+  embedding_targets.py`) définit les profils que l'API et les workers savent
+  charger.*
 
 ## 14. Contrat public `KnowledgeSearch`
 
@@ -1076,12 +1206,14 @@ vaut « rejouable » (hooks d'échec et réconciliation).
 | `LEASE_EXPIRED_MAX_ATTEMPTS` | lease expiré à la dernière tentative | non | oui |
 | `TERMINAL_HOOK_FAILED` | hook d'échec en erreur à la dernière tentative (O14) | non | oui |
 | `BLOB_MISSING` | original absent du volume | non | oui (après restauration) |
-| `COLLECTION_MISMATCH` | collection absente ou non conforme au profil | non | oui (après réparation) |
+| `COLLECTION_MISMATCH` | collection absente ou non conforme au profil ; depuis S9, profil de l'index que le worker ne sait pas charger | non | oui (après réparation) |
+| `CHUNK_BATCH_MISSING` (S9) | indexation sans lot de chunks de sa politique (rechunking non fait) | non | oui (après rechunking) |
 | `TOO_MANY_PAGES` | PDF au-delà de la limite de pages du parseur (`MAX_PDF_PAGES`, 300) | non | oui (borne relevée, par déploiement) |
 | `DOCUMENT_TOO_LARGE` | texte extrait au-delà de `KB_MAX_DOCUMENT_TOKENS` (O16) | non | oui (borne relevée) |
 | `UNKNOWN_KIND`, `NOT_FINALIZED` | défaut du code déployé (worker qui ignore un kind, handler sans finalisation) | non | oui (correctif déployé) |
 | `EMPTY_DOCUMENT`, `INVALID_DOCUMENT`, `DOCUMENT_TOO_COMPLEX`, `OCR_REQUIRED` | parseur (contenu) | non | non |
 | `CHUNKING_FAILED` | budget de chunk sans place | non | non |
+| `INDEX_STILL_LIVE` (S9) | `drop_index_collection` d'un index `ACTIVE` ou `BUILDING` | non | non |
 | `INVALID_PAYLOAD` | payload de l'item illisible (rien n'est désigné) | non | non |
 
 `BLOB_MISSING` était, en S3, « terminal mais `retryable` vrai » : le
@@ -1109,12 +1241,12 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 
 | # | Point | Recommandation actuelle | Tranché par |
 |---|---|---|---|
-| O1 | Profil d'embeddings définitif | `multilingual-e5-base` jusqu'au benchmark | ADR après S9 |
+| O1 | Profil d'embeddings définitif | `multilingual-e5-base` jusqu'au benchmark | ADR après S9 — **Proposé en S9 (2026-11-19) : [ADR 0013](../../decisions/0013-definitive-embedding-profile.md), Proposed** : conserver `multilingual-e5-base` ; Qwen3-Embedding-0.6B est meilleur en qualité (S5 Recall@5 0,976 contre 0,881) mais pèse 2,96 à 4,37 Gio par processus, hors du budget mesuré de la stack (VM de 7,75 Gio) ; bge-m3 régresse sur les unités longues et les identifiants. Mesures : [benchmark](knowledge-base-embedding-benchmark.md) |
 | O2 | Même fichier importé pour deux documents distincts | Refuser (409 avec l'identifiant existant) | S2 — **Tranché en S2 (2026-11-18) :** un contenu (SHA-256) n'appartient qu'à un seul document, garanti par `UNIQUE(content_hash)` global sur `document_versions` (qui couvre aussi I3). Import **sans** document cible d'un contenu connu → 200 avec le document et la version existants (métadonnées de la requête ignorées) ; import d'une version **ciblée** sur un autre document → 409 `DUPLICATE_CONTENT` avec `document_id` et `version_id` existants. Course entre deux imports simultanés : le perdant bute sur la contrainte, rejoue sa transaction et obtient le même résultat (200 ou 409). **Conséquence :** le contenu d'un document retiré ne peut plus être réimporté, ni comme nouveau document (409 `DOCUMENT_WITHDRAWN`) ni comme version d'un autre (409 `DUPLICATE_CONTENT`), cohérent avec O11 |
 | O3 | Périmètre de corpus au-delà du singleton V1 | Singleton tant qu'un besoin multi-corpus n'existe pas | — |
-| O4 | Persister le `StructuredDocument` pour rechunker sans re-parser | Non en V1 : re-parser depuis le blob | S9 |
+| O4 | Persister le `StructuredDocument` pour rechunker sans re-parser | Non en V1 : re-parser depuis le blob | S9 — **Tranché en S9 (2026-11-18) : non, re-parsing depuis le blob** (`rechunk_version`). Mesuré : 15 versions (dont un PDF et un DOCX) rechunkées, indexées et synchronisées en 53 s dans le worker de dev ; à réexaminer si un corpus de PDF longs rend le backfill trop long (Docling ~2 s/page, S6) |
 | O5 | Images ou groupes de dépendances séparés pour API et workers | Image unique en V1, séparer si la taille mesurée gêne | S4/S6  *Faits mesurés en S4 (2026-11-18), sans décision : avec torch CPU et SentenceTransformers, l'image `production` passe de 152 à 479 Mo (contenu compressé ; 699 Mo → 2,27 Go décompressés), `/app/.venv` de 366 à 1 547 Mio dont torch 687 Mio ; l'image `development` de 341 à 995 Mo. Le modèle (1,1 Go de poids) est hors image, dans le volume `models_cache`. Seul le worker d'ingestion charge le modèle en S4 : 904 Mio de RSS après chargement, 1 667 Mio après un lot de 32 (conteneur Linux arm64) ; l'API embarque torch sans le charger. Image unique conservée en S4 ; à réexaminer en S5, quand l'API chargera aussi le modèle, et en S6 (Docling PDF). Faits mesurés en S5 (2026-11-18), sans décision : l'API charge le modèle à la première recherche ; RSS de son processus serveur 146 → 1 267 Mio (stack de dev), premier appel 4,3 s ; image inchangée (aucune dépendance ajoutée). Détail : [ADR 0008, suivi](../../decisions/0008-custom-pipeline-docling-extraction.md#s4--torch-et-sentencetransformers-2026-11-18). Faits mesurés en S6 (2026-11-18), sans décision : Docling PDF/DOCX et les polices de rendu font passer l'image `production` de 480 à 558 Mo (contenu compressé, +16 % ; 2,27 → 2,53 Go décompressés), `/app/.venv` de 1 547 à 1 696 Mio ; poids Docling (~506 Mio) hors image, dans `models_cache`. Seul `worker_ingestion` charge Docling PDF (pic de RSS 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) ; l'API compose le handler d'extraction sans importer Docling, pypdfium2, OpenCV ni torchvision. Image unique conservée : le surcoût de S6 est faible devant torch. Détail : [ADR 0008, suivi S6](../../decisions/0008-custom-pipeline-docling-extraction.md#s6--docling-pdfdocx-2026-11-18). Revue S6 (M8), sans décision : un processus de l'image qui garde un parseur PDF et convertit cinq fois un PDF de 50 pages garde une RSS résiduelle stable (1 260 → 1 377 Mio, maximum 1 423) mais un pic encore croissant (`VmHWM` 1 786 → 2 038 Mio, incréments décroissants) ; à remesurer sur plus de conversions ([ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18)). Décision S8 (2026-11-18, orchestrateur), sans nouvelle mesure longue : le processus enfant de `worker_ingestion` est remplacé toutes les `KB_INGESTION_MAX_TASKS_PER_CHILD` tâches (défaut 50, option `--max-tasks-per-child` de Celery dans `compose.yaml`) ; le pic ne peut plus croître au-delà de ce nombre de tâches, au prix d'un rechargement des modèles (~4 s pour E5, ~5 s pour Docling PDF, mesures S5/S6) par nouvel enfant. Revue S8 (M9), sans nouvelle mesure : les cycles de réconciliation sont des tâches de `worker_ingestion` et comptent dans ces 50 (comme `sync_visibility` et `purge_document`) ; à vide, 12 cycles par heure au défaut de 300 s, donc un enfant remplacé toutes les ~4 h 10 min. Le coût reste borné : les modèles sont chargés paresseusement (E5 à la première indexation, Docling PDF au premier PDF), un enfant recyclé à vide ne recharge rien tant qu'aucun traitement n'arrive, et le premier traitement suivant paie au plus ~9 s. Défaut **conservé à 50** : le relever à 100 diviserait ce coût rare par deux mais doublerait le nombre de conversions qu'un même enfant peut enchaîner, dont la croissance du pic n'est pas mesurée au-delà de cinq. Le choix d'images séparées reste ouvert.* |
-| O6 | Recherche hybride (sparse/BM25) pour les identifiants de code | Mesurer en S5/S9 avant de l'introduire | S9 |
+| O6 | Recherche hybride (sparse/BM25) pour les identifiants de code | Mesurer en S5/S9 avant de l'introduire | S9 — **Mesuré en S9, report décidé (2026-11-19)** : sur 12 requêtes réduites à un identifiant de code, la recherche dense d'e5-base les trouve toutes dans les 5 premiers ; BM25 + RRF ne gagne qu'en première position (0,833 → 1,000) et dégrade l'inter-langues (0,750 → 0,500, idem pour les autres modèles). À réexaminer sur un corpus où la recherche dense manque des identifiants |
 | O7 | Prise en charge de `.txt` par Docling | Adapter natif par défaut | S2/S3 — **Tranché en S3 (2026-11-18) : adapter natif.** `PlainTextParser` (`adapters/gateway/parsing/`) : UTF-8, un bloc par suite de lignes non vides, `CodeBlock` si toutes ses lignes sont indentées (4 espaces ou tabulation), `Paragraph` sinon ; ni titre, ni page, ni métadonnée. Docling ne reçoit que le Markdown (`RoutingDocumentParser`) |
 | O8 | OCR, formats supplémentaires (HTML), limites définitives | Hors V1 ; limites réévaluées après S6 | S6 — **Limites tranchées en S6 (2026-11-18) : 20 Mio et 300 pages confirmées**, la limite de pages appliquée au parsing d'un PDF (`TOO_MANY_PAGES`), aucune pour un DOCX (O16). Mesures : PDF de 300 pages en 15 min de l'import à `PUBLISHED` dans le worker de dev, pic de RSS 2,6 Gio ; détail dans l'[ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18). OCR et HTML restent hors V1 (`OCR_REQUIRED` pour un PDF sans couche texte) |
 | O9 | Accès et documents privés (multi-utilisateur) | Hors V1 ; `KnowledgeQuery` extensible sans rupture | — |

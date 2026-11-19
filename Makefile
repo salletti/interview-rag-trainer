@@ -1,6 +1,7 @@
 .PHONY: help install lint format format-check typecheck test test-integration \
         test-integration-up test-integration-down ci up down build logs ps \
-        migrate migration worker-ping smoke-pdf-image frontend-install \
+        migrate migration worker-ping smoke-pdf-image kb-migration-start \
+        kb-migration-activate benchmark-embeddings frontend-install \
         frontend-lint frontend-test
 
 BACKEND := cd backend && uv run
@@ -57,6 +58,22 @@ test-integration: test-integration-up ## Tests d'intégration contre compose.tes
 	exit $$status
 
 ci: lint typecheck test frontend-lint frontend-test ## Équivalent local de la CI
+
+# Migration blue/green de l'index de recherche (S9) : conteneur éphémère de
+# l'image de l'API, mêmes variables que la stack ; le backfill est exécuté par
+# worker_ingestion. Procédure : docs/guides/environnement-local.md.
+kb-migration-start: ## Démarre une migration d'index : make kb-migration-start target=<cible>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration start $(target)
+
+kb-migration-activate: ## Active l'index migré : make kb-migration-activate index=<index_id>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration activate $(index)
+
+# Benchmark des embeddings (S9) sur l'hôte : modèles dans backend/.cache/models,
+# rapport JSON dans backend/.cache/benchmark/ ; aucun service requis.
+benchmark-embeddings: ## Benchmark des profils d'embeddings (S9, long : plusieurs modèles)
+	cd backend && SENTENCE_TRANSFORMERS_HOME=$(CURDIR)/backend/.cache/models \
+	HF_HOME=$(CURDIR)/backend/.cache/huggingface HF_HUB_DISABLE_XET=1 \
+	uv run python scripts/benchmark_embeddings.py $(models)
 
 # --- Frontend ----------------------------------------------------------------
 frontend-lint: ## ESLint, Prettier (check) et tsc

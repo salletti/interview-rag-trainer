@@ -150,3 +150,50 @@ refuse (`SEARCH_PROFILE_MISMATCH`) un index actif dont le profil diffère de
 celui de l'embedder de l'API, au lieu de comparer des vecteurs incompatibles.
 Le chargement « du modèle de l'index actif » (Conséquences) arrive avec la
 migration blue/green.
+
+## S9 — migration blue/green (2026-11-18)
+
+Le corps de l'ADR est inchangé. Faits de l'implémentation de S9
+([knowledge-base.md §13, précisions S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings),
+[README du contexte](../../backend/src/knowledge_base/README.md#s9--benchmark-des-embeddings-et-migration-bluegreen)) :
+
+- **Profil (point 6)** : le profil définitif est proposé par l'**ADR 0013**
+  ([Proposed](0013-definitive-embedding-profile.md)), qui complète et, pour le
+  seul choix du profil, remplace le point 6 une fois accepté ; il propose de
+  **conserver `multilingual-e5-base`** (budget mémoire mesuré ; Qwen3-Embedding-0.6B,
+  meilleur en qualité, en chemin de montée en gamme). Le présent ADR n'est pas
+  modifié. Mesures : [rapport de benchmark](../conception/bounded-contexts/knowledge-base-embedding-benchmark.md).
+- **Migration (point 4)** : `ProvisionSearchIndex` reste la commande de
+  démarrage de la stack (premier index, idempotente) ; le démarrage d'une
+  migration est la commande distincte `StartIndexMigration` (index
+  `BUILDING`, sa collection, backfill des versions publiées et extraites de
+  documents actifs ; un seul index `BUILDING` à la fois). Pilotage par
+  `python -m runtime.index_migration start <cible> | activate <index_id>`,
+  sans route HTTP ; cibles : catalogue `embedding_targets.CATALOGUE`.
+- **Barrière (point 5)** : implémentée et vérifiée sur PostgreSQL réel, sans
+  délai (`test_s9_concurrency`) : `StartIndexMigration` et
+  `ActivateSearchIndex` tiennent `FOR UPDATE` dès leur première lecture ;
+  une extraction en cours retarde le provisionnement, dont le backfill voit sa
+  version ; une publication en cours retarde l'activation, dont la preuve la
+  voit et refuse. La couverture d'I11 est **calculée** dans la transaction
+  de l'activation. S9 ajoute une garde : activation refusée tant qu'une
+  synchronisation de visibilité d'un document publié est en attente (points
+  du candidat encore invisibles). Le statut de ce point reste celui de
+  l'index des ADR (Proposed) jusqu'à sa validation par l'utilisateur.
+- **Rechunking (point 7)** : `rechunk_version` produit, pour un index d'une
+  autre politique, un second lot de la version (re-parsing de l'original,
+  O4), puis son indexation ; une extraction pendant la construction planifie
+  ce rechunking au lieu d'ignorer l'index (S4).
+- **Conséquences** : la recherche choisit le modèle du profil de l'index
+  actif (`EmbedderProvider`, un modèle paresseux par profil du catalogue) ;
+  un profil non chargeable reste `SEARCH_PROFILE_MISMATCH` (503), jamais un
+  autre modèle. Le worker encode chaque index avec le modèle de son profil
+  (un profil non chargeable : `COLLECTION_MISMATCH` pour cet index seul,
+  report S4 M3 levé). L'ancien index passe `RETIRED` ; sa collection est
+  supprimée par `drop_index_collection` après `KB_INDEX_DROP_DELAY_SECONDS`.
+- **Mémoire pendant la transition** (démonstration sur la stack de dev,
+  2026-11-18/19) : processus serveur de l'API 1 277 → 1 666 Mio avec deux
+  modèles après la bascule ; enfant de `worker_ingestion` 1 964 Mio pendant le
+  backfill vers e5-small (e5-base de l'extraction + e5-small) ; 6 190 et 6 467
+  recherches pendant les deux migrations, 0 erreur ; ancienne collection
+  supprimée 301,7 et 301,4 s après l'activation.

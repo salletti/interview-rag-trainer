@@ -12,6 +12,12 @@
   de son lot (code de journal ``EXTRACTED_WITHOUT_INDEXATION``) -> indexation
   ``PENDING`` et item ``index_version``, sous le verrou partagé du corpus
   (barrière blue/green, comme à l'extraction) ;
+- (S9, règle distincte) version qu'un index ``BUILDING`` ne couvre pas :
+  ``PUBLISHED`` sans indexation dans cet index, ou ``EXTRACTED`` sans lot ni
+  indexation de sa politique -> indexation ``PENDING`` de la politique de
+  l'index et item ``index_version`` (lot présent) ou ``rechunk_version``
+  (lot à produire). Sans elle, une indexation perdue bloquerait l'activation
+  pour toujours (I11) ;
 - manifest : au plus ``sample_size`` indexations ``COMPLETED`` revérifiées par
   cycle (chunks de PostgreSQL contre points de la version dans l'index) ; un
   écart rouvre l'indexation (``COMPLETED`` -> ``PENDING``) et replanifie
@@ -55,6 +61,7 @@ from knowledge_base.domain.providers.reconciliation_store import (
 )
 from knowledge_base.domain.services.reconciliation import (
     DiscrepancyKind,
+    building_indexes_missing_version,
     compare_manifest,
     indexes_missing_indexation,
     is_publishable_completed,
@@ -63,7 +70,10 @@ from knowledge_base.domain.services.reconciliation import (
 from knowledge_base.domain.value_objects.index_manifest import IndexManifest
 from knowledge_base.domain.value_objects.indexed_point import PointSelector
 from knowledge_base.use_cases.errors import DocumentNotFoundError
-from knowledge_base.use_cases.indexing_steps import reschedule_indexation
+from knowledge_base.use_cases.indexing_steps import (
+    reschedule_indexation,
+    reschedule_rechunk,
+)
 from knowledge_base.use_cases.publish_document_version.errors import (
     PublicationRefusedError,
 )
@@ -197,6 +207,83 @@ class IndexationReconciliation:
                     "indexation planifiée",
                     version_id,
                     index_id,
+                )
+            await uow.commit()
+
+    # --- couverture d'un index BUILDING (S9) -----------------------------------------
+
+    async def cover_building_indexes(
+        self, indexes: Collection[SearchIndex]
+    ) -> Counter[DiscrepancyKind]:
+        counts: Counter[DiscrepancyKind] = Counter()
+        building = {
+            index.index_id: index.chunking_policy.identity
+            for index in indexes
+            if index.status is IndexStatus.BUILDING
+        }
+        if not building:
+            return counts
+        for version in await self._store.indexable_versions():
+            missing = building_indexes_missing_version(
+                document_status=version.document_status,
+                version_status=version.version_status,
+                policy_versions=version.policy_versions,
+                building_policies=building,
+                indexed_index_ids=version.indexed_index_ids,
+            )
+            if not missing:
+                continue
+            counts[DiscrepancyKind.MISSING_FROM_BUILDING_INDEX] += 1
+            await self._backfill(
+                version.document_id,
+                version.version_id,
+                missing,
+                version.policy_versions,
+            )
+        return counts
+
+    async def _backfill(
+        self,
+        document_id: UUID,
+        version_id: UUID,
+        index_ids: Collection[UUID],
+        policy_versions: Collection[str],
+    ) -> None:
+        """Les lots d'une version ne font que s'ajouter : un lot vu par le
+        constat existe encore ; un lot apparu depuis rend le rechunking
+        inutile mais inoffensif (il ne réécrit pas un lot existant)."""
+        async with self._unit_of_work() as uow:
+            corpus = await uow.corpus.get_shared()
+            document = await uow.documents.get(document_id)
+            if not _is_indexable(document, version_id):
+                return
+            for index_id in sorted(index_ids):
+                index = _live_index(corpus, index_id)
+                if (
+                    index is None
+                    or index.status is not IndexStatus.BUILDING
+                    or await uow.indexations.get(version_id, index_id)
+                ):
+                    continue
+                policy = index.chunking_policy.identity
+                await uow.indexations.add(
+                    Indexation.pending(
+                        version_id=version_id,
+                        index_id=index_id,
+                        chunking_policy_version=policy,
+                    )
+                )
+                reschedule = (
+                    reschedule_indexation
+                    if policy in policy_versions
+                    else reschedule_rechunk
+                )
+                await reschedule(uow.work_queue, document_id, version_id, index_id)
+                logger.warning(
+                    "version %s absente de l'index BUILDING %s : %s planifié",
+                    version_id,
+                    index_id,
+                    "indexation" if policy in policy_versions else "rechunking",
                 )
             await uow.commit()
 

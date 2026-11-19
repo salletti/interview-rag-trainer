@@ -10,8 +10,10 @@ remis en attente :
 - ``extract_version`` : version ``FAILED`` -> ``RECEIVED`` (cause effacée) ;
   une version encore ``RECEIVED`` (hook d'échec jamais exécuté, O14) est
   laissée telle quelle ;
-- ``index_version`` : indexation ``FAILED`` -> ``PENDING`` ; la version reste
-  ``EXTRACTED`` (§5.2), une indexation encore ``PENDING`` est laissée ;
+- ``index_version`` et ``rechunk_version`` (S9) : indexation ``FAILED`` ->
+  ``PENDING`` ; la version reste ``EXTRACTED`` (§5.2), une indexation encore
+  ``PENDING`` est laissée ;
+- ``drop_index_collection`` (S9) : l'item seul, si l'index est ``RETIRED`` ;
 - ``purge_document`` et les autres kinds : l'item seul.
 
 Refus, sans aucune écriture : item inconnu, item qui n'est pas ``FAILED``
@@ -20,7 +22,8 @@ le second rejeu attend le premier et le voit), cycle de réconciliation
 (``NOT_REPLAYABLE`` quel que soit son code : un vieux cycle n'a rien à
 apporter, le créneau suivant en planifie un neuf), échec que le catalogue
 dit non rejouable ou ne connaît pas, travail sans objet (version
-supplantée, document retiré, index retiré, indexation annulée).
+supplantée, document retiré, index retiré, indexation annulée ; collection
+d'un index qui n'est pas retiré).
 """
 
 from __future__ import annotations
@@ -45,7 +48,12 @@ from knowledge_base.domain.providers.failed_work import (
 )
 from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
-from knowledge_base.use_cases.indexing_steps import INDEX_VERSION, PURGE_DOCUMENT
+from knowledge_base.use_cases.indexing_steps import (
+    DROP_INDEX_COLLECTION,
+    INDEX_VERSION,
+    PURGE_DOCUMENT,
+    RECHUNK_VERSION,
+)
 from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_command import (  # noqa: E501
     RECONCILE_KNOWLEDGE_BASE,
 )
@@ -85,8 +93,10 @@ class RetryIngestionHandler:
                 raise NotReplayableError(item.item_id, item.last_error_code or "")
             if item.kind == EXTRACT_VERSION:
                 await _reset_extraction(uow, item)
-            elif item.kind == INDEX_VERSION:
+            elif item.kind in (INDEX_VERSION, RECHUNK_VERSION):
                 await _reset_indexation(uow, item)
+            elif item.kind == DROP_INDEX_COLLECTION:
+                await _ensure_retired(uow, item)
             elif item.kind == PURGE_DOCUMENT:
                 await _ensure_withdrawn(uow, item)
             # Ligne verrouillée par get_for_update et encore FAILED : la
@@ -135,6 +145,19 @@ async def _reset_indexation(uow: FailedWorkUnitOfWork, item: WorkItemRecord) -> 
     if indexation.status is IndexationStatus.FAILED:
         indexation.retry()
         await uow.indexations.save(indexation)
+
+
+async def _ensure_retired(uow: FailedWorkUnitOfWork, item: WorkItemRecord) -> None:
+    index_id = item.payload_id("index_id")
+    corpus = await uow.corpus.get_shared()
+    if index_id is None or corpus is None:
+        raise ObsoleteWorkError(item.item_id, "index inconnu")
+    try:
+        index = corpus.get_index(index_id)
+    except UnknownIndexError:
+        raise ObsoleteWorkError(item.item_id, "index inconnu") from None
+    if index.status is not IndexStatus.RETIRED:
+        raise ObsoleteWorkError(item.item_id, f"index {index.status}, pas retiré")
 
 
 async def _ensure_withdrawn(uow: FailedWorkUnitOfWork, item: WorkItemRecord) -> None:

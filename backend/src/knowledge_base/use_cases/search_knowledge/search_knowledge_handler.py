@@ -1,6 +1,10 @@
 """Query ``SearchKnowledge`` (knowledge-base.md §12 ; ADR 0010 §5-6 ; O12).
 
-1. Index actif (SQL) ; son profil doit être celui de l'embedder.
+1. Index actif (SQL), puis le modèle de son profil (S9 : ``embedders``) ; un
+   profil que le processus ne sait pas charger est refusé
+   (``SearchProfileMismatchError``) avant tout encodage, jamais remplacé par
+   un autre modèle. Avec ``embedder`` (un seul modèle, S5), l'index actif doit
+   avoir son profil.
 2. Requête encodée une fois (l'adapter ajoute ``query: `` et sort le calcul
    de la boucle asyncio).
 3. Recherche groupée par unité, ``unit_limit = limit x f`` à la première passe.
@@ -10,8 +14,8 @@
    unités écartées ET déjà retenues. Arrêt anticipé si une passe rend moins
    d'unités que demandé (plus rien à trouver).
 6. Passages reconstruits (small-to-big, ``passage_assembler``), classés par
-   meilleur score de leurs chunks, au plus ``limit``. ``token_counter`` compte
-   la question dans le budget : le tokenizer du profil de l'embedder, que
+   meilleur score de leurs chunks, au plus ``limit``. Le tokenizer du profil
+   de l'index actif compte la question dans le budget : celui du modèle que
    l'encodage de l'étape 2 a déjà chargé.
 
 ``complete`` est faux si et seulement si des unités ont été écartées et qu'il
@@ -28,9 +32,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from knowledge_base.domain.entities.knowledge_corpus import SearchIndex
 from knowledge_base.domain.providers.active_index_reader import ActiveIndexReader
 from knowledge_base.domain.providers.chunk_searcher import ChunkSearcher
 from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.embedder_provider import (
+    EmbedderProvider,
+    UnknownEmbeddingProfileError,
+)
 from knowledge_base.domain.providers.published_unit_reader import (
     PublishedUnitReader,
 )
@@ -61,30 +70,50 @@ class _Retained:
         return max(hit.score for hit in self.hits)
 
 
+@dataclass(frozen=True)
+class _QueryModel:
+    embedder: Embedder
+    token_counter: TokenCounter
+
+
 class SearchKnowledgeHandler:
     def __init__(
         self,
         *,
-        embedder: Embedder,
         chunk_searcher: ChunkSearcher,
         published_units: PublishedUnitReader,
         active_indexes: ActiveIndexReader,
-        token_counter: TokenCounter,
         max_passage_tokens: int,
         oversampling_factor: int = 2,
         complement_passes: int = 1,
+        embedders: EmbedderProvider | None = None,
+        embedder: Embedder | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
+        """``embedders`` (S9) : le modèle du profil de l'index actif ; ou bien
+        ``embedder`` et ``token_counter`` (un seul profil, S5)."""
+        legacy = (embedder, token_counter)
+        valid = (
+            all(part is None for part in legacy)
+            if embedders is not None
+            else all(part is not None for part in legacy)
+        )
+        if not valid:
+            raise ValueError(
+                "embedders= seul, ou bien embedder= et token_counter= ensemble"
+            )
         if max_passage_tokens < 1:
             raise ValueError(f"max_passage_tokens < 1 : {max_passage_tokens}")
         if oversampling_factor < 1:
             raise ValueError(f"oversampling_factor < 1 : {oversampling_factor}")
         if complement_passes < 0:
             raise ValueError(f"complement_passes < 0 : {complement_passes}")
+        self._embedders = embedders
         self._embedder = embedder
+        self._token_counter = token_counter
         self._searcher = chunk_searcher
         self._published = published_units
         self._indexes = active_indexes
-        self._token_counter = token_counter
         self._max_passage_tokens = max_passage_tokens
         self._factor = oversampling_factor
         self._complement_passes = complement_passes
@@ -93,11 +122,8 @@ class SearchKnowledgeHandler:
         index = await self._indexes.get_active_index()
         if index is None:
             raise NoActiveSearchIndexError
-        if index.profile != self._embedder.profile:
-            raise SearchProfileMismatchError(
-                index.index_id, index.profile, self._embedder.profile
-            )
-        vector = await self._embedder.embed_query(command.text)
+        model = self._model_for(index)
+        vector = await model.embedder.embed_query(command.text)
         filters = command.filters
 
         retained: dict[UUID, _Retained] = {}
@@ -123,20 +149,40 @@ class SearchKnowledgeHandler:
                 break
 
         best = sorted(retained.values(), key=lambda r: r.score, reverse=True)
-        passages = tuple(self._passage(r) for r in best[: command.limit])
+        passages = tuple(
+            self._passage(r, model.token_counter) for r in best[: command.limit]
+        )
         return SearchKnowledgeResult(
             passages=passages,
             complete=not rejected or len(passages) >= command.limit,
             index_id=index.index_id,
         )
 
-    def _passage(self, retained: _Retained) -> FoundPassage:
+    def _model_for(self, index: SearchIndex) -> _QueryModel:
+        if self._embedders is None:
+            assert self._embedder is not None and self._token_counter is not None
+            if index.profile != self._embedder.profile:
+                raise SearchProfileMismatchError(
+                    index.index_id, index.profile, self._embedder.profile
+                )
+            return _QueryModel(self._embedder, self._token_counter)
+        try:
+            found = self._embedders.for_profile(index.profile)
+        except UnknownEmbeddingProfileError:
+            raise SearchProfileMismatchError(
+                index.index_id, index.profile, None
+            ) from None
+        return _QueryModel(found, found.token_counter)
+
+    def _passage(
+        self, retained: _Retained, token_counter: TokenCounter
+    ) -> FoundPassage:
         unit = retained.unit
         assembled = assemble_passage(
             unit,
             retained.hits,
             max_tokens=self._max_passage_tokens,
-            token_counter=self._token_counter,
+            token_counter=token_counter,
         )
         return FoundPassage(
             unit_id=unit.unit_id,

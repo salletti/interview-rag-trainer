@@ -56,6 +56,9 @@ x-backend-env: &backend-env
   KB_RECONCILE_MAX_PURGE_REOPENINGS: ${KB_RECONCILE_MAX_PURGE_REOPENINGS:-3}
   KB_IDEMPOTENCY_KEY_TTL_SECONDS: ${KB_IDEMPOTENCY_KEY_TTL_SECONDS:-86400}
   KB_MAX_DOCUMENT_TOKENS: ${KB_MAX_DOCUMENT_TOKENS:-1000000}
+  # Migration blue/green (S9) : délai avant la suppression de la collection de
+  # l'index retiré par une activation (python -m runtime.index_migration).
+  KB_INDEX_DROP_DELAY_SECONDS: ${KB_INDEX_DROP_DELAY_SECONDS:-300}
   # Poids de Docling PDF (S6 : layout et TableFormer, ~530 Mio) : cache du Hub
   # dans un sous-dossier du volume models_cache, téléchargés à la première
   # extraction d'un PDF par worker_ingestion. Non surchargeable par .env, comme

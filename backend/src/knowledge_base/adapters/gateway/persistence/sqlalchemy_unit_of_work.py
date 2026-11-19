@@ -1,7 +1,8 @@
 """Unit of Work SQLAlchemy de Knowledge Base : une session, donc une
 transaction, partagée par le dépôt des documents, la work queue (S0), les
 clés d'idempotence (S2), le corpus, les indexations et la lecture des chunks
-(S4), les items ``FAILED`` (S8 : rejeu, réconciliation)."""
+(S4), les items ``FAILED`` (S8 : rejeu, réconciliation), les versions à
+couvrir par un index (S9 : migration blue/green)."""
 
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_failed_work_reposito
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_idempotency_key_repository import (  # noqa: E501
     SqlAlchemyIdempotencyKeyRepository,
+)
+from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexable_version_reader import (  # noqa: E501
+    SqlAlchemyIndexableVersionReader,
 )
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexing_transaction import (  # noqa: E501
     SqlAlchemyIndexingTransaction,
@@ -38,6 +42,11 @@ class SqlAlchemyUnitOfWork(SqlAlchemyIndexingTransaction):
         self._idempotency_keys = SqlAlchemyIdempotencyKeyRepository(self._session)
         self._chunks = SqlAlchemyChunkReader(self._session)
         self._failed_work = SqlAlchemyFailedWorkRepository(self._session)
+        self._versions = SqlAlchemyIndexableVersionReader(self._session)
+
+    @property
+    def versions(self) -> SqlAlchemyIndexableVersionReader:
+        return self._versions
 
     @property
     def failed_work(self) -> SqlAlchemyFailedWorkRepository:

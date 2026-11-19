@@ -146,3 +146,30 @@ que les passages des points réécrits, jusqu'à la synchronisation. Une version
 non publiée est toujours réécrite en entier. Vérifié contre Qdrant réel avec
 une barrière après l'upsert de réparation
 ([knowledge-base.md §11, précisions S8](../conception/bounded-contexts/knowledge-base.md#11-visibilité-et-cohérence-postgresql--qdrant)).
+
+## S9 — migration blue/green (2026-11-18)
+
+Le corps de l'ADR est inchangé. Faits de S9 qui le touchent
+([knowledge-base.md §11, §13, précisions S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings)) :
+
+- PostgreSQL arbitre aussi l'index servi : la recherche relit l'index actif à
+  chaque requête et prend le modèle de son profil ; la bascule est le commit
+  d'`ActivateSearchIndex`, sans alias Qdrant (alternative écartée par
+  l'ADR 0011). Des recherches en boucle pendant la bascule n'échouent jamais et
+  passent de l'ancien index au nouveau sans retour (`test_s9_search_continuity`).
+- Point 7 (points écrits `visible=false`) : le backfill d'une version publiée
+  dans l'index `BUILDING` écrit ses points invisibles et replanifie sa
+  synchronisation (règle S8) ; l'activation est refusée tant qu'une
+  synchronisation d'un document publié est en attente
+  (`SynchronizationPendingError`), sinon le document manquerait des résultats
+  juste après la bascule.
+- La collection d'un index `RETIRED` est supprimée par un work item
+  (`drop_index_collection`) disponible après `KB_INDEX_DROP_DELAY_SECONDS`
+  (300 s par défaut, Proposed) ; jamais celle d'un index vivant
+  (`INDEX_STILL_LIVE`). Ses points ne sont plus parcourus par la
+  réconciliation (index vivants seulement) ; une collection supprimée n'est
+  pas un écart.
+- Point 9 : la réconciliation couvre l'index `BUILDING` (points orphelins,
+  manifests) et ajoute une règle propre à la migration : une version publiée
+  (ou extraite sous une autre politique) sans indexation dans l'index
+  `BUILDING` est replanifiée, sans quoi l'activation resterait refusée.

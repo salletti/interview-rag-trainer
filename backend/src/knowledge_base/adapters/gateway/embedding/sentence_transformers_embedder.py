@@ -168,6 +168,7 @@ class _LoadedModel:
 def _load(profile: EmbeddingProfile, cache_dir: str | Path | None) -> SentenceEncoder:
     """Télécharge au besoin (premier démarrage : volume de cache vide) puis
     charge le modèle à la révision du profil."""
+    import torch
     from sentence_transformers import SentenceTransformer
 
     started = time.perf_counter()
@@ -176,6 +177,10 @@ def _load(profile: EmbeddingProfile, cache_dir: str | Path | None) -> SentenceEn
         revision=profile.revision,
         cache_folder=None if cache_dir is None else str(cache_dir),
         device=DEVICE,
+        # float32 quel que soit le type déclaré par le modèle : sur CPU, le
+        # bfloat16 de Qwen3-Embedding-0.6B encode 3 à 8 fois plus lentement
+        # (mesuré au benchmark S9) ; les modèles E5 sont déjà en float32.
+        model_kwargs={"dtype": torch.float32},
     )
     logger.info(
         "modèle d'embeddings %s@%s chargé en %.1f s (cache %s)",

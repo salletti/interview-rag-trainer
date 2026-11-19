@@ -20,6 +20,16 @@ Coupé en deux pour la work queue (S0 §5) :
 
 Effets externes rejouables : points ``uuid5(index_id, chunk_id)`` écrasés à
 l'identique, jamais ajoutés (§7.3).
+
+Modèle (S9) : ``embedders`` rend le modèle du profil de l'index visé, pour
+qu'un worker remplisse l'index ``BUILDING`` d'une migration avec son propre
+modèle ; un profil qu'il ne sait pas charger est le refus terminal
+``CollectionMismatchError``, avant tout encodage. ``embedder`` (S4, un seul
+modèle) reste accepté : tout index d'un autre profil est alors refusé de même.
+Les chunks lus sont ceux du lot de la politique de l'INDEX
+(``chunking_policy_version`` de l'indexation) : un lot absent (rechunking non
+fait) est le refus terminal ``ChunkBatchMissingError``, jamais une indexation
+vide.
 """
 
 from __future__ import annotations
@@ -50,6 +60,10 @@ from knowledge_base.domain.exceptions.document_errors import (
     VersionNotFoundError,
 )
 from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.embedder_provider import (
+    EmbedderProvider,
+    UnknownEmbeddingProfileError,
+)
 from knowledge_base.domain.providers.indexing_transaction import (
     IndexingTransaction,
     IndexingUnitOfWork,
@@ -64,6 +78,7 @@ from knowledge_base.use_cases.complete_indexation.complete_indexation_command im
     CompleteIndexation,
 )
 from knowledge_base.use_cases.complete_indexation.errors import (
+    ChunkBatchMissingError,
     CollectionMismatchError,
     IndexManifestMismatchError,
 )
@@ -99,12 +114,14 @@ class PreparedIndexation:
 
 @dataclass(frozen=True)
 class _Target:
-    """Ce que ``prepare`` doit indexer : la version, son document et l'index."""
+    """Ce que ``prepare`` doit indexer : la version, son document, l'index et
+    le modèle de son profil."""
 
     document: KnowledgeDocument
     version: DocumentVersion
     index: SearchIndex
     indexation: Indexation
+    embedder: Embedder
 
 
 class CompleteIndexationHandler:
@@ -112,16 +129,22 @@ class CompleteIndexationHandler:
         self,
         *,
         unit_of_work: Callable[[], IndexingUnitOfWork],
-        embedder: Embedder,
         vector_index: VectorIndex,
         publisher: PublishDocumentVersionHandler,
         clock: Callable[[], datetime],
         batch_size: int = 32,
+        embedder: Embedder | None = None,
+        embedders: EmbedderProvider | None = None,
     ) -> None:
+        """Exactement un de ``embedder`` (un seul profil, S4) et ``embedders``
+        (le modèle du profil de chaque index, S9)."""
         if batch_size <= 0:
             raise ValueError(f"batch_size doit être positif : {batch_size}")
+        if (embedder is None) == (embedders is None):
+            raise ValueError("embedder= ou embedders= : exactement un des deux")
         self._unit_of_work = unit_of_work
         self._embedder = embedder
+        self._embedders = embedders
         self._vector_index = vector_index
         self._publisher = publisher
         self._clock = clock
@@ -134,7 +157,7 @@ class CompleteIndexationHandler:
         ``CollectionMismatchError`` (terminal) ou
         ``IndexManifestMismatchError`` (transitoire)."""
         async with self._unit_of_work() as uow:
-            target = _target(
+            found = _target(
                 command,
                 await uow.documents.get(command.document_id),
                 await uow.corpus.get_shared(),
@@ -142,12 +165,12 @@ class CompleteIndexationHandler:
             )
             chunks = (
                 ()
-                if target is None
+                if found is None
                 else await uow.chunks.list_chunks(
-                    command.version_id, target.indexation.chunking_policy_version
+                    command.version_id, found[3].chunking_policy_version
                 )
             )
-        if target is None:
+        if found is None:
             logger.info(
                 "indexation de la version %s dans l'index %s ignorée : rien à "
                 "indexer (version, document, index ou indexation hors d'état)",
@@ -155,8 +178,19 @@ class CompleteIndexationHandler:
                 command.index_id,
             )
             return None
-
-        await self._check_collection(target.index)
+        document, version, index, indexation = found
+        if not chunks:
+            raise ChunkBatchMissingError(
+                command.version_id, command.index_id, indexation.chunking_policy_version
+            )
+        target = _Target(
+            document=document,
+            version=version,
+            index=index,
+            indexation=indexation,
+            embedder=self._embedder_for(index),
+        )
+        await self._check_collection(target)
         manifest = IndexManifest.for_chunks(target.index.index_id, chunks)
         to_write = await self._chunks_to_write(target, chunks, manifest)
         for batch in batched(to_write, self._batch_size, strict=False):
@@ -170,12 +204,22 @@ class CompleteIndexationHandler:
             point_count=len(manifest),
         )
 
-    async def _check_collection(self, index: SearchIndex) -> None:
-        if self._embedder.profile != index.profile:
+    def _embedder_for(self, index: SearchIndex) -> Embedder:
+        if self._embedders is None:
+            assert self._embedder is not None  # garanti par le constructeur
+            return self._embedder
+        try:
+            return self._embedders.for_profile(index.profile)
+        except UnknownEmbeddingProfileError as error:
+            raise CollectionMismatchError(index.index_id, str(error)) from error
+
+    async def _check_collection(self, target: _Target) -> None:
+        index, embedder = target.index, target.embedder
+        if embedder.profile != index.profile:
             raise CollectionMismatchError(
                 index.index_id,
-                f"modèle chargé {self._embedder.profile.model}@"
-                f"{self._embedder.profile.revision}, profil de l'index "
+                f"modèle chargé {embedder.profile.model}@"
+                f"{embedder.profile.revision}, profil de l'index "
                 f"{index.profile.model}@{index.profile.revision}",
             )
         if not await self._vector_index.check_collection(index.index_id, index.profile):
@@ -228,7 +272,7 @@ class CompleteIndexationHandler:
 
     async def _write(self, target: _Target, batch: Sequence[DocumentChunk]) -> None:
         index = target.index
-        vectors = await self._embedder.embed_passages(
+        vectors = await target.embedder.embed_passages(
             [c.contextual_text for c in batch]
         )
         for vector in vectors:
@@ -411,7 +455,8 @@ def _target(
     document: KnowledgeDocument | None,
     corpus: KnowledgeCorpus | None,
     indexation: Indexation | None,
-) -> _Target | None:
+) -> tuple[KnowledgeDocument, DocumentVersion, SearchIndex, Indexation] | None:
+    """Ce que ``prepare`` doit indexer, ou ``None`` s'il n'y a rien à faire."""
     version = _version(document, command.version_id)
     index = _index(corpus, command.index_id)
     if (
@@ -425,9 +470,7 @@ def _target(
         or index.status is IndexStatus.RETIRED
     ):
         return None
-    return _Target(
-        document=document, version=version, index=index, indexation=indexation
-    )
+    return document, version, index, indexation
 
 
 def _version(

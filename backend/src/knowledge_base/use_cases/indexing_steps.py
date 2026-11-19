@@ -1,6 +1,7 @@
-"""Items de la work queue de l'indexation, de la visibilité et de la purge
-(knowledge-base.md §6, §10, §11) : ``kind``, clé de dédoublonnage et payload,
-au même endroit pour le producteur (use case) et le consommateur (handler) ;
+"""Items de la work queue de l'indexation, de la visibilité, de la purge et de
+la migration d'index (knowledge-base.md §6, §10, §11, §13) : ``kind``, clé de
+dédoublonnage et payload, au même endroit pour le producteur (use case) et le
+consommateur (handler) ;
 leur replanification sous une génération suivante (S8, ``reschedule_*``) ; et
 l'annulation du travail d'indexation d'une version abandonnée ou d'un
 document retiré (S7 ; I6, §5.3, §8 point 1), générations comprises.
@@ -9,6 +10,7 @@ document retiré (S7 ; I6, §5.3, §8 point 1), générations comprises.
 from __future__ import annotations
 
 from collections.abc import Collection
+from datetime import timedelta
 from typing import Final
 from uuid import UUID
 
@@ -19,6 +21,10 @@ from knowledge_base.domain.providers.work_queue import WorkQueue
 INDEX_VERSION: Final = "index_version"
 SYNC_VISIBILITY: Final = "sync_visibility"
 PURGE_DOCUMENT: Final = "purge_document"
+# S9 : lot de chunks d'une version pour un index d'une autre politique, et
+# suppression de la collection d'un index retiré.
+RECHUNK_VERSION: Final = "rechunk_version"
+DROP_INDEX_COLLECTION: Final = "drop_index_collection"
 
 # Une indexation COMPLETED reste un fait : aucune transition n'en part (§5.3).
 _CANCELLABLE_INDEXATIONS: Final = frozenset(
@@ -70,6 +76,53 @@ async def reschedule_indexation(
         INDEX_VERSION,
         index_version_key(version_id, index_id),
         _indexation_payload(document_id, version_id, index_id),
+    )
+
+
+def rechunk_version_key(version_id: UUID, index_id: UUID) -> str:
+    return f"{RECHUNK_VERSION}:{version_id}:{index_id}"
+
+
+async def schedule_rechunk(
+    work_queue: WorkQueue, document_id: UUID, version_id: UUID, index_id: UUID
+) -> None:
+    """Le lot de la politique de l'index manque : il est produit d'abord
+    (re-parsing de l'original, O4), puis ``rechunk_version`` planifie
+    ``index_version``."""
+    await work_queue.enqueue(
+        RECHUNK_VERSION,
+        rechunk_version_key(version_id, index_id),
+        _indexation_payload(document_id, version_id, index_id),
+    )
+
+
+async def reschedule_rechunk(
+    work_queue: WorkQueue, document_id: UUID, version_id: UUID, index_id: UUID
+) -> None:
+    """Rechunking à refaire (réconciliation S9 : indexation perdue dans un
+    index ``BUILDING``) : génération suivante, sauf item déjà en attente."""
+    await work_queue.enqueue_again(
+        RECHUNK_VERSION,
+        rechunk_version_key(version_id, index_id),
+        _indexation_payload(document_id, version_id, index_id),
+    )
+
+
+def drop_index_collection_key(index_id: UUID) -> str:
+    return f"{DROP_INDEX_COLLECTION}:{index_id}"
+
+
+async def schedule_collection_drop(
+    work_queue: WorkQueue, index_id: UUID, *, delay: timedelta
+) -> None:
+    """Suppression de la collection d'un index retiré, disponible après
+    ``delay`` : une recherche commencée avant la bascule peut encore
+    interroger l'ancienne collection."""
+    await work_queue.enqueue(
+        DROP_INDEX_COLLECTION,
+        drop_index_collection_key(index_id),
+        {"index_id": str(index_id)},
+        delay=delay,
     )
 
 

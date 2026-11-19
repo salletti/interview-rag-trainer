@@ -2,7 +2,8 @@
 stockage des originaux (S2, ADR 0012), embeddings (S4, ADR 0008 §6),
 recherche (S5, knowledge-base.md §12, O12), nettoyage des blobs orphelins
 (S7, ADR 0012 point 6), réconciliation, expiration des clés d'idempotence et
-borne de volume de texte (S8, O15, O16).
+borne de volume de texte (S8, O15, O16), délai de suppression de la collection
+d'un index retiré (S9).
 
 Les valeurs sont des défauts **Proposed** : configurables par variables
 ``KB_*`` et à ajuster sur mesure.
@@ -91,6 +92,15 @@ class KnowledgeBaseSettings(BaseSettings):
     # sous la limite de 3 600 s d'une tâche.
     max_document_tokens: int = Field(default=1_000_000, gt=0)
 
+    # Migration blue/green (S9) : délai entre l'activation d'un nouvel index et
+    # la suppression de la collection de l'ancien. Une recherche lit l'index
+    # actif, PUIS interroge Qdrant : commencée avant la bascule, elle peut
+    # encore lire l'ancienne collection. Le délai doit donc dépasser la durée
+    # d'une recherche ; 300 s couvrent largement le chargement d'un modèle à la
+    # première requête (4,3 s mesurées en S5) et le délai d'une requête Qdrant
+    # (EXTERNAL_TIMEOUT_SECONDS, 2 s par défaut).
+    index_drop_delay_seconds: float = Field(default=300, ge=0)
+
     @model_validator(mode="after")
     def _heartbeat_shorter_than_lease(self) -> Self:
         heartbeat = self.work_heartbeat_interval_seconds
@@ -136,6 +146,10 @@ class KnowledgeBaseSettings(BaseSettings):
     @property
     def reconcile_interval(self) -> timedelta:
         return timedelta(seconds=self.reconcile_interval_seconds)
+
+    @property
+    def index_drop_delay(self) -> timedelta:
+        return timedelta(seconds=self.index_drop_delay_seconds)
 
     @property
     def idempotency_key_ttl(self) -> timedelta:

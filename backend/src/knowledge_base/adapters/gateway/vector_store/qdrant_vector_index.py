@@ -15,6 +15,8 @@ ADR 0010, ADR 0011 §2).
   de toute la collection ou des points d'une version, payload réduit au
   propriétaire, à l'empreinte et à la visibilité, sans vecteur ; suppression
   par identifiants des points hors manifest.
+- Maintenance (S9, port ``IndexCollections``) : suppression de la collection
+  d'un index retiré, sans erreur si elle n'existe plus.
 - Recherche (S5, port ``ChunkSearcher``) : ``query_points_groups`` groupé par
   ``unit_id``, ``CHUNKS_PER_UNIT`` chunks au plus par unité ; le filtre
   ``visible=true`` est toujours ajouté ici (§12 étape 3). Un hit sans
@@ -134,6 +136,14 @@ class QdrantVectorIndex:
                     wait=True,
                 ),
             )
+
+    async def delete_collection(self, index_id: UUID) -> None:
+        name = self.collection_name(index_id)
+        if not await self._client.collection_exists(name):
+            logger.info("collection %s déjà absente : rien à supprimer", name)
+            return
+        if not await self._client.delete_collection(collection_name=name):
+            raise VectorWriteNotAppliedError("delete_collection", name, "false")
 
     async def check_collection(self, index_id: UUID, profile: EmbeddingProfile) -> bool:
         name = self.collection_name(index_id)

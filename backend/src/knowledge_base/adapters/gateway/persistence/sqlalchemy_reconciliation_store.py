@@ -38,6 +38,7 @@ from knowledge_base.domain.providers.reconciliation_store import (
     CompletedIndexation,
     ExtractedVersion,
     FailedItemFacts,
+    IndexableVersionFacts,
     PublicationCandidate,
 )
 from knowledge_base.domain.services.reconciliation import DocumentFacts
@@ -183,6 +184,50 @@ class SqlAlchemyReconciliationStore:
             )
         return [
             ExtractedVersion(
+                document_id=row.document_id,
+                version_id=row.id,
+                document_status=DocumentStatus(row.document_status),
+                version_status=VersionStatus(row.status),
+                policy_versions=frozenset(policies.get(row.id, ())),
+                indexed_index_ids=frozenset(indexed.get(row.id, ())),
+            )
+            for row in versions
+        ]
+
+    async def indexable_versions(self) -> Sequence[IndexableVersionFacts]:
+        async with self._session_factory() as session:
+            versions = (
+                await session.execute(
+                    select(
+                        _v.id,
+                        _v.document_id,
+                        _v.status,
+                        _d.status.label("document_status"),
+                    )
+                    .join(documents, _d.id == _v.document_id)
+                    .where(
+                        _v.status.in_(_INDEXABLE_VERSIONS),
+                        _d.status == DocumentStatus.ACTIVE.value,
+                    )
+                    .order_by(_v.id)
+                )
+            ).all()
+            ids = [row.id for row in versions]
+            policies = await _grouped(
+                session,
+                select(
+                    knowledge_units.c.version_id,
+                    knowledge_units.c.chunking_policy_version,
+                )
+                .where(knowledge_units.c.version_id.in_(ids))
+                .distinct(),
+            )
+            indexed = await _grouped(
+                session,
+                select(_i.version_id, _i.index_id).where(_i.version_id.in_(ids)),
+            )
+        return [
+            IndexableVersionFacts(
                 document_id=row.document_id,
                 version_id=row.id,
                 document_status=DocumentStatus(row.document_status),

@@ -33,6 +33,8 @@ from knowledge_base.use_cases.reconcile_knowledge_base.reconciliation_report imp
 EXPECTED_KINDS = {
     "COMPLETED_NOT_PUBLISHED",
     "EXTRACTED_WITHOUT_INDEXATION",
+    # S9 : backfill d'un index BUILDING incomplet.
+    "MISSING_FROM_BUILDING_INDEX",
     "ORPHAN_POINTS",
     "MANIFEST_DRIFT",
     "HIDDEN_PUBLISHED_POINTS",

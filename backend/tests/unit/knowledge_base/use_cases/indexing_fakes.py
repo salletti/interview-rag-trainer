@@ -321,6 +321,9 @@ class IndexingState:
     open_transactions: int = 0
     # Une autre transaction crée le corpus entre notre lecture et notre ``add``.
     race_corpus: KnowledgeCorpus | None = None
+    # S9 : documents dont une synchronisation de visibilité est en attente,
+    # rendus par ``documents_awaiting_visibility`` des doubles de S9.
+    awaiting_visibility: frozenset[UUID] = frozenset()
 
 
 @dataclass

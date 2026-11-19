@@ -122,3 +122,18 @@ conservé ; la condition de réévaluation qui en dépend ne sera significative
 qu'avec les unités multi-chunks de S6. Le budget compte désormais la question
 avec le tokenizer du profil, dans le domaine (`passage_assembler`), et la
 fenêtre retire aussi un en-tête contextuel tronqué par le `ChunkPlanner`.
+
+S9 (2026-11-18), rechunking (point 7), sans changement de décision : la
+`ChunkingPolicy` appartient au `SearchIndex` ; une version que l'index ne peut
+servir avec un lot existant reçoit un **second lot** `(version, politique)`
+produit par `rechunk_version` : l'original est re-parsé (O4 : aucun
+`StructuredDocument` persisté), segmenté et découpé selon la politique de
+l'index, budget compté par le tokenizer de **son** profil ; le lot d'origine
+et l'état de la version ne changent pas (I7), les citations restent celles de
+la version. Parsing, segmentation et découpage sont communs à l'extraction et
+au rechunking (`use_cases/extraction_steps.VersionExtractor`). Le budget de
+508 tokens est conservé pour toutes les cibles du catalogue : un modèle à
+contexte plus long n'impose pas de chunks plus longs (unité pédagogique), il
+ne change que le tokenizer qui les compte ; mesure et justification dans le
+[rapport de benchmark](../conception/bounded-contexts/knowledge-base-embedding-benchmark.md).
+`max_passage_tokens` et l'overlap ne sont pas remesurés en S9.

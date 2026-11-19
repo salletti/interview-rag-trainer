@@ -39,7 +39,7 @@ import copy
 import hashlib
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
 from uuid import UUID, uuid4
@@ -85,6 +85,8 @@ class FakeWorkItem:
     dedup_key: str
     payload: dict[str, str]
     status: str = "PENDING"
+    # Délai de disponibilité demandé à l'enqueue (S9), ``None`` : immédiat.
+    delay: timedelta | None = None
 
 
 @dataclass
@@ -143,11 +145,12 @@ class FakeWorkQueue:
         correlation_id: UUID | None = None,
         *,
         max_attempts: int | None = None,
+        delay: timedelta | None = None,
     ) -> UUID:
         if self._w.fail_enqueue:
             raise RuntimeError("work queue indisponible")
         self._w.items.setdefault(
-            dedup_key, FakeWorkItem(kind, dedup_key, dict(payload or {}))
+            dedup_key, FakeWorkItem(kind, dedup_key, dict(payload or {}), delay=delay)
         )
         return uuid4()
 

@@ -20,7 +20,7 @@ docker compose up --build -d
 | Qdrant | http://localhost:6333 (REST), 6334 (gRPC) | moteur vectoriel principal |
 | RabbitMQ | `localhost:5672`, management http://localhost:15672 | broker Celery |
 | Worker Celery (`worker`) | — | file `interview_rag_trainer.default` : `runtime.ping`, tâches `dispatch` et `recover` de Knowledge Base |
-| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility` ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) et Docling PDF à son premier PDF (pic de RSS mesuré : 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) |
+| Worker d'ingestion (`worker_ingestion`) | — | file `knowledge_base.ingestion`, `--concurrency=1 --prefetch-multiplier=1` : `extract_version`, `index_version`, `sync_visibility`, `purge_document`, `reconcile_knowledge_base`, `rechunk_version` et `drop_index_collection` (S9) ; charge le modèle d'embeddings à sa première tâche (~1,7 Gio de RAM ensuite) et Docling PDF à son premier PDF (pic de RSS mesuré : 2,6 Gio pour un PDF de 300 pages, modèle d'embeddings compris) |
 | Scheduler (`scheduler`) | — | Celery beat : émet `dispatch` (2 s) et `recover` (30 s) ; **une seule instance** ; état dans `/tmp` |
 | migrate | — | `alembic upgrade head`, s'arrête une fois terminé |
 | kb_provision | — | `python -m runtime.provision` : crée la collection Qdrant et active l'index initial de Knowledge Base s'il n'existe pas (idempotent), s'arrête une fois terminé |
@@ -63,6 +63,7 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_RECONCILE_MAX_PURGE_REOPENINGS` | 3 | réouvertures automatiques d'une purge `FAILED` ; au-delà, rejeu explicite |
 | `KB_IDEMPOTENCY_KEY_TTL_SECONDS` | 86400 | durée de vie d'une clé d'idempotence (O15) |
 | `KB_MAX_DOCUMENT_TOKENS` | 1000000 | borne du texte extrait d'un document, tous formats (O16) ; au-delà, `DOCUMENT_TOO_LARGE` |
+| `KB_INDEX_DROP_DELAY_SECONDS` | 300 | délai entre l'activation d'un nouvel index et la suppression de la collection Qdrant de l'ancien (S9) ; doit dépasser la durée d'une recherche |
 | `KB_INGESTION_MAX_TASKS_PER_CHILD` (Compose seulement) | 50 | tâches avant remplacement du processus enfant de `worker_ingestion` (`--max-tasks-per-child`) : borne la mémoire après des conversions PDF successives ; les cycles de réconciliation comptent (à vide, un enfant toutes les ~4 h ; modèles rechargés à leur premier usage seulement) |
 | `HF_HOME` (non `KB_`) | `/var/cache/interview-rag-trainer/models/huggingface` | cache du Hub pour les poids de Docling PDF (S6) ; fixé par `compose.yaml` dans le volume `models_cache` (non surchargeable par `.env`) |
 | `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
@@ -214,6 +215,54 @@ docker compose logs worker_ingestion | grep "réconciliation :"
 ```
 
 Pour l'observer sans attendre 5 min : `KB_RECONCILE_INTERVAL_SECONDS=60 docker compose up -d`, puis `docker compose up -d` pour revenir au défaut. Un cycle en échec (Qdrant injoignable) est rejoué avec backoff puis listé dans `/failures` ; le créneau suivant en planifie un nouveau de toute façon.
+
+### Migrer l'index de recherche (Knowledge Base, S9)
+
+Changer de profil d'embeddings sans interrompre la recherche (blue/green ; cibles : `frameworks/configuration/embedding_targets.py`, aujourd'hui `multilingual-e5-base` et `multilingual-e5-small` ; mesures et choix : [benchmark](../conception/bounded-contexts/knowledge-base-embedding-benchmark.md), [ADR 0013](../decisions/0013-definitive-embedding-profile.md)).
+
+1. **Poids du modèle cible** dans `models_cache` (sinon téléchargés par l'API et le worker à leur premier usage, 449 Mio pour e5-small). Depuis le cache de l'hôte, s'il existe :
+
+   ```bash
+   docker compose run --rm --no-deps -T \
+     -v ./backend/.cache/models/models--intfloat--multilingual-e5-small:/seed:ro api \
+     sh -c 'cp -a /seed /var/cache/interview-rag-trainer/models/models--intfloat--multilingual-e5-small'
+   ```
+
+2. **Démarrer** : nouvel index `BUILDING`, sa collection, backfill planifié (rejouable : la même cible rend le même index ; une autre cible est refusée tant qu'une migration est en cours).
+
+   ```bash
+   make kb-migration-start target=multilingual-e5-small
+   # ... msg=migration démarrée : index <index_id> BUILDING (profil intfloat/multilingual-e5-small@614241f6…,
+   #     politique kb-chunking-v1+xlmr-614241f6), backfill de 15 version(s) dont 15 à rechunker
+   # <index_id>
+   ```
+
+   La recherche reste servie par l'index actif. `worker_ingestion` exécute `rechunk_version` (politique d'un autre tokenizer), `index_version`, puis `sync_visibility` ; mesuré : 15 versions en 53 s.
+
+3. **Suivre le backfill** (fini quand plus rien n'est en attente pour l'index) :
+
+   ```bash
+   docker compose exec postgres psql -U interview_rag_trainer -d interview_rag_trainer \
+     -c "select kind, status, count(*) from knowledge_base.work_items
+         where payload->>'index_id' = '<index_id>' or kind = 'sync_visibility' group by 1, 2" \
+     -c "select status, count(*) from knowledge_base.indexations where index_id = '<index_id>' group by 1"
+   ```
+
+   Un échec (`FAILED`) se voit et se rejoue par `/failures` (§ Échecs) ; la réconciliation replanifie une version que le backfill aurait perdue.
+
+4. **Activer** (bascule de la recherche au commit) :
+
+   ```bash
+   make kb-migration-activate index=<index_id>
+   # ... msg=index <index_id> activé (15 version(s) publiée(s) couvertes) ; ancien index <ancien> RETIRED,
+   #     collection supprimée dans 0:05:00
+   ```
+
+   Refus sans effet, à relancer plus tard : `IncompleteCoverageError` (une version publiée n'est pas encore `COMPLETED` dans le nouvel index), `SynchronizationPendingError` (synchronisation de visibilité en attente). La première recherche après la bascule charge le nouveau modèle dans l'API (~2 à 3 s mesurées) ; l'API garde les deux modèles jusqu'à son redémarrage (1 277 → 1 666 Mio mesurés).
+
+5. **Retrait** : la collection de l'ancien index est supprimée par `drop_index_collection` après `KB_INDEX_DROP_DELAY_SECONDS` (300 s) ; `curl -s localhost:6333/collections` ne montre plus que le nouvel index.
+
+Pendant les deux migrations démontrées (e5-base → e5-small → e5-base), 6 190 et 6 467 recherches REST en boucle, 0 erreur, une seule bascule chacune. Retour au profil recommandé : `make kb-migration-start target=multilingual-e5-base`, puis l'activation du nouvel index (lots d'origine réutilisés, aucun rechunking ; 41 s).
 
 ## Qualité et tests
 

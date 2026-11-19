@@ -10,11 +10,14 @@ from knowledge_base.adapters.controller.dependencies import (
     KnowledgeBaseSettings,
     KnowledgeBaseWorkerResources,
     WorkHandler,
+    activate_search_index,
     build_knowledge_search,
     build_work_handlers,
+    migration_target_names,
     provision_search_index,
     register,
     register_worker,
+    start_index_migration,
 )
 
 __all__ = [
@@ -22,9 +25,12 @@ __all__ = [
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "activate_search_index",
     "build_knowledge_search",
     "build_work_handlers",
+    "migration_target_names",
     "provision_search_index",
     "register",
     "register_worker",
+    "start_index_migration",
 ]

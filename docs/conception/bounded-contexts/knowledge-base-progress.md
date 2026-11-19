@@ -31,7 +31,7 @@ review prêt.
 | S6 | PDF et DOCX avec Docling | S3, S5 | **Terminée** | voir journal | Ruff, mypy (316 fichiers), 1 196 unit./archi., 364 intégration, 3/3 mutations, import réel PDF et DOCX jusqu'à PUBLISHED, recherche avec pages |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | **Terminée** | voir journal | Ruff, mypy (356 fichiers), 1 305 unit./archi., 392 intégration, tests de concurrence S7 verts 13/13, 4 mutations, retrait + purge réels sur la stack de dev |
 | S8 | Réconciliation et gestion des erreurs | S7 | **Terminée** | voir journal | Ruff, mypy (419 fichiers), 1 567 unit./archi., 484 intégration, tests S8 3/3 stables, 7 mutations, écart réel corrigé en un cycle sur la stack de dev, échec rejoué par l'API |
-| S9 | Benchmark embeddings, blue/green | S5, S8 | À faire | | |
+| S9 | Benchmark embeddings, blue/green | S5, S8 | **Terminée** | voir journal | Ruff, mypy (466 fichiers), 1 708 unit./archi., 527 intégration (stack neuve), 5 mutations, 2 migrations blue/green sur la stack de dev (12 657 recherches, 0 erreur) |
 
 Ordre d'exécution retenu (compatible avec le graphe de dépendances) :
 S0 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9.
@@ -77,6 +77,14 @@ périmètre.
 - 2026-11-18 — S8 terminée : tests rouges (implémentation jetable, 24
   mutations) → implémentation → revalidation : 1 567 unitaires,
   484 intégration. O10, O14, O15, O16 tranchés ; catalogue unique des codes.
+- 2026-11-19 — S9 terminée : benchmark de 4 profils (e5-small, e5-base,
+  bge-m3, Qwen3-Embedding-0.6B) → ADR 0013 **Proposed** (conserver e5-base) ;
+  migration blue/green (`StartIndexMigration`, `ActivateSearchIndex`,
+  `drop_index_collection`, `rechunk_version`, `EmbedderProvider`) démontrée
+  aller-retour sur la stack de dev, 0 erreur de recherche. Revalidation :
+  1 708 unitaires, 527 intégration. Incident : l'agent a attendu ~13 h une
+  boucle de surveillance qui ne pouvait aboutir (bge-m3 terminé, ligne de fin
+  hors de la fenêtre lue) ; relancé, mesure refaite au premier plan.
 
 ## Écarts et décisions en cours de route
 
@@ -122,6 +130,9 @@ périmètre.
 - S8 — réouverture d'une purge `FAILED` bornée à 3 (`work_items.reopen_count`, migration `5d2f8c1a7b30`).
 - S8 — `--max-tasks-per-child=50` sur `worker_ingestion` ; effet sur la mémoire non mesuré.
 - S8 — non traité : coût du parcours complet des points sur grand corpus ; purge des work items terminés (Open S0) ; cycles manqués rejoués en rafale après une longue tâche.
+- S9 — ADR 0010 et 0011 (Accepted) : corps inchangé, section de suivi « S9 » ajoutée ; profil définitif proposé par ADR 0013 (Proposed, en attente de validation utilisateur). O1 proposé, O4 tranché (re-parsing depuis le blob), O6 (hybride) reporté avec mesures.
+- S9 — chargeur d'embeddings forcé en float32 (Qwen3 déclaré bfloat16 : 3 672 → 297,5 ms/passage sur CPU) ; `WorkQueue.enqueue(delay=)` ; `KB_INDEX_DROP_DELAY_SECONDS=300` (Proposed) ; codes `CHUNK_BATCH_MISSING`, `INDEX_STILL_LIVE` ; règle `MISSING_FROM_BUILDING_INDEX`.
+- S9 — non traité : abandon d'un index BUILDING ; déchargement de l'ancien modèle (redémarrage de l'API) ; « un seul BUILDING » garanti par verrou, sans index unique ; coût de la preuve de couverture sur grand corpus ; politique d'extraction toujours celle d'e5-base ; « Qwen3 ne tient pas dans la VM » déduit des mesures hôte, non exécuté dans la VM.
 
 ## Corrections en attente
 
@@ -155,7 +166,7 @@ Corrections appliquées (2026-11-18) — 770 unitaires, 285 intégration, mutati
 - I2 — heartbeat de `index_version` non testé. **Fait.**
 - M1 — barrière FOR SHARE / FOR UPDATE et provisionnement concurrent contre PostgreSQL réel. **Fait.**
 - M2 — version `EXTRACTED` sans indexation : code de log identifiable pour S8. **Fait.**
-- M3 — un seul `Embedder` (E5) par worker : un index d'un autre profil échouerait de façon terminale → fournisseur d'`Embedder` par profil à prévoir en **S9**. Reporté.
+- M3 — un seul `Embedder` (E5) par worker : un index d'un autre profil échouerait de façon terminale → fournisseur d'`Embedder` par profil à prévoir en **S9**. **Fait (S9, `EmbedderProvider`).**
 - M4 — I11 par booléen `coverage_complete=True` au provisionnement initial : preuve de couverture réelle en **S9** ; Suivi ADR 0011 corrigé. **Fait.**
 - M5 — FK différée `active_index_id` → `search_indexes`. **Fait.**
 - M6 — surface publique dans 005. **Fait.**

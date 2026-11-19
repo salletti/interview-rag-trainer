@@ -18,20 +18,26 @@ class NoActiveSearchIndexError(Exception):
 
 
 class SearchProfileMismatchError(Exception):
-    """L'index actif a été construit avec un autre profil que celui de
-    l'embedder de la requête : ses vecteurs ne sont pas comparables (ADR 0011
-    §2). Chercher quand même rendrait des résultats faux sans erreur."""
+    """L'index actif a été construit avec un profil dont le processus n'a pas
+    le modèle : encoder la requête avec un autre modèle produirait des
+    vecteurs incomparables (ADR 0011 §2), donc des résultats faux sans erreur.
+    ``query_profile`` : le seul modèle du processus (S5), ``None`` quand le
+    processus choisit le modèle d'après le profil et n'a pas celui-ci (S9)."""
 
     def __init__(
         self,
         index_id: UUID,
         index_profile: EmbeddingProfile,
-        query_profile: EmbeddingProfile,
+        query_profile: EmbeddingProfile | None,
     ) -> None:
+        loaded = (
+            "aucun modèle de ce profil n'est configuré dans ce processus"
+            if query_profile is None
+            else f"requête encodée avec {_describe(query_profile)}"
+        )
         super().__init__(
             f"index actif {index_id} construit avec le profil "
-            f"{_describe(index_profile)}, requête encodée avec "
-            f"{_describe(query_profile)}"
+            f"{_describe(index_profile)}, {loaded}"
         )
         self.index_id = index_id
         self.index_profile = index_profile

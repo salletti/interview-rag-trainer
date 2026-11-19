@@ -2,7 +2,8 @@
 knowledge-base.md §5.2, §5.3, §10).
 
 - ``extract_version`` ``FAILED`` et version encore ``RECEIVED``,
-  ``index_version`` ``FAILED`` et indexation encore ``PENDING`` : le hook
+  ``index_version`` ou ``rechunk_version`` (S9) ``FAILED`` et indexation
+  encore ``PENDING`` : le hook
   d'échec n'a pas abouti (``recover`` à la dernière tentative,
   ``TERMINAL_HOOK_FAILED``). L'échec métier est écrit à sa place, avec le code
   et le message de l'item et ``retryable`` d'après le catalogue des erreurs.
@@ -48,11 +49,15 @@ from knowledge_base.domain.services.reconciliation import (
 from knowledge_base.domain.value_objects.error_catalog import is_known_replayable
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.use_cases.import_steps import EXTRACT_VERSION
-from knowledge_base.use_cases.indexing_steps import INDEX_VERSION, PURGE_DOCUMENT
+from knowledge_base.use_cases.indexing_steps import (
+    INDEX_VERSION,
+    PURGE_DOCUMENT,
+    RECHUNK_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
-WATCHED_KINDS: Final = (EXTRACT_VERSION, INDEX_VERSION, PURGE_DOCUMENT)
+WATCHED_KINDS: Final = (EXTRACT_VERSION, INDEX_VERSION, RECHUNK_VERSION, PURGE_DOCUMENT)
 
 # Écrit l'échec métier dans la transaction de la correction ; faux si l'état
 # ne s'y prête plus.

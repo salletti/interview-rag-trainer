@@ -7,14 +7,16 @@ de S5 (``session_factory, qdrant_client, settings=None, *, embedder=None``),
 qui exposait le type interne ``Embedder`` et laissait chaque appel créer son
 propre modèle : un consommateur composé par ``runtime`` à côté de la route de
 recherche aurait chargé E5 (~1,1 Gio) une seconde fois (revue du commit S5,
-I1). Le modèle appartient désormais aux ressources (``KnowledgeBaseResources.
-embedder``, paresseux) : la route montée par ``register`` et la fabrique le
-partagent. La fabrique ne se connecte à rien et retourne l'implémentation du
-contrat (``adapters/controller/contracts/``), jamais un type interne.
+I1). Le modèle appartient désormais aux ressources : depuis S9, un
+fournisseur de modèles par profil (``KnowledgeBaseResources.embedders``,
+paresseux), qui remplace l'unique ``embedder`` de S5 ; la route montée par
+``register`` et la fabrique le partagent. La fabrique ne se connecte à rien
+et retourne l'implémentation du contrat (``adapters/controller/contracts/``),
+jamais un type interne.
 
 La variante interne ``composition.compose_knowledge_search(session_factory,
-qdrant_client, settings, *, embedder, token_counter)`` sert aux tests qui
-injectent un double d'embedder.
+qdrant_client, settings, *, embedders | embedder, token_counter)`` sert aux
+tests qui injectent un double d'embedder.
 """
 
 from __future__ import annotations
@@ -36,7 +38,10 @@ from knowledge_base.adapters.controller import composition, dependencies
 from knowledge_base.adapters.gateway.embedding import sentence_transformers_embedder
 from knowledge_base.contracts.providers import KnowledgeSearch
 from knowledge_base.contracts.result import KnowledgeQuery, KnowledgeSearchResult
-from knowledge_base.domain.value_objects.embedding_profile import EmbeddingProfile
+from knowledge_base.domain.value_objects.embedding_profile import (
+    MULTILINGUAL_E5_BASE,
+    EmbeddingProfile,
+)
 from runtime.app import create_app
 from runtime.database import create_engine, create_session_factory
 from runtime.vector_store import create_qdrant_client
@@ -147,7 +152,7 @@ async def test_the_search_route_and_the_public_factory_share_one_encoder(
     composed: list[Any] = []
 
     def spy(*args: Any, **kwargs: Any) -> EmptySearch:
-        composed.append(kwargs["embedder"])
+        composed.append(kwargs["embedders"])
         return EmptySearch()
 
     monkeypatch.setattr(dependencies, "compose_knowledge_search", spy)
@@ -163,10 +168,13 @@ async def test_the_search_route_and_the_public_factory_share_one_encoder(
         assert response.status_code == 200
         knowledge_base.build_knowledge_search(app.state.knowledge_base)
 
-        route_embedder, factory_embedder = composed
-        assert route_embedder is factory_embedder
-        assert route_embedder is app.state.knowledge_base.embedder
-        await route_embedder.embed_query("depends")
-        factory_embedder.token_counter.count("depends")
+        route_embedders, factory_embedders = composed
+        assert route_embedders is factory_embedders
+        assert route_embedders is app.state.knowledge_base.embedders
+        route_model = route_embedders.for_profile(MULTILINGUAL_E5_BASE)
+        await route_model.embed_query("depends")
+        factory_embedders.for_profile(MULTILINGUAL_E5_BASE).token_counter.count(
+            "depends"
+        )
 
-    assert len(loads) == 1
+    assert loads == [MULTILINGUAL_E5_BASE]

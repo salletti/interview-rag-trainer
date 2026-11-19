@@ -77,6 +77,7 @@ class SqlAlchemyWorkQueue:
         correlation_id: UUID | None = None,
         *,
         max_attempts: int | None = None,
+        delay: timedelta | None = None,
     ) -> UUID:
         values: dict[str, Any] = {
             "id": uuid.uuid4(),
@@ -88,6 +89,8 @@ class SqlAlchemyWorkQueue:
         }
         if max_attempts is not None:
             values["max_attempts"] = max_attempts
+        if delay is not None:
+            values["available_at"] = func.now() + delay
         inserted: UUID | None = await self._session.scalar(
             pg_insert(work_items)
             .values(values)

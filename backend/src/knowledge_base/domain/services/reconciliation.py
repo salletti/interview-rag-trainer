@@ -35,6 +35,11 @@ class DiscrepancyKind(StrEnum):
     # Version EXTRACTED d'un document actif sans indexation dans un index
     # vivant de sa politique : indexation PENDING et item index_version.
     EXTRACTED_WITHOUT_INDEXATION = "EXTRACTED_WITHOUT_INDEXATION"
+    # Version d'un document actif que le backfill d'un index BUILDING ne
+    # couvre pas (S9) : publiée, ou extraite sous une autre politique que
+    # celle de l'index (la règle précédente ne voit que sa politique).
+    # Indexation PENDING et item index_version ou rechunk_version.
+    MISSING_FROM_BUILDING_INDEX = "MISSING_FROM_BUILDING_INDEX"
     # Points sans propriétaire légitime (document ou version inconnus,
     # version SUPERSEDED ou DISCARDED), ou hors du manifest d'une version
     # vérifiée : supprimés.
@@ -210,6 +215,35 @@ def indexes_missing_indexation(
     return frozenset(live_index_ids) - frozenset(indexed_index_ids)
 
 
+def building_indexes_missing_version(
+    *,
+    document_status: DocumentStatus,
+    version_status: VersionStatus,
+    policy_versions: Collection[str],
+    building_policies: Mapping[UUID, str],
+    indexed_index_ids: Collection[UUID],
+) -> frozenset[UUID]:
+    """Index ``BUILDING`` (identifiant -> politique) sans indexation de la
+    version, que ne couvre pas ``indexes_missing_indexation`` : version
+    ``PUBLISHED`` d'un document actif, quelle que soit la politique ; version
+    ``EXTRACTED`` seulement si l'index est d'une politique dont elle n'a pas de
+    lot. Sans cela, une indexation perdue bloquerait l'activation pour
+    toujours (I11)."""
+    if document_status is not DocumentStatus.ACTIVE:
+        return frozenset()
+    if version_status is VersionStatus.PUBLISHED:
+        candidates = set(building_policies)
+    elif version_status is VersionStatus.EXTRACTED:
+        candidates = {
+            index_id
+            for index_id, policy in building_policies.items()
+            if policy not in policy_versions
+        }
+    else:
+        return frozenset()
+    return frozenset(candidates - set(indexed_index_ids))
+
+
 def is_publishable_completed(
     *,
     document_status: DocumentStatus,
@@ -263,7 +297,10 @@ def decide_failed_item(
         return FailedItemAction.IGNORE
     if kind == "extract_version" and version_status is VersionStatus.RECEIVED:
         return FailedItemAction.FAIL_VERSION
-    if kind == "index_version" and indexation_status is IndexationStatus.PENDING:
+    if (
+        kind in {"index_version", "rechunk_version"}
+        and indexation_status is IndexationStatus.PENDING
+    ):
         return FailedItemAction.FAIL_INDEXATION
     if (
         kind == "purge_document"

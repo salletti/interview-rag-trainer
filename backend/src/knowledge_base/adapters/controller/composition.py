@@ -1,9 +1,11 @@
 """Composition des handlers de Knowledge Base qui ne sont ni des routes ni des
 work items : le provisionnement de l'index initial (S4), appelé au démarrage
-de la stack (``python -m runtime.provision``), la recherche (S5), dont les
-dépendances sont explicites ici (embedder et compteur de tokens injectables
-par les tests) ; la fabrique publique, ``build_knowledge_search(resources)``,
-la compose sur les ressources du contexte ; le nettoyage des blobs orphelins
+de la stack (``python -m runtime.provision``), le démarrage et l'activation
+d'une migration blue/green (S9, ``python -m runtime.index_migration``), la
+recherche (S5), dont les dépendances sont explicites ici (fournisseur de
+modèles, ou embedder et compteur de tokens, injectables par les tests) ; la
+fabrique publique, ``build_knowledge_search(resources)``, la compose sur les
+ressources du contexte ; le nettoyage des blobs orphelins
 (S7) ; la réconciliation, la consultation et le rejeu des échecs (S8), que
 le work item ``reconcile_knowledge_base`` et les routes ``/failures``
 appellent."""
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
@@ -44,11 +46,15 @@ from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
 from knowledge_base.domain.providers.embedder import Embedder
+from knowledge_base.domain.providers.embedder_provider import EmbedderProvider
 from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.domain.providers.reconciliation_store import CompletedIndexation
 from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.activate_search_index.activate_search_index_handler import (  # noqa: E501
+    ActivateSearchIndexHandler,
+)
 from knowledge_base.use_cases.clean_blob_orphans.clean_blob_orphans_handler import (
     CleanBlobOrphansHandler,
 )
@@ -88,6 +94,9 @@ from knowledge_base.use_cases.retry_ingestion.retry_ingestion_handler import (
 from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
+from knowledge_base.use_cases.start_index_migration.start_index_migration_handler import (  # noqa: E501
+    StartIndexMigrationHandler,
+)
 
 # Points lus par page lors du parcours d'un index (Qdrant ``scroll``).
 SCAN_BATCH_SIZE: Final = 256
@@ -108,19 +117,53 @@ def build_provision_search_index_handler(
     )
 
 
+def build_start_index_migration_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+    vector_index: VectorIndex,
+    *,
+    id_factory: Callable[[], UUID] | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> StartIndexMigrationHandler:
+    return StartIndexMigrationHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory),
+        vector_index=vector_index,
+        id_factory=id_factory or uuid4,
+        clock=clock or utc_now,
+    )
+
+
+def build_activate_search_index_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    clock: Callable[[], datetime] | None = None,
+    drop_delay: timedelta = timedelta(0),
+) -> ActivateSearchIndexHandler:
+    """``drop_delay`` : délai avant la suppression de l'ancienne collection ;
+    la surface publique passe ``settings.index_drop_delay``, les tests le
+    laissent nul pour exécuter l'item tout de suite."""
+    return ActivateSearchIndexHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory),
+        clock=clock or utc_now,
+        drop_delay=drop_delay,
+    )
+
+
 def compose_knowledge_search(
     session_factory: async_sessionmaker[AsyncSession],
     qdrant_client: AsyncQdrantClient,
     settings: KnowledgeBaseSettings,
     *,
-    embedder: Embedder,
-    token_counter: TokenCounter,
+    embedders: EmbedderProvider | None = None,
+    embedder: Embedder | None = None,
+    token_counter: TokenCounter | None = None,
 ) -> KnowledgeSearchAdapter:
     """Implémentation du contrat ``KnowledgeSearch`` (knowledge-base.md §14) ;
-    ne se connecte à rien. ``token_counter`` compte la question dans le budget
-    d'un passage : en production, celui de ``embedder``."""
+    ne se connecte à rien. ``embedders`` (S9, production) : le modèle du
+    profil de l'index actif, et son tokenizer pour le budget d'un passage ;
+    ou bien ``embedder`` et ``token_counter`` (un seul profil, S5, tests)."""
     return KnowledgeSearchAdapter(
         SearchKnowledgeHandler(
+            embedders=embedders,
             embedder=embedder,
             chunk_searcher=QdrantVectorIndex(qdrant_client),
             published_units=SqlAlchemyPublishedUnitReader(session_factory),

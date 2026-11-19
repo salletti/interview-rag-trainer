@@ -58,6 +58,20 @@ class ExtractedVersion:
 
 
 @dataclass(frozen=True)
+class IndexableVersionFacts:
+    """Version ``PUBLISHED`` ou ``EXTRACTED`` d'un document actif (S9) :
+    politiques de ses lots et index où elle a une indexation (quel qu'en soit
+    l'état)."""
+
+    document_id: UUID
+    version_id: UUID
+    document_status: DocumentStatus
+    version_status: VersionStatus
+    policy_versions: frozenset[str]
+    indexed_index_ids: frozenset[UUID]
+
+
+@dataclass(frozen=True)
 class CompletedIndexation:
     """Indexation ``COMPLETED`` d'une version ``EXTRACTED`` ou ``PUBLISHED``
     d'un document actif, dans un index vivant : candidate à la revérification
@@ -98,6 +112,11 @@ class ReconciliationStore(Protocol):
     async def publication_candidates(self) -> Sequence[PublicationCandidate]: ...
 
     async def extracted_versions(self) -> Sequence[ExtractedVersion]: ...
+
+    async def indexable_versions(self) -> Sequence[IndexableVersionFacts]:
+        """Versions ``PUBLISHED`` ou ``EXTRACTED`` des documents actifs (S9 :
+        couverture d'un index ``BUILDING``)."""
+        ...
 
     async def completed_indexations(self) -> Sequence[CompletedIndexation]:
         """Dans un ordre stable (version, index) : l'échantillonnage tire

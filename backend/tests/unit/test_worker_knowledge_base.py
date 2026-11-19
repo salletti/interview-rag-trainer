@@ -66,6 +66,9 @@ def test_a_production_child_serves_extract_version_on_the_ingestion_queue(
                 "sync_visibility",
                 "purge_document",
                 "reconcile_knowledge_base",
+                # S9 : migration blue/green d'index.
+                "rechunk_version",
+                "drop_index_collection",
             }
         )
     }
