@@ -14,6 +14,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from knowledge_base.adapters.controller.composition import (
+    build_abandon_index_migration_handler,
     build_activate_search_index_handler,
     build_list_failures_handler,
     build_provision_search_index_handler,
@@ -84,6 +85,9 @@ from knowledge_base.frameworks.configuration.embedding_targets import (
     migration_target,
 )
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.abandon_index_migration.abandon_index_migration_command import (  # noqa: E501
+    AbandonIndexMigration,
+)
 from knowledge_base.use_cases.activate_search_index.activate_search_index_command import (  # noqa: E501
     ActivateSearchIndex,
 )
@@ -108,6 +112,7 @@ __all__ = [
     "KnowledgeBaseSettings",
     "KnowledgeBaseWorkerResources",
     "WorkHandler",
+    "abandon_index_migration",
     "activate_search_index",
     "build_knowledge_search",
     "build_work_handlers",
@@ -306,6 +311,22 @@ async def activate_search_index(
         session_factory, drop_delay=settings.index_drop_delay
     )
     await handler.handle(ActivateSearchIndex(index_id=index_id))
+
+
+async def abandon_index_migration(
+    session_factory: async_sessionmaker[AsyncSession],
+    index_id: UUID,
+    settings: KnowledgeBaseSettings | None = None,
+) -> None:
+    """Abandonne la migration vers l'index ``BUILDING`` ``index_id`` : index
+    ``RETIRED``, son travail d'indexation annulé, sa collection supprimée
+    après ``KB_INDEX_DROP_DELAY_SECONDS``. L'index actif n'est pas touché ;
+    une autre migration peut ensuite démarrer."""
+    settings = settings or KnowledgeBaseSettings()
+    handler = build_abandon_index_migration_handler(
+        session_factory, drop_delay=settings.index_drop_delay
+    )
+    await handler.handle(AbandonIndexMigration(index_id=index_id))
 
 
 def register_worker(

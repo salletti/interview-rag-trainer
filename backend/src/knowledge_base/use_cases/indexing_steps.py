@@ -4,7 +4,8 @@ dédoublonnage et payload, au même endroit pour le producteur (use case) et le
 consommateur (handler) ;
 leur replanification sous une génération suivante (S8, ``reschedule_*``) ; et
 l'annulation du travail d'indexation d'une version abandonnée ou d'un
-document retiré (S7 ; I6, §5.3, §8 point 1), générations comprises.
+document retiré (S7 ; I6, §5.3, §8 point 1), ou d'un index dont la migration
+est abandonnée (revue S9), générations comprises.
 """
 
 from __future__ import annotations
@@ -141,11 +142,19 @@ async def reschedule_visibility_sync(
 ) -> None:
     """Synchronisation à refaire sans nouvelle révision (S8 : points d'une
     version publiée réécrits invisibles par une réindexation ou une tentative
-    zombie) : génération suivante de la clé de la révision courante."""
+    zombie) : génération suivante de la clé de la révision courante.
+
+    Un item ``PENDING`` est réutilisé (il lira l'état après les points déjà
+    écrits), jamais un item ``RUNNING`` (revue S9) : il a pu converger
+    l'index avant l'écriture des points et les laisser invisibles, sans que
+    l'activation d'un index ``BUILDING`` puisse le voir. Deux
+    synchronisations du même document peuvent alors se chevaucher : elles
+    sont idempotentes et convergent vers le même état."""
     await work_queue.enqueue_again(
         SYNC_VISIBILITY,
         sync_visibility_key(document_id, visibility_revision),
         _sync_payload(document_id, visibility_revision),
+        reuse_running=False,
     )
 
 
@@ -170,6 +179,16 @@ async def reschedule_purge(work_queue: WorkQueue, document_id: UUID) -> None:
         purge_document_key(document_id),
         {"document_id": str(document_id)},
     )
+
+
+async def cancel_index_work(
+    work_queue: WorkQueue, version_id: UUID, index_id: UUID
+) -> None:
+    """Annule (fencing) les items ``index_version`` et ``rechunk_version``
+    d'une version dans un index, générations comprises (abandon d'une
+    migration, revue S9)."""
+    await work_queue.cancel(index_version_key(version_id, index_id))
+    await work_queue.cancel(rechunk_version_key(version_id, index_id))
 
 
 async def cancel_indexing(

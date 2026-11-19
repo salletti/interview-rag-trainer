@@ -2,8 +2,9 @@
 1 de l'orchestrateur : pilotage par commande, pas de route HTTP).
 
 Elle ne fait qu'analyser ses arguments et appeler la surface publique de
-Knowledge Base (``start_index_migration``, ``activate_search_index``) : la
-migration elle-même est vérifiée par les tests du contexte.
+Knowledge Base (``start_index_migration``, ``activate_search_index``,
+``abandon_index_migration``, revue S9) : la migration elle-même est vérifiée
+par les tests du contexte.
 """
 
 from __future__ import annotations
@@ -61,5 +62,27 @@ def test_activate_calls_the_public_surface(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(knowledge_base, "activate_search_index", activate)
 
     index_migration.main(["activate", str(INDEX)])
+
+    assert calls == [INDEX]
+
+
+def test_abandon_needs_an_index_identifier() -> None:
+    with pytest.raises(SystemExit):
+        index_migration.parser().parse_args(["abandon", "pas-un-uuid"])
+
+    parsed = index_migration.parser().parse_args(["abandon", str(INDEX)])
+    assert parsed.action == "abandon"
+    assert parsed.index_id == INDEX
+
+
+def test_abandon_calls_the_public_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[UUID] = []
+
+    async def abandon(_sessions: Any, index_id: UUID) -> None:
+        calls.append(index_id)
+
+    monkeypatch.setattr(knowledge_base, "abandon_index_migration", abandon)
+
+    index_migration.main(["abandon", str(INDEX)])
 
     assert calls == [INDEX]

@@ -63,7 +63,7 @@ Défauts **Proposed** de [S0 §7 et §8.4](../conception/bounded-contexts/knowle
 | `KB_RECONCILE_MAX_PURGE_REOPENINGS` | 3 | réouvertures automatiques d'une purge `FAILED` ; au-delà, rejeu explicite |
 | `KB_IDEMPOTENCY_KEY_TTL_SECONDS` | 86400 | durée de vie d'une clé d'idempotence (O15) |
 | `KB_MAX_DOCUMENT_TOKENS` | 1000000 | borne du texte extrait d'un document, tous formats (O16) ; au-delà, `DOCUMENT_TOO_LARGE` |
-| `KB_INDEX_DROP_DELAY_SECONDS` | 300 | délai entre l'activation d'un nouvel index et la suppression de la collection Qdrant de l'ancien (S9) ; doit dépasser la durée d'une recherche |
+| `KB_INDEX_DROP_DELAY_SECONDS` | 300 | délai entre l'activation d'un nouvel index et la suppression de la collection Qdrant de l'ancien (S9), ou entre l'abandon d'une migration et la suppression de la collection de l'index abandonné (revue S9) ; doit dépasser la durée d'une recherche |
 | `KB_INGESTION_MAX_TASKS_PER_CHILD` (Compose seulement) | 50 | tâches avant remplacement du processus enfant de `worker_ingestion` (`--max-tasks-per-child`) : borne la mémoire après des conversions PDF successives ; les cycles de réconciliation comptent (à vide, un enfant toutes les ~4 h ; modèles rechargés à leur premier usage seulement) |
 | `HF_HOME` (non `KB_`) | `/var/cache/interview-rag-trainer/models/huggingface` | cache du Hub pour les poids de Docling PDF (S6) ; fixé par `compose.yaml` dans le volume `models_cache` (non surchargeable par `.env`) |
 | `HF_HUB_DISABLE_XET` (non `KB_`) | 1 dans Compose | premier téléchargement en HTTPS simple : le protocole *xet* du Hub est resté bloqué à 0 octet dans notre environnement (2026-11-18) ; `0` pour le réactiver |
@@ -228,7 +228,7 @@ Changer de profil d'embeddings sans interrompre la recherche (blue/green ; cible
      sh -c 'cp -a /seed /var/cache/interview-rag-trainer/models/models--intfloat--multilingual-e5-small'
    ```
 
-2. **Démarrer** : nouvel index `BUILDING`, sa collection, backfill planifié (rejouable : la même cible rend le même index ; une autre cible est refusée tant qu'une migration est en cours).
+2. **Démarrer** : nouvel index `BUILDING`, sa collection, backfill planifié (rejouable : la même cible rend le même index ; une autre cible est refusée tant qu'une migration est en cours, `MigrationInProgressError`, qui nomme l'index en construction et les deux issues, `activate` ou `abandon`).
 
    ```bash
    make kb-migration-start target=multilingual-e5-small
@@ -258,9 +258,21 @@ Changer de profil d'embeddings sans interrompre la recherche (blue/green ; cible
    #     collection supprimée dans 0:05:00
    ```
 
-   Refus sans effet, à relancer plus tard : `IncompleteCoverageError` (une version publiée n'est pas encore `COMPLETED` dans le nouvel index), `SynchronizationPendingError` (synchronisation de visibilité en attente). La première recherche après la bascule charge le nouveau modèle dans l'API (~2 à 3 s mesurées) ; l'API garde les deux modèles jusqu'à son redémarrage (1 277 → 1 666 Mio mesurés).
+   Refus sans effet, à relancer plus tard : `IncompleteCoverageError` (une version publiée n'est pas encore `COMPLETED` dans le nouvel index), `SynchronizationPendingError` (synchronisation de visibilité en attente), `SynchronizationFailedError` (dernière synchronisation de visibilité d'un document publié en échec : la rejouer par `/failures`, ou attendre que la réconciliation la replanifie, puis relancer l'activation). La première recherche après la bascule charge le nouveau modèle dans l'API (~2 à 3 s mesurées) ; l'API garde les deux modèles jusqu'à son redémarrage (1 277 → 1 666 Mio mesurés).
 
 5. **Retrait** : la collection de l'ancien index est supprimée par `drop_index_collection` après `KB_INDEX_DROP_DELAY_SECONDS` (300 s) ; `curl -s localhost:6333/collections` ne montre plus que le nouvel index.
+
+**Abandonner une migration** (bloquée, ou vers une cible non voulue) : seule issue d'un index `BUILDING` qu'on ne veut ou ne peut pas activer, et préalable à toute autre migration (un seul index `BUILDING` par corpus).
+
+```bash
+make kb-migration-abandon index=<index_id>
+# ... msg=migration vers l'index <index_id> abandonnée : index RETIRED, <n> indexation(s) annulée(s)
+#     sur <total>, collection supprimée dans 0:05:00
+```
+
+Dans une seule transaction, sous le verrou du corpus : l'index passe `RETIRED`, ses indexations `PENDING` ou `FAILED` passent `CANCELLED` (les `COMPLETED` restent), ses items `index_version` et `rechunk_version` en attente ou en cours sont annulés (une tentative en cours ne peut plus finaliser), et `drop_index_collection` est planifié après `KB_INDEX_DROP_DELAY_SECONDS`. Les `sync_visibility` ne visent aucun index et restent. L'index actif et la recherche ne sont pas touchés. Refus sans effet : index inconnu, index `ACTIVE` ou déjà `RETIRED`. Les échecs `FAILED` de l'index abandonné restent listés dans `/failures` ; leur rejeu est refusé (`OBSOLETE_WORK`).
+
+Collection orpheline possible : un démarrage refusé parce qu'une migration concurrente vient d'être validée (ou un échec du commit après la création de la collection) laisse une collection `kb_index_<hex>` vide qu'aucun index ne référence (`<hex>` : l'identifiant de l'index sans tirets) ; elle est inoffensive et se supprime à la main (`curl -X DELETE localhost:6333/collections/kb_index_<hex>`) après avoir vérifié que cet identifiant n'est pas dans `knowledge_base.search_indexes` ([§16, O17](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts)).
 
 Pendant les deux migrations démontrées (e5-base → e5-small → e5-base), 6 190 et 6 467 recherches REST en boucle, 0 erreur, une seule bascule chacune. Retour au profil recommandé : `make kb-migration-start target=multilingual-e5-base`, puis l'activation du nouvel index (lots d'origine réutilisés, aucun rechunking ; 41 s).
 

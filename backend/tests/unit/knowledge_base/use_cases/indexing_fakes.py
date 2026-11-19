@@ -65,15 +65,20 @@ from types import TracebackType
 from typing import Self
 from uuid import UUID
 
+from knowledge_base.adapters.gateway.embedding.embedder_registry import (
+    EmbedderRegistry,
+)
 from knowledge_base.domain.entities.indexation import Indexation
 from knowledge_base.domain.entities.knowledge_corpus import KnowledgeCorpus
 from knowledge_base.domain.entities.knowledge_document import (
     KnowledgeDocument,
     VersionStatus,
 )
+from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.knowledge_corpus_repository import (
     CorpusAlreadyExistsError,
 )
+from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.services.point_id import point_id
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.document_kind import DocumentKind
@@ -188,6 +193,41 @@ class HashEmbedder:
         self.guard("embed_query")
         self.query_calls.append(text)
         return hash_vector(self.profile.query_prefix + text, self.profile.dimension)
+
+
+class _WithTokenCounter:
+    """Un ``Embedder`` et un compteur de tokens réunis en
+    ``TokenCountingEmbedder`` ; les appels passent à l'``Embedder`` (ses
+    enregistrements et son garde-fou restent lisibles par le test)."""
+
+    def __init__(self, embedder: Embedder, token_counter: TokenCounter) -> None:
+        self._embedder = embedder
+        self._token_counter = token_counter
+
+    @property
+    def profile(self) -> EmbeddingProfile:
+        return self._embedder.profile
+
+    @property
+    def token_counter(self) -> TokenCounter:
+        return self._token_counter
+
+    async def embed_passages(self, texts: Sequence[str]) -> list[list[float]]:
+        return await self._embedder.embed_passages(texts)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return await self._embedder.embed_query(text)
+
+
+def single_profile(
+    embedder: Embedder, token_counter: TokenCounter = COUNTER
+) -> EmbedderRegistry:
+    """Fournisseur d'un seul profil, celui d'``embedder`` : la composition
+    « un seul modèle » de S4 et S5 sous le contrat unique de S9
+    (``embedders=``, revue S9). Tout index d'un autre profil est refusé
+    (``CollectionMismatchError``, ``SearchProfileMismatchError``)."""
+    model = _WithTokenCounter(embedder, token_counter)
+    return EmbedderRegistry({embedder.profile: lambda: model})
 
 
 class WrongDimensionEmbedder(HashEmbedder):
@@ -324,6 +364,9 @@ class IndexingState:
     # S9 : documents dont une synchronisation de visibilité est en attente,
     # rendus par ``documents_awaiting_visibility`` des doubles de S9.
     awaiting_visibility: frozenset[UUID] = frozenset()
+    # Revue S9 : documents dont la dernière synchronisation est FAILED, rendus
+    # par ``documents_with_failed_visibility``.
+    failed_visibility: frozenset[UUID] = frozenset()
 
 
 @dataclass
@@ -621,7 +664,7 @@ def make_indexing_rig(
         ),
         complete=CompleteIndexationHandler(
             unit_of_work=factory,
-            embedder=embedder,
+            embedders=single_profile(embedder),
             vector_index=vector,
             publisher=publish,
             clock=lambda: INDEXED_AT,

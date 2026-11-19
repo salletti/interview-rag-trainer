@@ -35,8 +35,8 @@ Ports et types NOUVEAUX figés par ces doubles (S5 ; knowledge-base.md §12, §1
   blocks_token_count: int, chunks: tuple[UnitChunk, ...], citation:
   Citation)`` ; ``text`` = blocs rendus de l'unité SANS la question (colonne
   ``knowledge_units.text``) et ``blocks_token_count`` leur taille (la question
-  est comptée par le domaine, avec le ``token_counter`` du handler, ici
-  ``COUNTER``, un mot = un token) ; ``chunks`` dans l'ordre de rang ; ``citation`` =
+  est comptée par le domaine, avec le ``token_counter`` du modèle du profil,
+  ici ``COUNTER``, un mot = un token) ; ``chunks`` dans l'ordre de rang ; ``citation`` =
   citation du domaine (``section_path`` et pages de l'UNITÉ). ``UnitChunk(
   chunk_id, ordinal_in_unit: int, text: str, token_count: int)`` où ``text`` est
   le ``contextual_text`` du chunk (en-tête + contenu).
@@ -46,10 +46,12 @@ Cas d'usage (``knowledge_base.use_cases.search_knowledge``) :
 - ``search_knowledge_command.SearchKnowledge(text, limit=5, language=None,
   topics=(), kinds=(), document_ids=())`` ; ``text`` vide ou blanc et
   ``limit < 1`` lèvent ``ValueError`` à la construction.
-- ``search_knowledge_handler.SearchKnowledgeHandler(*, embedder,
-  chunk_searcher, published_units, active_indexes, token_counter,
-  max_passage_tokens, oversampling_factor=2, complement_passes=1)`` ; ``await
-  handle(command) -> SearchKnowledgeResult``.
+- ``search_knowledge_handler.SearchKnowledgeHandler(*, embedders,
+  chunk_searcher, published_units, active_indexes, max_passage_tokens,
+  oversampling_factor=2, complement_passes=1)`` ; ``await handle(command) ->
+  SearchKnowledgeResult``. Depuis la revue S9, ``embedders`` est la seule
+  forme : ici un fournisseur d'un seul profil (``single_profile``), qui tient
+  le rôle de l'``embedder`` et du ``token_counter`` de S5.
 - ``search_knowledge_result.SearchKnowledgeResult(passages: tuple[FoundPassage,
   ...], complete: bool, index_id: UUID)`` et ``FoundPassage(unit_id, unit_type,
   question, text, truncated, matched_chunk_ids, score, citation)`` : les champs
@@ -80,7 +82,10 @@ from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
 from tests.unit.knowledge_base.domain.services.support import COUNTER, policy
-from tests.unit.knowledge_base.use_cases.indexing_fakes import PROFILE
+from tests.unit.knowledge_base.use_cases.indexing_fakes import (
+    PROFILE,
+    single_profile,
+)
 
 INDEX_ID = UUID(int=9_001)
 DOCUMENT_ID = UUID(int=100)
@@ -286,13 +291,12 @@ def make_rig(
     searcher = FakeChunkSearcher(ranking)
     units = FakePublishedUnits({u.unit_id: u for u in published})
     handler = SearchKnowledgeHandler(
-        embedder=embedder,
+        embedders=single_profile(embedder),
         chunk_searcher=searcher,
         published_units=units,
         active_indexes=FakeActiveIndexes(
             (index or active_index()) if with_index else None
         ),
-        token_counter=COUNTER,
         max_passage_tokens=max_passage_tokens,
         oversampling_factor=oversampling_factor,
         complement_passes=complement_passes,

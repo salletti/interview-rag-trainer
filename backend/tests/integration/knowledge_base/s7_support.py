@@ -79,7 +79,10 @@ from tests.integration.knowledge_base.indexing_support import (
 )
 from tests.integration.knowledge_base.support import kb_settings
 from tests.unit.knowledge_base.domain.services.support import COUNTER
-from tests.unit.knowledge_base.use_cases.indexing_fakes import HashEmbedder
+from tests.unit.knowledge_base.use_cases.indexing_fakes import (
+    HashEmbedder,
+    single_profile,
+)
 
 PREFIX = "/api/v1/knowledge-base"
 PYDANTIC_SHEET = QA_SHEET.replace(b"FastAPI", b"Pydantic")
@@ -529,7 +532,6 @@ async def open_s7_rig(
             session_factory,
             indexing.qdrant,
             kb_settings(),
-            embedder=embedder,
-            token_counter=COUNTER,
+            embedders=single_profile(embedder, COUNTER),
         )
         yield S7Rig(indexing, index_id, search)

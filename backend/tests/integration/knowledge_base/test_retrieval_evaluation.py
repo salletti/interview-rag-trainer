@@ -74,6 +74,7 @@ from tests.integration.knowledge_base.retrieval_support import (
 )
 from tests.integration.knowledge_base.search_support import models_cache
 from tests.integration.knowledge_base.support import kb_settings
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 
 pytestmark = [
     pytest.mark.integration,
@@ -273,8 +274,7 @@ async def evaluation(
                 session_factory,
                 rig.qdrant,
                 kb_settings(),
-                embedder=embedder,
-                token_counter=embedder.token_counter,
+                embedders=single_profile(embedder, embedder.token_counter),
             )
             outcomes = await search_all(search, reference)
             evaluation = Evaluation(reference, outcomes, imported, rig, index_id)

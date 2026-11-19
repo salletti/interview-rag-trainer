@@ -217,20 +217,18 @@ def indexes_missing_indexation(
 
 def building_indexes_missing_version(
     *,
-    document_status: DocumentStatus,
     version_status: VersionStatus,
     policy_versions: Collection[str],
     building_policies: Mapping[UUID, str],
     indexed_index_ids: Collection[UUID],
 ) -> frozenset[UUID]:
-    """Index ``BUILDING`` (identifiant -> politique) sans indexation de la
-    version, que ne couvre pas ``indexes_missing_indexation`` : version
-    ``PUBLISHED`` d'un document actif, quelle que soit la politique ; version
-    ``EXTRACTED`` seulement si l'index est d'une politique dont elle n'a pas de
-    lot. Sans cela, une indexation perdue bloquerait l'activation pour
-    toujours (I11)."""
-    if document_status is not DocumentStatus.ACTIVE:
-        return frozenset()
+    """Index ``BUILDING`` (identifiant -> politique) sans indexation d'une
+    version d'un document ACTIF (les versions lues sont celles du prédicat
+    « version indexable », qui écarte les documents retirés), que ne couvre
+    pas ``indexes_missing_indexation`` : version ``PUBLISHED``, quelle que
+    soit la politique ; version ``EXTRACTED`` seulement si l'index est d'une
+    politique dont elle n'a pas de lot. Sans cela, une indexation perdue
+    bloquerait l'activation pour toujours (I11)."""
     if version_status is VersionStatus.PUBLISHED:
         candidates = set(building_policies)
     elif version_status is VersionStatus.EXTRACTED:

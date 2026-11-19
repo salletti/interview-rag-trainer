@@ -69,6 +69,7 @@ from tests.integration.knowledge_base.test_retrieval_evaluation_office import (
     build_office_corpus,
 )
 from tests.office_support import OFFICE
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 
 pytestmark = [
     pytest.mark.integration,
@@ -191,8 +192,7 @@ async def long_units(
                     session_factory,
                     rig.qdrant,
                     kb_settings(max_passage_tokens=budget),
-                    embedder=embedder,
-                    token_counter=counter,
+                    embedders=single_profile(embedder, counter),
                 )
                 outcomes = await search_all(search, reference)
                 runs[budget] = BudgetRun(

@@ -12,7 +12,9 @@ API figée (``knowledge_base.domain.entities.knowledge_corpus``) :
   ``version`` 0) ; ``KnowledgeCorpus.restore(corpus_id, active_index_id,
   version, indexes)`` pour la persistance (sans contrôle).
 - ``provision_index(*, index_id, profile, chunking_policy, now) -> SearchIndex``
-  : crée un index ``BUILDING`` ; ``DuplicateIndexError`` si l'identifiant existe.
+  : crée un index ``BUILDING`` ; ``DuplicateIndexError`` si l'identifiant existe,
+  ``IndexAlreadyBuildingError`` si un autre index est déjà ``BUILDING`` (un seul
+  index en construction par corpus, revue S9).
 - ``activate_index(index_id, *, now, coverage_complete: bool)`` : ``BUILDING`` ->
   ``ACTIVE`` ; l'ancien actif devient ``RETIRED`` (I10). ``coverage_complete``
   est le résultat du contrôle I11 que le use case calcule (S9) ; faux ->
@@ -44,6 +46,7 @@ from knowledge_base.domain.entities.knowledge_corpus import (
 from knowledge_base.domain.exceptions.corpus_errors import (
     DuplicateIndexError,
     IncompleteCoverageError,
+    IndexAlreadyBuildingError,
     InvalidIndexTransitionError,
     KnowledgeCorpusError,
     UnknownIndexError,
@@ -123,6 +126,45 @@ def test_provisioning_an_existing_index_id_is_refused_without_effect() -> None:
 
     assert len(corpus.indexes) == 1
     assert corpus.get_index(FIRST).created_at == T0
+
+
+def test_a_second_building_index_is_refused_without_effect() -> None:
+    corpus = corpus_with_active(FIRST)
+    provision(corpus, SECOND, now=T1)
+
+    with pytest.raises(IndexAlreadyBuildingError) as refused:
+        provision(corpus, THIRD, now=T2)
+
+    assert refused.value.index_id == SECOND
+    assert statuses(corpus) == {
+        FIRST: IndexStatus.ACTIVE,
+        SECOND: IndexStatus.BUILDING,
+    }
+    assert corpus.building_index() == corpus.get_index(SECOND)
+
+
+def test_a_new_index_can_be_built_once_the_building_one_is_abandoned() -> None:
+    corpus = corpus_with_active(FIRST)
+    provision(corpus, SECOND, now=T1)
+    corpus.retire_index(SECOND, now=T1)
+
+    provision(corpus, THIRD, now=T2)
+
+    assert corpus.building_index() == corpus.get_index(THIRD)
+
+
+def test_a_new_index_can_be_built_once_the_building_one_is_activated() -> None:
+    corpus = corpus_with_active(FIRST)
+    provision(corpus, SECOND, now=T1)
+    corpus.activate_index(SECOND, now=T1, coverage_complete=True)
+
+    provision(corpus, THIRD, now=T2)
+
+    assert corpus.building_index() == corpus.get_index(THIRD)
+
+
+def test_a_corpus_without_construction_has_no_building_index() -> None:
+    assert corpus_with_active(FIRST).building_index() is None
 
 
 # --- activation (I10, I11) ------------------------------------------------------------
@@ -240,9 +282,10 @@ def test_retiring_an_unknown_index_is_refused() -> None:
 
 def test_live_indexes_are_the_active_and_building_ones_in_creation_order() -> None:
     corpus = corpus_with_active(FIRST)
-    provision(corpus, SECOND, now=T1)
-    provision(corpus, THIRD, now=T2)
-    corpus.retire_index(THIRD, now=T2)
+    # Un seul index BUILDING à la fois : THIRD est abandonné avant SECOND.
+    provision(corpus, THIRD, now=T1)
+    corpus.retire_index(THIRD, now=T1)
+    provision(corpus, SECOND, now=T2)
 
     assert [i.index_id for i in corpus.live_indexes()] == [FIRST, SECOND]
 

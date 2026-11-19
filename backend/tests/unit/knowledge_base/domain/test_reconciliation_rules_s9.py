@@ -6,7 +6,9 @@ versions ``EXTRACTED`` de S8, qui reste inchangée).
   backfill a perdu une version (ligne d'indexation absente) la retrouve ;
   sans cela, l'activation resterait refusée pour toujours (I11). Une version
   ``EXTRACTED`` dont le lot a la politique de l'index relève de la règle de
-  S8, jamais des deux.
+  S8, jamais des deux. Les versions d'un document retiré n'y arrivent
+  jamais : le prédicat SQL « version indexable », partagé avec la migration,
+  les écarte (vérifié en intégration, ``test_s9_indexable_versions``).
 - ``decide_failed_item`` : un ``rechunk_version`` ``FAILED`` dont le hook n'a
   pas abouti (O14) fait passer l'indexation ``FAILED``, comme
   ``index_version``.
@@ -37,12 +39,10 @@ BUILDING = {SAME: "chunking-1+tok", SHORT: "chunking-2+tok"}
 def missing(
     version_status: VersionStatus,
     *,
-    document_status: DocumentStatus = DocumentStatus.ACTIVE,
     policies: frozenset[str] = frozenset({"chunking-1+tok"}),
     indexed: frozenset[UUID] = frozenset(),
 ) -> frozenset[UUID]:
     return building_indexes_missing_version(
-        document_status=document_status,
         version_status=version_status,
         policy_versions=policies,
         building_policies=BUILDING,
@@ -87,13 +87,6 @@ def test_a_version_that_cannot_be_published_is_never_backfilled(
     assert missing(status) == frozenset()
 
 
-def test_a_withdrawn_document_is_never_backfilled() -> None:
-    assert (
-        missing(VersionStatus.PUBLISHED, document_status=DocumentStatus.WITHDRAWN)
-        == frozenset()
-    )
-
-
 def test_an_existing_indexation_whatever_its_state_is_a_fact() -> None:
     assert missing(VersionStatus.PUBLISHED, indexed=frozenset(BUILDING)) == (
         frozenset()
@@ -103,7 +96,6 @@ def test_an_existing_indexation_whatever_its_state_is_a_fact() -> None:
 def test_without_building_index_nothing_is_missing() -> None:
     assert (
         building_indexes_missing_version(
-            document_status=DocumentStatus.ACTIVE,
             version_status=VersionStatus.PUBLISHED,
             policy_versions=frozenset(),
             building_policies={},

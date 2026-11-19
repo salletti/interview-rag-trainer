@@ -70,6 +70,7 @@ from tests.integration.knowledge_base.test_retrieval_evaluation import (
     threshold_of,
 )
 from tests.office_support import DOCX, PDF
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 
 pytestmark = [
     pytest.mark.integration,
@@ -99,8 +100,7 @@ def make_search(
         session_factory,
         rig.qdrant,
         kb_settings(),
-        embedder=embedder,
-        token_counter=embedder.token_counter,
+        embedders=single_profile(embedder, embedder.token_counter),
     )
 
 

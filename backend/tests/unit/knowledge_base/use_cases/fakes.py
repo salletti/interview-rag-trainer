@@ -160,9 +160,12 @@ class FakeWorkQueue:
         dedup_key: str,
         payload: Mapping[str, str] | None = None,
         correlation_id: UUID | None = None,
+        *,
+        reuse_running: bool = True,
     ) -> UUID:
         family = self._family(dedup_key)
-        if not any(item.status in {"PENDING", "RUNNING"} for item in family):
+        reusable = {"PENDING", "RUNNING"} if reuse_running else {"PENDING"}
+        if not any(item.status in reusable for item in family):
             key = f"{dedup_key}:{len(family) + 1}" if family else dedup_key
             await self.enqueue(kind, key, payload, correlation_id)
         return uuid4()

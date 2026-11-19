@@ -42,6 +42,7 @@ from tests.unit.knowledge_base.use_cases.indexing_fakes import (
     IndexingUnitOfWork,
     make_indexing_rig,
     qa_sheet,
+    single_profile,
 )
 
 SESSION = cast(AsyncSession, object())
@@ -157,7 +158,7 @@ def test_the_production_handler_keeps_the_lease_at_the_configured_interval() -> 
     built = build_index_version_handler(
         cast("async_sessionmaker[AsyncSession]", object()),
         settings,
-        embedder=HashEmbedder(),
+        embedders=single_profile(HashEmbedder()),
         vector_index=make_indexing_rig().vector,
     )
 

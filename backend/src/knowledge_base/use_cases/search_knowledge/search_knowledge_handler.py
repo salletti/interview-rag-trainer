@@ -3,8 +3,7 @@
 1. Index actif (SQL), puis le modèle de son profil (S9 : ``embedders``) ; un
    profil que le processus ne sait pas charger est refusé
    (``SearchProfileMismatchError``) avant tout encodage, jamais remplacé par
-   un autre modèle. Avec ``embedder`` (un seul modèle, S5), l'index actif doit
-   avoir son profil.
+   un autre modèle.
 2. Requête encodée une fois (l'adapter ajoute ``query: `` et sort le calcul
    de la boucle asyncio).
 3. Recherche groupée par unité, ``unit_limit = limit x f`` à la première passe.
@@ -35,9 +34,9 @@ from uuid import UUID
 from knowledge_base.domain.entities.knowledge_corpus import SearchIndex
 from knowledge_base.domain.providers.active_index_reader import ActiveIndexReader
 from knowledge_base.domain.providers.chunk_searcher import ChunkSearcher
-from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.embedder_provider import (
     EmbedderProvider,
+    TokenCountingEmbedder,
     UnknownEmbeddingProfileError,
 )
 from knowledge_base.domain.providers.published_unit_reader import (
@@ -70,12 +69,6 @@ class _Retained:
         return max(hit.score for hit in self.hits)
 
 
-@dataclass(frozen=True)
-class _QueryModel:
-    embedder: Embedder
-    token_counter: TokenCounter
-
-
 class SearchKnowledgeHandler:
     def __init__(
         self,
@@ -83,25 +76,13 @@ class SearchKnowledgeHandler:
         chunk_searcher: ChunkSearcher,
         published_units: PublishedUnitReader,
         active_indexes: ActiveIndexReader,
+        embedders: EmbedderProvider,
         max_passage_tokens: int,
         oversampling_factor: int = 2,
         complement_passes: int = 1,
-        embedders: EmbedderProvider | None = None,
-        embedder: Embedder | None = None,
-        token_counter: TokenCounter | None = None,
     ) -> None:
-        """``embedders`` (S9) : le modèle du profil de l'index actif ; ou bien
-        ``embedder`` et ``token_counter`` (un seul profil, S5)."""
-        legacy = (embedder, token_counter)
-        valid = (
-            all(part is None for part in legacy)
-            if embedders is not None
-            else all(part is not None for part in legacy)
-        )
-        if not valid:
-            raise ValueError(
-                "embedders= seul, ou bien embedder= et token_counter= ensemble"
-            )
+        """``embedders`` : le modèle du profil de l'index actif et son
+        tokenizer."""
         if max_passage_tokens < 1:
             raise ValueError(f"max_passage_tokens < 1 : {max_passage_tokens}")
         if oversampling_factor < 1:
@@ -109,8 +90,6 @@ class SearchKnowledgeHandler:
         if complement_passes < 0:
             raise ValueError(f"complement_passes < 0 : {complement_passes}")
         self._embedders = embedders
-        self._embedder = embedder
-        self._token_counter = token_counter
         self._searcher = chunk_searcher
         self._published = published_units
         self._indexes = active_indexes
@@ -123,7 +102,7 @@ class SearchKnowledgeHandler:
         if index is None:
             raise NoActiveSearchIndexError
         model = self._model_for(index)
-        vector = await model.embedder.embed_query(command.text)
+        vector = await model.embed_query(command.text)
         filters = command.filters
 
         retained: dict[UUID, _Retained] = {}
@@ -158,21 +137,11 @@ class SearchKnowledgeHandler:
             index_id=index.index_id,
         )
 
-    def _model_for(self, index: SearchIndex) -> _QueryModel:
-        if self._embedders is None:
-            assert self._embedder is not None and self._token_counter is not None
-            if index.profile != self._embedder.profile:
-                raise SearchProfileMismatchError(
-                    index.index_id, index.profile, self._embedder.profile
-                )
-            return _QueryModel(self._embedder, self._token_counter)
+    def _model_for(self, index: SearchIndex) -> TokenCountingEmbedder:
         try:
-            found = self._embedders.for_profile(index.profile)
+            return self._embedders.for_profile(index.profile)
         except UnknownEmbeddingProfileError:
-            raise SearchProfileMismatchError(
-                index.index_id, index.profile, None
-            ) from None
-        return _QueryModel(found, found.token_counter)
+            raise SearchProfileMismatchError(index.index_id, index.profile) from None
 
     def _passage(
         self, retained: _Retained, token_counter: TokenCounter

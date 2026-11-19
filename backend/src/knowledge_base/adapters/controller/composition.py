@@ -1,7 +1,8 @@
 """Composition des handlers de Knowledge Base qui ne sont ni des routes ni des
 work items : le provisionnement de l'index initial (S4), appelé au démarrage
-de la stack (``python -m runtime.provision``), le démarrage et l'activation
-d'une migration blue/green (S9, ``python -m runtime.index_migration``), la
+de la stack (``python -m runtime.provision``), le démarrage, l'activation et
+l'abandon d'une migration blue/green (S9, ``python -m
+runtime.index_migration``), la
 recherche (S5), dont les dépendances sont explicites ici (fournisseur de
 modèles, ou embedder et compteur de tokens, injectables par les tests) ; la
 fabrique publique, ``build_knowledge_search(resources)``, la compose sur les
@@ -45,13 +46,14 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import 
 from knowledge_base.adapters.gateway.vector_store.qdrant_vector_index import (
     QdrantVectorIndex,
 )
-from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.embedder_provider import EmbedderProvider
 from knowledge_base.domain.providers.point_inventory import ReconcilableIndex
 from knowledge_base.domain.providers.reconciliation_store import CompletedIndexation
-from knowledge_base.domain.providers.token_counter import TokenCounter
 from knowledge_base.domain.providers.vector_index import VectorIndex
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.abandon_index_migration.abandon_index_migration_handler import (  # noqa: E501
+    AbandonIndexMigrationHandler,
+)
 from knowledge_base.use_cases.activate_search_index.activate_search_index_handler import (  # noqa: E501
     ActivateSearchIndexHandler,
 )
@@ -135,13 +137,28 @@ def build_start_index_migration_handler(
 def build_activate_search_index_handler(
     session_factory: async_sessionmaker[AsyncSession],
     *,
+    drop_delay: timedelta,
     clock: Callable[[], datetime] | None = None,
-    drop_delay: timedelta = timedelta(0),
 ) -> ActivateSearchIndexHandler:
     """``drop_delay`` : délai avant la suppression de l'ancienne collection ;
-    la surface publique passe ``settings.index_drop_delay``, les tests le
-    laissent nul pour exécuter l'item tout de suite."""
+    la surface publique passe ``settings.index_drop_delay``, seuls les tests
+    passent 0 pour exécuter l'item tout de suite."""
     return ActivateSearchIndexHandler(
+        unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory),
+        clock=clock or utc_now,
+        drop_delay=drop_delay,
+    )
+
+
+def build_abandon_index_migration_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    drop_delay: timedelta,
+    clock: Callable[[], datetime] | None = None,
+) -> AbandonIndexMigrationHandler:
+    """``drop_delay`` : délai avant la suppression de la collection de l'index
+    abandonné ; comme pour l'activation."""
+    return AbandonIndexMigrationHandler(
         unit_of_work=lambda: SqlAlchemyUnitOfWork(session_factory),
         clock=clock or utc_now,
         drop_delay=drop_delay,
@@ -153,22 +170,17 @@ def compose_knowledge_search(
     qdrant_client: AsyncQdrantClient,
     settings: KnowledgeBaseSettings,
     *,
-    embedders: EmbedderProvider | None = None,
-    embedder: Embedder | None = None,
-    token_counter: TokenCounter | None = None,
+    embedders: EmbedderProvider,
 ) -> KnowledgeSearchAdapter:
     """Implémentation du contrat ``KnowledgeSearch`` (knowledge-base.md §14) ;
-    ne se connecte à rien. ``embedders`` (S9, production) : le modèle du
-    profil de l'index actif, et son tokenizer pour le budget d'un passage ;
-    ou bien ``embedder`` et ``token_counter`` (un seul profil, S5, tests)."""
+    ne se connecte à rien. ``embedders`` : le modèle du profil de l'index
+    actif, et son tokenizer pour le budget d'un passage."""
     return KnowledgeSearchAdapter(
         SearchKnowledgeHandler(
             embedders=embedders,
-            embedder=embedder,
             chunk_searcher=QdrantVectorIndex(qdrant_client),
             published_units=SqlAlchemyPublishedUnitReader(session_factory),
             active_indexes=SqlAlchemyActiveIndexReader(session_factory),
-            token_counter=token_counter,
             max_passage_tokens=settings.max_passage_tokens,
             oversampling_factor=settings.search_oversampling_factor,
             complement_passes=settings.search_complement_passes,

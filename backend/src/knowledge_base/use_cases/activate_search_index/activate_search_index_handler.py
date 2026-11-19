@@ -15,9 +15,16 @@ bascule ; une publication en cours est attendue, puis vue.
    (I9) ; une version déjà ``COMPLETED`` dans le candidat mais jamais publiée
    l'est par la réconciliation après la bascule (publication perdue, S8).
 3. Aucune synchronisation de visibilité en attente pour un document publié
-   (``SynchronizationPendingError``) : le backfill d'une version déjà publiée
-   écrit ses points invisibles et replanifie sa synchronisation (§11, S8) ;
-   activer avant elle viderait la recherche de ce document.
+   (``SynchronizationPendingError``), ni dernière synchronisation ``FAILED``
+   (``SynchronizationFailedError``, revue S9) : le backfill d'une version
+   déjà publiée écrit ses points invisibles et replanifie sa synchronisation
+   (§11, S8) ; activer avant qu'elle ait réussi viderait la recherche de ce
+   document. La replanification ne réutilise jamais un item ``RUNNING``
+   (``reschedule_visibility_sync``) : un item lancé avant l'écriture des
+   points a pu converger le candidat trop tôt, une nouvelle génération est
+   donc créée et attendue ici. Limite restante : ce contrôle ne voit que
+   les work items ; un point rendu invisible hors de ce chemin (écart
+   Qdrant) n'est rattrapé que par la réconciliation (§9).
 4. Bascule par l'agrégat (I10 : l'ancien index devient ``RETIRED``) et item
    ``drop_index_collection`` de l'ancien index, disponible après
    ``drop_delay`` : une recherche commencée avant le commit peut encore
@@ -49,6 +56,7 @@ from knowledge_base.use_cases.activate_search_index.activate_search_index_comman
     ActivateSearchIndex,
 )
 from knowledge_base.use_cases.activate_search_index.errors import (
+    SynchronizationFailedError,
     SynchronizationPendingError,
 )
 from knowledge_base.use_cases.indexing_steps import schedule_collection_drop
@@ -62,11 +70,11 @@ class ActivateSearchIndexHandler:
         *,
         unit_of_work: Callable[[], MigrationUnitOfWork],
         clock: Callable[[], datetime],
-        drop_delay: timedelta = timedelta(0),
+        drop_delay: timedelta,
     ) -> None:
         """``drop_delay`` : délai avant la suppression de la collection de
         l'ancien index ; la commande d'exploitation passe
-        ``KB_INDEX_DROP_DELAY_SECONDS``."""
+        ``KB_INDEX_DROP_DELAY_SECONDS``, seuls les tests passent 0."""
         if drop_delay < timedelta(0):
             raise ValueError(f"drop_delay négatif : {drop_delay}")
         self._unit_of_work = unit_of_work
@@ -87,10 +95,7 @@ class ActivateSearchIndexHandler:
             previous = corpus.active_index_id
             now = self._clock()
             if not uncovered:
-                awaiting = await uow.versions.documents_awaiting_visibility()
-                pending = awaiting & {v.document_id for v in published}
-                if pending:
-                    raise SynchronizationPendingError(command.index_id, pending)
+                await _ensure_synchronized(uow, published, command.index_id)
             else:
                 logger.info(
                     "activation de l'index %s refusée : %d version(s) publiée(s) "
@@ -129,10 +134,25 @@ def _ensure_building(corpus: KnowledgeCorpus | None, index_id: UUID) -> None:
 async def _uncovered(
     uow: MigrationUnitOfWork, published: list[IndexableVersion], index_id: UUID
 ) -> list[UUID]:
-    """Versions publiées sans ``Indexation COMPLETED`` dans l'index (I11)."""
-    missing: list[UUID] = []
-    for version in published:
-        indexation = await uow.indexations.get(version.version_id, index_id)
-        if indexation is None or indexation.status is not IndexationStatus.COMPLETED:
-            missing.append(version.version_id)
-    return missing
+    """Versions publiées sans ``Indexation COMPLETED`` dans l'index (I11),
+    d'après une seule lecture des indexations de l'index."""
+    statuses = await uow.versions.indexation_statuses(index_id)
+    return [
+        v.version_id
+        for v in published
+        if statuses.get(v.version_id) is not IndexationStatus.COMPLETED
+    ]
+
+
+async def _ensure_synchronized(
+    uow: MigrationUnitOfWork, published: list[IndexableVersion], index_id: UUID
+) -> None:
+    """Refus si la visibilité d'un document publié n'a pas convergé : une
+    synchronisation en attente, ou une dernière synchronisation en échec."""
+    documents = {v.document_id for v in published}
+    pending = await uow.versions.documents_awaiting_visibility() & documents
+    if pending:
+        raise SynchronizationPendingError(index_id, pending)
+    failed = await uow.versions.documents_with_failed_visibility() & documents
+    if failed:
+        raise SynchronizationFailedError(index_id, failed)

@@ -75,6 +75,7 @@ from tests.unit.knowledge_base.use_cases.indexing_fakes import (
     drop_first,
     make_indexing_rig,
     qa_sheet,
+    single_profile,
 )
 
 SESSION = cast(AsyncSession, object())
@@ -356,7 +357,7 @@ def test_the_production_builders_need_no_connection() -> None:
     indexing = build_index_version_handler(
         factory,
         KnowledgeBaseSettings(_env_file=None),
-        embedder=HashEmbedder(),
+        embedders=single_profile(HashEmbedder()),
         vector_index=vector,
     )
     syncing = build_sync_visibility_handler(factory, vector_index=vector)

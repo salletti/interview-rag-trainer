@@ -45,6 +45,7 @@ from tests.integration.knowledge_base.indexing_support import (
 )
 from tests.integration.knowledge_base.support import kb_settings
 from tests.unit.knowledge_base.domain.services.support import COUNTER
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "knowledge_base"
 BACKEND_CACHE = Path(__file__).resolve().parents[3] / ".cache" / "models"
@@ -164,7 +165,6 @@ async def open_search_rig(
             session_factory,
             indexing.qdrant,
             kb_settings().model_copy(update=kb_overrides),
-            embedder=embedder,
-            token_counter=COUNTER,
+            embedders=single_profile(embedder, COUNTER),
         )
         yield SearchRig(indexing, index_id, search)

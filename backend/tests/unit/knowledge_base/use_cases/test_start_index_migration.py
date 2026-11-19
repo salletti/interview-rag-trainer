@@ -29,12 +29,15 @@ du nouvel index) :
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 import pytest
 
 from knowledge_base.domain.entities.indexation import IndexationStatus
 from knowledge_base.domain.entities.knowledge_corpus import IndexStatus
+from knowledge_base.domain.exceptions.corpus_errors import IndexAlreadyBuildingError
+from knowledge_base.domain.value_objects.embedding_profile import EmbeddingProfile
 from tests.unit.knowledge_base.use_cases.extraction_fakes import StoredBatch
 from tests.unit.knowledge_base.use_cases.fakes import NOW
 from tests.unit.knowledge_base.use_cases.indexing_fakes import PROFILE, qa_sheet
@@ -46,6 +49,7 @@ from tests.unit.knowledge_base.use_cases.s9_support import (
     PROFILE_C,
     S9Rig,
     make_s9_rig,
+    start_command,
     start_error,
 )
 
@@ -184,6 +188,43 @@ async def test_a_second_migration_with_another_profile_is_refused_without_effect
     assert rig.vector.calls == calls
     assert rig.statuses() == statuses
     assert rig.corpus().get_index(building).status is IndexStatus.BUILDING
+
+
+class _RivalStartsFirst:
+    """Moteur vectoriel dont la création de collection laisse d'abord une
+    migration rivale (autre profil) démarrer et valider : la course entre la
+    lecture sans effet et la transaction d'écriture."""
+
+    def __init__(self, rig: S9Rig, rival: EmbeddingProfile) -> None:
+        self._rig = rig
+        self._rival = rival
+        self.rival_id: UUID | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._rig.vector, name)
+
+    async def ensure_collection(
+        self, index_id: UUID, profile: EmbeddingProfile
+    ) -> None:
+        if self.rival_id is None:
+            self.rival_id = await self._rig.start(self._rival, POLICY_SAME)
+        await self._rig.vector.ensure_collection(index_id, profile)
+
+
+async def test_a_rival_migration_committed_meanwhile_is_refused_by_the_corpus() -> None:
+    rig = make_s9_rig()
+    active = await rig.provision()
+    vector = _RivalStartsFirst(rig, PROFILE_C)
+
+    with pytest.raises(start_error("MigrationInProgressError")) as refused:
+        await rig.start_handler(vector).handle(start_command(PROFILE_B, POLICY_SAME))
+
+    assert isinstance(refused.value.__cause__, IndexAlreadyBuildingError)
+    assert getattr(refused.value, "building_id", None) == vector.rival_id
+    assert rig.statuses() == {
+        active: IndexStatus.ACTIVE,
+        vector.rival_id: IndexStatus.BUILDING,
+    }
 
 
 async def test_a_migration_to_the_profile_and_policy_already_active_is_refused() -> (

@@ -5,7 +5,9 @@ PostgreSQL, Qdrant et work queue réels.
 - Décision 5 : couverture complète mais synchronisation de visibilité en
   attente (points du nouvel index encore ``visible=false``) → activation
   refusée (``SynchronizationPendingError``) ; activer quand même rendrait une
-  recherche vide juste après la bascule.
+  recherche vide juste après la bascule. Revue S9 (I4) : de même quand la
+  dernière synchronisation d'un document publié est ``FAILED``
+  (``SynchronizationFailedError``) ; le rejeu de l'échec la débloque.
 - Décision 6 : l'item ``drop_index_collection`` n'est disponible qu'après le
   délai ; avant, il n'est pas réclamable et la collection reste.
 - Décision 7 : ``rechunk_version`` et ``drop_index_collection`` sont dans le
@@ -22,6 +24,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import text
@@ -29,12 +32,15 @@ from sqlalchemy import text
 from knowledge_base.adapters.controller.composition import (
     build_reconcile_knowledge_base_handler,
 )
+from knowledge_base.adapters.controller.tasks.registry import WorkHandler
+from knowledge_base.adapters.controller.tasks.retry_policy import TerminalWorkError
 from knowledge_base.adapters.gateway.blob.filesystem_blob_store import (
     FileSystemBlobStore,
 )
 from knowledge_base.domain.exceptions.corpus_errors import IncompleteCoverageError
 from knowledge_base.domain.services.reconciliation import DiscrepancyKind
 from knowledge_base.use_cases.activate_search_index.errors import (
+    SynchronizationFailedError,
     SynchronizationPendingError,
 )
 from knowledge_base.use_cases.reconcile_knowledge_base.reconcile_knowledge_base_command import (  # noqa: E501
@@ -108,6 +114,52 @@ async def test_the_activation_waits_for_the_visibility_sync_of_the_backfill(
     result = await rig.search()
     assert result.index_id == new
     assert documents_of(result) == documents
+
+
+class _FailingSync:
+    """``sync_visibility`` dont chaque tentative échoue de façon terminale
+    (code rejouable du catalogue) ; comme le vrai, sans hook d'échec."""
+
+    def __init__(self, inner: Any) -> None:
+        self.kind = inner.kind
+        self.queue = inner.queue
+        self.max_attempts = inner.max_attempts
+
+    async def execute(self, item: Any, ctx: Any) -> None:
+        raise TerminalWorkError("COLLECTION_MISMATCH", "Qdrant refuse (test)")
+
+
+async def test_a_failed_visibility_sync_blocks_the_activation_until_replayed(
+    rig: S9Rig,
+) -> None:
+    published = await rig.publish(long_sheet("a"))
+    new = await rig.start(PROFILE_B, POLICY_SAME)
+    await rig.drain(index_id=new, kinds={"index_version"})
+    (pending,) = [
+        i
+        for i in (await rig.items("sync_visibility")).values()
+        if i["status"] == "PENDING"
+    ]
+    failing = cast(WorkHandler, _FailingSync(rig.indexing.sync_handler))
+    assert await rig.run_id(pending["id"], failing) == "failed"
+
+    with pytest.raises(SynchronizationFailedError) as refused:
+        await rig.activate(new)
+
+    assert refused.value.document_ids == {published.document_id}
+    assert await rig.statuses() == {rig.index_id: "ACTIVE", new: "BUILDING"}
+    assert await rig.items("drop_index_collection") == {}
+
+    response = await rig.http.post(f"{PREFIX}/failures/{pending['id']}/retry")
+    assert response.status_code == 202, response.text
+    with pytest.raises(SynchronizationPendingError):
+        await rig.activate(new)
+    await rig.drain(kinds={"sync_visibility"})
+    await rig.activate(new)
+
+    result = await rig.search()
+    assert result.index_id == new
+    assert documents_of(result) == {published.document_id}
 
 
 async def test_an_incomplete_coverage_is_reported_before_the_sync(rig: S9Rig) -> None:

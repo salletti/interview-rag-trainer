@@ -91,11 +91,19 @@ class WorkQueue(Protocol):
         dedup_key: str,
         payload: Mapping[str, str] | None = None,
         correlation_id: UUID | None = None,
+        *,
+        reuse_running: bool = True,
     ) -> UUID:
         """Travail à (re)faire sous la famille de ``dedup_key`` : l'item de la
         famille encore ``PENDING`` ou ``RUNNING`` s'il y en a un (aucun
         doublon) ; sinon un nouvel item, sous ``dedup_key`` si la famille est
-        vide, sous ``<dedup_key>:<n>`` (génération suivante) sinon."""
+        vide, sous ``<dedup_key>:<n>`` (génération suivante) sinon.
+
+        ``reuse_running=False`` (revue S9) : seul un item ``PENDING`` est
+        réutilisé ; un item ``RUNNING`` a pu lire l'état avant l'écriture qui
+        rend le travail nécessaire, la génération suivante est créée. Réservé
+        aux travaux idempotents qui peuvent se chevaucher sans dommage
+        (``sync_visibility``)."""
         ...
 
     async def cancel(self, dedup_key: str) -> bool:

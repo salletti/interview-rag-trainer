@@ -1,6 +1,15 @@
 """Benchmark des profils d'embeddings (S9 ; roadmap S9, ADR 0011 §6,
 knowledge-base.md §16 O1, O4, O6, O12).
 
+Dépendance assumée au code de test (revue S9) : le jeu de référence, son
+chargement et les métriques (Recall@k, MRR, intégrité d'unité) sont importés
+de ``tests/integration/knowledge_base/retrieval_support``, pour que le
+benchmark et l'évaluation de S5/S6 mesurent avec les MÊMES définitions, jamais
+recopiées. Le script ne s'exécute donc que depuis un checkout complet de
+``backend/`` (``make benchmark-embeddings``), pas comme un module de
+production ; extraire ces métriques dans un module commun n'aurait pas de
+second usage hors des tests.
+
 Usage (depuis ``backend/``, ou ``make benchmark-embeddings``) ::
 
     uv run python scripts/benchmark_embeddings.py [nom ...]
@@ -105,6 +114,7 @@ from knowledge_base.domain.value_objects.document_source import (  # noqa: E402
 )
 from knowledge_base.domain.value_objects.embedding_profile import (  # noqa: E402
     MULTILINGUAL_E5_BASE,
+    MULTILINGUAL_E5_SMALL,
     Distance,
     EmbeddingProfile,
 )
@@ -121,9 +131,6 @@ from knowledge_base.domain.value_objects.structured_document import (  # noqa: E
 )
 from knowledge_base.frameworks.configuration.chunking import (  # noqa: E402
     DEFAULT_CHUNKING_POLICY,
-)
-from knowledge_base.frameworks.configuration.embedding_targets import (  # noqa: E402
-    MULTILINGUAL_E5_SMALL,
 )
 from knowledge_base.use_cases.extraction_steps import VersionExtractor  # noqa: E402
 from tests.integration.knowledge_base.retrieval_support import (  # noqa: E402

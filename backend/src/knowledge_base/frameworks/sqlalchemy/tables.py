@@ -361,6 +361,15 @@ Index(
     postgresql_where=search_indexes.c.status == "ACTIVE",
 )
 
+# Au plus un index BUILDING par corpus : une seule migration en cours (revue
+# S9, invariant de ``KnowledgeCorpus.provision_index``).
+Index(
+    "ix_search_indexes_one_building",
+    search_indexes.c.corpus_id,
+    unique=True,
+    postgresql_where=search_indexes.c.status == "BUILDING",
+)
+
 # Faits de couverture (S4, §3.3) : identité logique (version, index).
 indexations = Table(
     "indexations",

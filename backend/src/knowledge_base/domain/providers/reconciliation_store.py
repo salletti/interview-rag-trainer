@@ -61,11 +61,11 @@ class ExtractedVersion:
 class IndexableVersionFacts:
     """Version ``PUBLISHED`` ou ``EXTRACTED`` d'un document actif (S9) :
     politiques de ses lots et index où elle a une indexation (quel qu'en soit
-    l'état)."""
+    l'état). Le document est actif par construction (prédicat de la lecture) :
+    son statut n'est pas porté."""
 
     document_id: UUID
     version_id: UUID
-    document_status: DocumentStatus
     version_status: VersionStatus
     policy_versions: frozenset[str]
     indexed_index_ids: frozenset[UUID]

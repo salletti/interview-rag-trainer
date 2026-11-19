@@ -1,8 +1,10 @@
 """Agrégat ``KnowledgeCorpus`` et entité interne ``SearchIndex``
 (knowledge-base.md §3.2, §5.4, §13 ; ADR 0011 ; I10, I11).
 
-Singleton en V1 (``CORPUS_ID``). L'invariant « au plus un index ``ACTIVE`` »
-(I10) est porté ici ; le contrôle de couverture d'I11 est calculé par le use
+Singleton en V1 (``CORPUS_ID``). Les invariants « au plus un index
+``ACTIVE`` » (I10) et « au plus un index ``BUILDING`` » (une seule migration
+en cours, revue S9) sont portés ici, doublés chacun d'un index unique partiel
+en base ; le contrôle de couverture d'I11 est calculé par le use
 case d'activation et transmis (``coverage_complete``). La ligne du corpus sert
 de barrière blue/green : ``FOR SHARE`` à l'extraction et à la publication,
 ``FOR UPDATE`` à l'activation (le verrou est l'affaire du dépôt).
@@ -20,6 +22,7 @@ from uuid import UUID
 from knowledge_base.domain.exceptions.corpus_errors import (
     DuplicateIndexError,
     IncompleteCoverageError,
+    IndexAlreadyBuildingError,
     InvalidIndexTransitionError,
     UnknownIndexError,
 )
@@ -117,6 +120,12 @@ class KnowledgeCorpus:
             return None
         return self.get_index(self._active_index_id)
 
+    def building_index(self) -> SearchIndex | None:
+        """L'index en construction, s'il y en a un (au plus un)."""
+        return next(
+            (i for i in self._indexes if i.status is IndexStatus.BUILDING), None
+        )
+
     def live_indexes(self) -> tuple[SearchIndex, ...]:
         """Index ``ACTIVE`` et ``BUILDING`` : ceux qu'une extraction alimente
         (§13)."""
@@ -132,8 +141,13 @@ class KnowledgeCorpus:
         chunking_policy: ChunkingPolicy,
         now: datetime,
     ) -> SearchIndex:
+        """Nouvel index ``BUILDING`` ; refusé si l'identifiant existe ou si
+        un autre index est déjà en construction."""
         if any(i.index_id == index_id for i in self._indexes):
             raise DuplicateIndexError(index_id)
+        building = self.building_index()
+        if building is not None:
+            raise IndexAlreadyBuildingError(building.index_id)
         index = SearchIndex(
             index_id=index_id,
             profile=profile,

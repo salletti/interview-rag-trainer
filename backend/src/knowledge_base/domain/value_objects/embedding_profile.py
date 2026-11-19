@@ -61,3 +61,24 @@ MULTILINGUAL_E5_BASE: Final = EmbeddingProfile(
     max_tokens=512,
     tokenizer=f"xlmr-{MULTILINGUAL_E5_REVISION[:8]}",
 )
+
+
+MULTILINGUAL_E5_SMALL_REVISION: Final = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+
+# Cible de migration de repli (S9 ; ADR 0013 Proposed, point 3) : même famille
+# que l'index initial (XLM-R, préfixes « query: »/« passage: », 512 tokens),
+# 384 dimensions. Son tokenizer est compté sous sa propre identité :
+# ``tokenizer.json`` diffère de celui de multilingual-e5-base à sa révision
+# (empreintes relevées le 2026-11-18), même si le vocabulaire SentencePiece est
+# identique ; le même budget peut donc découper autrement.
+MULTILINGUAL_E5_SMALL: Final = EmbeddingProfile(
+    model="intfloat/multilingual-e5-small",
+    revision=MULTILINGUAL_E5_SMALL_REVISION,
+    dimension=384,
+    distance=Distance.COSINE,
+    normalize=True,
+    query_prefix="query: ",
+    passage_prefix="passage: ",
+    max_tokens=512,
+    tokenizer=f"xlmr-{MULTILINGUAL_E5_SMALL_REVISION[:8]}",
+)

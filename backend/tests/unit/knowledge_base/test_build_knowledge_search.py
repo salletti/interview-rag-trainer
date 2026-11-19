@@ -46,7 +46,7 @@ from runtime.app import create_app
 from runtime.database import create_engine, create_session_factory
 from runtime.vector_store import create_qdrant_client
 from tests.support import unreachable_settings
-from tests.unit.knowledge_base.domain.services.support import COUNTER
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 from tests.unit.knowledge_base.use_cases.search_fakes import RecordingEmbedder
 
 
@@ -106,8 +106,7 @@ async def test_the_search_fails_loudly_when_postgres_is_unreachable() -> None:
             current.session_factory,
             current.qdrant_client,
             current.settings,
-            embedder=RecordingEmbedder(),
-            token_counter=COUNTER,
+            embedders=single_profile(RecordingEmbedder()),
         )
 
         with pytest.raises((OSError, SQLAlchemyError)):

@@ -34,7 +34,7 @@ from knowledge_base.use_cases.search_knowledge.search_knowledge_command import (
 from knowledge_base.use_cases.search_knowledge.search_knowledge_handler import (
     SearchKnowledgeHandler,
 )
-from tests.unit.knowledge_base.domain.services.support import COUNTER
+from tests.unit.knowledge_base.use_cases.indexing_fakes import single_profile
 from tests.unit.knowledge_base.use_cases.search_fakes import (
     INDEX_ID,
     QUERY_VECTOR,
@@ -155,11 +155,10 @@ async def test_the_default_oversampling_factor_is_two() -> None:
     # O12 (Proposed) : f = 2 quand le constructeur ne reçoit pas de facteur.
     rig = make_rig(ranking=[hit(1, 0.9)], published=[whole_unit(1)])
     handler = SearchKnowledgeHandler(
-        embedder=rig.embedder,
+        embedders=single_profile(rig.embedder),
         chunk_searcher=rig.searcher,
         published_units=rig.units,
         active_indexes=FakeActiveIndexes(active_index()),
-        token_counter=COUNTER,
         max_passage_tokens=1_000,
     )
 
@@ -172,11 +171,10 @@ async def test_without_a_complement_default_one_pass_is_made() -> None:
     # O12 (Proposed) : UNE passe de complément par défaut.
     rig = make_rig(ranking=[hit(n, 1 - n / 100) for n in range(1, 13)], published=[])
     handler = SearchKnowledgeHandler(
-        embedder=rig.embedder,
+        embedders=single_profile(rig.embedder),
         chunk_searcher=rig.searcher,
         published_units=rig.units,
         active_indexes=FakeActiveIndexes(active_index()),
-        token_counter=COUNTER,
         max_passage_tokens=1_000,
     )
 

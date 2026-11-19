@@ -54,7 +54,6 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_indexing_transaction
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import (
     SqlAlchemyUnitOfWork,
 )
-from knowledge_base.domain.providers.embedder import Embedder
 from knowledge_base.domain.providers.embedder_provider import EmbedderProvider
 from knowledge_base.domain.providers.indexing_transaction import IndexingTransaction
 from knowledge_base.domain.providers.vector_index import VectorIndex
@@ -186,15 +185,13 @@ def build_index_version_handler(
     settings: KnowledgeBaseSettings,
     *,
     vector_index: VectorIndex,
-    embedder: Embedder | None = None,
-    embedders: EmbedderProvider | None = None,
+    embedders: EmbedderProvider,
     clock: Callable[[], datetime] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> IndexVersionWorkHandler:
     """Composition de production ; ne se connecte à rien et ne charge pas le
-    modèle (les modèles du worker sont paresseux). ``embedders`` (S9) : le
-    modèle du profil de chaque index ; ``embedder`` : un seul profil (S4,
-    tests)."""
+    modèle (les modèles du worker sont paresseux). ``embedders`` : le modèle
+    du profil de chaque index."""
     clock = clock or utc_now
 
     def unit_of_work() -> SqlAlchemyUnitOfWork:
@@ -202,7 +199,6 @@ def build_index_version_handler(
 
     use_case = CompleteIndexationHandler(
         unit_of_work=unit_of_work,
-        embedder=embedder,
         embedders=embedders,
         vector_index=vector_index,
         publisher=PublishDocumentVersionHandler(clock=clock),

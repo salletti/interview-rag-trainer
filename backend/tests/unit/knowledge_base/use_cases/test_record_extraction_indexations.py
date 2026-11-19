@@ -40,7 +40,6 @@ from tests.unit.knowledge_base.use_cases.indexing_fakes import (
 )
 
 BUILDING = UUID(int=555)
-SECOND_BUILDING = UUID(int=556)
 
 
 def index_items(rig_items: Mapping[str, object]) -> list[str]:
@@ -81,11 +80,11 @@ async def test_an_extraction_enqueues_one_index_version_item_per_indexation() ->
     }
 
 
-async def test_building_indexes_get_their_own_indexation_and_item() -> None:
+async def test_the_building_index_gets_its_own_indexation_and_item() -> None:
+    # Un seul index BUILDING par corpus (revue S9) : l'actif et lui.
     rig = make_indexing_rig()
     active = await rig.provision()
     rig.add_building_index(BUILDING)
-    rig.add_building_index(SECOND_BUILDING)
     command = await rig.import_document(qa_sheet())
 
     await rig.extract(command)
@@ -93,11 +92,9 @@ async def test_building_indexes_get_their_own_indexation_and_item() -> None:
     assert set(rig.indexing.indexations) == {
         (command.version_id, active),
         (command.version_id, BUILDING),
-        (command.version_id, SECOND_BUILDING),
     }
     assert index_items(rig.harness.state.items) == sorted(
-        f"index_version:{command.version_id}:{i}"
-        for i in (active, BUILDING, SECOND_BUILDING)
+        f"index_version:{command.version_id}:{i}" for i in (active, BUILDING)
     )
 
 

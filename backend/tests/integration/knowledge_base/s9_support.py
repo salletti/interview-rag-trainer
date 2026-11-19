@@ -23,9 +23,11 @@ des use cases sont ceux de ``tests/unit/knowledge_base/use_cases/s9_support``) :
   build_drop_index_collection_handler(session_factory, *, collections)``
   (``kind`` ``drop_index_collection``, file d'ingestion) ;
 - ``composition.build_start_index_migration_handler(session_factory,
-  vector_index, *, id_factory=None, clock=None)`` et
+  vector_index, *, id_factory=None, clock=None)``,
   ``composition.build_activate_search_index_handler(session_factory, *,
-  clock=None)`` ;
+  drop_delay, clock=None)`` et (revue S9)
+  ``composition.build_abandon_index_migration_handler(session_factory, *,
+  drop_delay, clock=None)`` ;
 - ``composition.compose_knowledge_search(session_factory, qdrant_client,
   settings, *, embedders)`` ;
 - ``QdrantVectorIndex.delete_collection(index_id)`` (idempotent), vu comme
@@ -81,8 +83,10 @@ from tests.integration.knowledge_base.indexing_support import (
 )
 from tests.unit.knowledge_base.use_cases.indexing_fakes import PROFILE, HashEmbedder
 from tests.unit.knowledge_base.use_cases.s9_support import (
+    NO_DELAY,
     PROFILE_B,
     ProfileModel,
+    abandon_command,
     activate_command,
     contract,
     start_command,
@@ -204,8 +208,14 @@ class S9Rig:
         return build(self.session_factory, vector or self.vector)
 
     def activate_handler(self, **options: Any) -> Any:
+        """``drop_delay`` nul par défaut : l'item de suppression est
+        disponible tout de suite."""
         build = contract(COMPOSITION, "build_activate_search_index_handler")
-        return build(self.session_factory, **options)
+        return build(self.session_factory, **{"drop_delay": NO_DELAY, **options})
+
+    def abandon_handler(self, **options: Any) -> Any:
+        build = contract(COMPOSITION, "build_abandon_index_migration_handler")
+        return build(self.session_factory, **{"drop_delay": NO_DELAY, **options})
 
     def search_service(self, embedders: Any = None) -> KnowledgeSearch:
         try:
@@ -300,6 +310,9 @@ class S9Rig:
 
     async def activate(self, index_id: UUID, **options: Any) -> None:
         await self.activate_handler(**options).handle(activate_command(index_id))
+
+    async def abandon(self, index_id: UUID, **options: Any) -> None:
+        await self.abandon_handler(**options).handle(abandon_command(index_id))
 
     async def search(self, text: str = QUERY, limit: int = 20) -> KnowledgeSearchResult:
         return await self.search_service().search(

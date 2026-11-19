@@ -98,7 +98,10 @@ from tests.integration.knowledge_base.extraction_support import (
     open_extraction_rig,
 )
 from tests.integration.knowledge_base.support import kb_settings
-from tests.unit.knowledge_base.use_cases.indexing_fakes import HashEmbedder
+from tests.unit.knowledge_base.use_cases.indexing_fakes import (
+    HashEmbedder,
+    single_profile,
+)
 
 EMBEDDER_PARAMS = [
     "hash",
@@ -150,7 +153,7 @@ class IndexingRig:
         return build_index_version_handler(
             self.extraction.session_factory,
             self.extraction.settings,
-            embedder=self.embedder,
+            embedders=single_profile(self.embedder),
             vector_index=vector,
         )
 
@@ -300,7 +303,10 @@ async def open_indexing_rig(
                         session_factory, vector
                     ),
                     index_handler=build_index_version_handler(
-                        session_factory, kb, embedder=embedder, vector_index=vector
+                        session_factory,
+                        kb,
+                        embedders=single_profile(embedder),
+                        vector_index=vector,
                     ),
                     sync_handler=build_sync_visibility_handler(
                         session_factory, vector_index=vector

@@ -225,7 +225,6 @@ class IndexationReconciliation:
             return counts
         for version in await self._store.indexable_versions():
             missing = building_indexes_missing_version(
-                document_status=version.document_status,
                 version_status=version.version_status,
                 policy_versions=version.policy_versions,
                 building_policies=building,

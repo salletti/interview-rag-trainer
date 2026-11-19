@@ -2,9 +2,9 @@
 « la recherche lit toujours l'index ACTIVE dans PostgreSQL et charge le modèle
 de son profil » ; S5 : garde-fou ``SEARCH_PROFILE_MISMATCH`` en attendant S9).
 
-Contrat : ``SearchKnowledgeHandler(..., embedders=<EmbedderProvider>)`` à la
-place de ``embedder=`` et ``token_counter=`` (le compteur du budget est celui du
-modèle de l'index actif). Pour chaque requête : index actif lu, puis
+Contrat : ``SearchKnowledgeHandler(..., embedders=<EmbedderProvider>)``, seule
+forme depuis la revue S9 (le compteur du budget est celui du modèle de l'index
+actif). Pour chaque requête : index actif lu, puis
 ``embedders.for_profile(index.profile)``, requête encodée UNE fois par ce
 modèle, recherche dans la collection de cet index. DÉCISION (à valider) : un
 profil que le processus ne sait pas charger reste refusé explicitement par

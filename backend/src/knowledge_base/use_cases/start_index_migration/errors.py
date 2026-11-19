@@ -26,7 +26,10 @@ class NoActiveIndexToMigrateError(StartIndexMigrationError):
 
 class MigrationInProgressError(StartIndexMigrationError):
     """Un index ``BUILDING`` d'un autre couple (profil, politique) existe :
-    un seul backfill à la fois (une seule migration en cours)."""
+    un seul backfill à la fois (une seule migration en cours). Levée d'emblée
+    si la première lecture le voit, ou en traduction de
+    ``IndexAlreadyBuildingError`` (agrégat) si une migration rivale a validé
+    entre les deux transactions."""
 
     def __init__(
         self,
@@ -37,7 +40,9 @@ class MigrationInProgressError(StartIndexMigrationError):
         super().__init__(
             f"migration déjà en cours vers l'index {building_id} "
             f"({profile.model}@{profile.revision[:8]}, {chunking_policy.identity}) "
-            ": l'activer ou l'abandonner avant d'en démarrer une autre"
+            ": la terminer (python -m runtime.index_migration activate "
+            f"{building_id}) ou l'abandonner (python -m runtime.index_migration "
+            f"abandon {building_id}) avant d'en démarrer une autre"
         )
         self.building_id = building_id
 

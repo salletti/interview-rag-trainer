@@ -86,8 +86,8 @@ from knowledge_base.domain.value_objects.error_catalog import (
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.errors import DocumentTooLargeError
 from knowledge_base.use_cases.import_steps import DOCX_MEDIA_TYPE, EXTRACT_VERSION
-from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )

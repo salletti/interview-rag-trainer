@@ -197,3 +197,12 @@ précisions S8](../conception/bounded-contexts/knowledge-base.md#6-workflow-de-t
     (point 7) : aucun réessai automatique, seul un rejeu explicite.
   - *Points 7 et 10* : `TerminalWorkError` refuse un code absent du
     catalogue, à la construction (erreur de programmation).
+- **Revue S9 (2026-11-19)**, sans modification de la décision : le port
+  `WorkQueue.enqueue_again` accepte `reuse_running=False`, qui ne réutilise
+  qu'un item `PENDING` de la famille et crée la génération suivante si
+  l'item vivant est `RUNNING` ; réservé à `sync_visibility` (idempotent),
+  dont un item déjà en cours a pu lire l'état avant l'écriture qui rend la
+  synchronisation nécessaire ([knowledge-base.md §13, précisions revue
+  S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings)).
+  L'abandon d'une migration annule ses items par `cancel` (point 5 : fencing
+  incrémenté, une tentative en cours ne finalise plus).

@@ -142,10 +142,19 @@ port technique vers le moteur vectoriel), `DocumentStatus` comme concept autonom
   index `BUILDING` à la fois** (décision 2 de l'orchestrateur) : règle de
   `StartIndexMigration`, sous le même verrou ; démarrer de nouveau le même
   couple (profil, politique) rend l'index en construction sans rien écrire,
-  un autre couple est refusé (`MigrationInProgressError`). L'agrégat reste
-  général (`provision_index` n'interdit pas un second `BUILDING`) : la règle
-  ne porte que sur le démarrage d'une migration, seul chemin de production qui
-  crée un index `BUILDING`.*
+  un autre couple est refusé (`MigrationInProgressError`).*
+- *Précision revue S9 (2026-11-19) : « au plus un index `BUILDING` par
+  corpus » est un **invariant de l'agrégat** : `provision_index` refuse un
+  second index en construction (`IndexAlreadyBuildingError`, sans effet),
+  doublé en base par l'index unique partiel `ix_search_indexes_one_building`
+  (`(corpus_id) WHERE status = 'BUILDING'`, migration `40038a21e22f`), comme
+  I10 l'est par `ix_search_indexes_one_active`. `StartIndexMigration` garde
+  son refus d'emblée (lecture sans effet, aucune collection créée) et traduit
+  le refus de l'agrégat en `MigrationInProgressError` quand une migration
+  rivale a validé entre ses deux transactions (vérifié sur PostgreSQL réel :
+  deux démarrages concurrents vers deux cibles, un seul réussit,
+  `test_s9_concurrency`). La version précédente de ce paragraphe disait
+  l'agrégat général : ce n'est plus le cas.*
 
 ### 3.3 `Indexation` — Aggregate Root [Accepted]
 
@@ -340,6 +349,25 @@ lance pas de backfill). `BUILDING --> RETIRED` (abandon) existe dans
 l'agrégat mais n'est exposé par aucune commande en V1. Après `ACTIVE -->
 RETIRED`, la collection de l'index est supprimée par `drop_index_collection`
 (la ligne `RETIRED` reste : ses indexations y renvoient).*
+
+*Précision revue S9 (2026-11-19) : `BUILDING --> RETIRED` est exposé par
+`AbandonIndexMigration` (`python -m runtime.index_migration abandon
+<index_id>`, `make kb-migration-abandon index=<index_id>`, surface publique
+`knowledge_base.abandon_index_migration`) : sans lui, une migration bloquée
+(couverture qui ne se complète pas, mauvaise cible) n'avait aucune issue, et
+l'invariant « un seul index `BUILDING` » interdisait toute autre migration.
+Une transaction, sous `FOR UPDATE` du corpus, sans appel Qdrant : index
+`RETIRED` (refus sans effet d'un index inconnu, `ACTIVE` ou déjà `RETIRED`),
+indexations `PENDING`/`FAILED` de l'index → `CANCELLED` (les `COMPLETED`
+restent des faits), items `index_version` et `rechunk_version` de l'index
+annulés, générations comprises (fencing : une tentative en cours ne finalise
+plus ; vérifié sur PostgreSQL réel), puis `drop_index_collection` après
+`KB_INDEX_DROP_DELAY_SECONDS`. Les `sync_visibility` ne visent aucun index
+(payload : document et révision ; ils convergent chaque index vivant à leur
+exécution) : ils ne sont pas annulés, ignorent désormais l'index retiré et
+restent nécessaires à l'index actif. Le délai de suppression (`drop_delay`)
+est un paramètre obligatoire de l'activation comme de l'abandon : seuls les
+tests passent 0.*
 
 ### 5.5 `WorkItem`
 
@@ -1012,6 +1040,43 @@ mesures : [benchmark](knowledge-base-embedding-benchmark.md)) :*
   embedding_targets.py`) définit les profils que l'API et les workers savent
   charger.*
 
+*Précisions revue S9 (2026-11-19) :*
+
+- *Abandon d'une migration : `AbandonIndexMigration` (§5.4, précision revue
+  S9), seule issue d'une migration bloquée.*
+- *Un seul index `BUILDING` par corpus : invariant de l'agrégat, doublé d'un
+  index unique partiel (§3.2, précision revue S9).*
+- *Activation : en plus d'une synchronisation en attente, une **dernière
+  synchronisation `FAILED`** d'un document publié bloque l'activation
+  (`SynchronizationFailedError`, sans effet) : rien n'a rendu visibles ses
+  points depuis l'échec, dans le candidat comme ailleurs. « Dernière » : l'item
+  `sync_visibility` le plus récemment créé du document, toutes révisions et
+  générations confondues ; une génération suivante, réussie ou en attente,
+  efface l'échec. Issues : rejouer l'échec (`POST /failures/{item_id}/retry`,
+  vérifié de bout en bout) ou attendre que la réconciliation replanifie la
+  synchronisation (points invisibles d'une version publiée, S8).*
+- *Limite fermée : la replanification de la synchronisation après une
+  réindexation (`reschedule_visibility_sync`, appelée par le backfill d'une
+  version publiée) réutilisait un item `RUNNING` de la même famille
+  (`enqueue_again`) ; cet item avait pu converger l'index candidat AVANT que
+  le backfill y écrive les points (invisibles), se terminer `SUCCEEDED`, et
+  l'activation ne voyait alors rien en attente. Désormais seul un item
+  `PENDING` est réutilisé (`enqueue_again(..., reuse_running=False)`, réservé
+  à ce travail idempotent) ; un item `RUNNING` reçoit une génération
+  suivante, que l'activation attend. Deux synchronisations du même document
+  peuvent alors se chevaucher : idempotentes, elles convergent vers le même
+  état. Limite restante : la garde ne voit que les work items ; un point
+  rendu invisible hors de ce chemin (écart Qdrant) n'est rattrapé que par la
+  réconciliation (§9).*
+- *La preuve de couverture lit les statuts des indexations du candidat en
+  **une** requête (`indexation_statuses`) au lieu d'une lecture par version
+  publiée.*
+- *Un seul prédicat SQL « version indexable » (version `PUBLISHED` ou
+  `EXTRACTED` d'un document `ACTIVE`, `adapters/gateway/persistence/
+  indexable_versions.py`) sert au backfill, à la preuve de couverture et à la
+  réconciliation d'un index `BUILDING` : les trois portent sur le même
+  ensemble de versions (vérifié, `test_s9_indexable_versions`).*
+
 ## 14. Contrat public `KnowledgeSearch`
 
 **[Accepted pour le principe — ADR 0007 ; champs Proposed jusqu'à S5]**
@@ -1257,3 +1322,4 @@ Liste **unique** des questions ouvertes de Knowledge Base ;
 | O14 | État métier d'un item terminé `FAILED` par `recover` (`LEASE_EXPIRED_MAX_ATTEMPTS`) ou après un hook d'échec en erreur (`TERMINAL_HOOK_FAILED`) : le hook n'a pas abouti, l'agrégat n'est pas marqué en échec | **[Open]** ; à trancher avec `RetryIngestion` et la réconciliation | S8 — **Tranché en S8 (2026-11-18), décision de l'orchestrateur :** la réconciliation **adopte** l'échec à la place du hook : item `extract_version` `FAILED` et version encore `RECEIVED` → version `FAILED` ; item `index_version` `FAILED` et indexation encore `PENDING` → indexation `FAILED` ; avec le code et le message de l'item, `retryable` d'après le catalogue (§15.5 ; `TERMINAL_HOOK_FAILED` et `LEASE_EXPIRED_MAX_ATTEMPTS` sont rejouables). L'item n'est jamais rouvert par la réconciliation (une erreur déterministe ne boucle pas) ; seul `RetryIngestion` rejoue, y compris une version restée `RECEIVED` (l'item seul est rouvert). Ignoré si un autre item du même travail est en attente ou en cours, ou si la version a changé d'état (supplantée). L'item est verrouillé pendant l'adoption : un rejeu concurrent passe avant ou après, jamais entre les deux. *Revue S8 (M1) : vérifié sur PostgreSQL réel, deux sessions et une barrière dans la transaction de l'une (`test_s8_failed_work`) : adoption tenue → le rejeu attend puis défait l'échec adopté ; rejeu tenu → l'adoption attend puis trouve l'item rouvert et n'écrit rien.* |
 | O15 | Expiration des clés d'idempotence (`knowledge_base.idempotency_keys`) : aucune purge en S2, la table croît sans borne | **[Open]** ; recommandation : purge des clés au-delà de 24 h par la réconciliation S8 | S8 — **Tranché en S8 (2026-11-18) selon la recommandation :** chaque cycle supprime les clés enregistrées il y a strictement plus de `KB_IDEMPOTENCY_KEY_TTL_SECONDS` (défaut 86 400 s, Proposed). Un rejeu plus tardif de la même requête n'est plus reconnu comme tel ; il ne crée pas de doublon pour autant (`UNIQUE(content_hash)` global, O2 : même contenu → 200 avec le document existant). Pas d'index sur `created_at` : la table compte une ligne par import avec clé, purgée chaque jour |
 | O16 | Borne du volume de texte d'un DOCX : sans pagination, il n'a pas de limite de pages (S6) ; seule la limite d'octets (20 Mio de XML compressé) le borne, soit des ordres de grandeur au-delà de 300 pages de texte (51 Ko pour l'équivalent de 300 pages mesuré en S6) : un DOCX textuel de 20 Mio produirait un lot d'unités et de chunks que la transaction unique (§3.4) et l'encodage n'ont pas été mesurés à tenir | **Garde-fou de taille décompressée DOCX en S6** (revue S6, 2026-11-18, arbitrage de l'orchestrateur) : avant Docling, la somme des tailles décompressées déclarées des parties `word/*.xml` est bornée à 100 Mio (`MAX_DOCX_XML_BYTES`, réglable par le constructeur du parseur) → `DOCUMENT_TOO_COMPLEX`, terminal ; ZIP illisible → `INVALID_DOCUMENT`. Ce garde-fou arrête une bombe de décompression (101 Mio de XML tiennent en ~100 Kio compressés), pas un DOCX textuel de quelques Mio de XML, déjà bien au-delà de 300 pages. **La borne de volume de texte commune à tous les formats (tokens extraits ou chunks) reste [Open] pour S8** ; recommandation inchangée : échec terminal dédié, à mesurer avant de la fixer. Détail : [ADR 0012, suivi S6](../../decisions/0012-original-document-storage-and-purge.md#s6--limites-mesurées-2026-11-18). **Tranché en S8 (2026-11-18), décision de l'orchestrateur :** après la segmentation et avant le chunking et toute écriture, la somme des `token_count` des **unités** (le texte, sans les en-têtes contextuels que chaque chunk répète) est comparée à `KB_MAX_DOCUMENT_TOKENS`, quel que soit le format ; strictement au-dessus → `DOCUMENT_TOO_LARGE`, terminal, distinct de `DOCUMENT_TOO_COMPLEX`. *Revue S8 (I1) : rejouable* — le même contenu ne peut pas être réimporté (O2) ; **voie de reprise : relever `KB_MAX_DOCUMENT_TOKENS` (redémarrer `worker_ingestion`), puis `POST /api/v1/knowledge-base/failures/{item_id}/retry`** ; la version repasse `RECEIVED`, est extraite sous la nouvelle borne puis indexée et publiée (vérifié : `test_raising_the_limit_then_replaying_publishes_the_document`). Un rejeu sans relèvement échoue une fois de plus, sans boucle. **Défaut 1 000 000 tokens (Proposed)**, d'après : 3,74 caractères par token (tokenizer E5, 15 687 caractères des fixtures FR/EN, mesuré le 2026-11-18) ; une page A4 très dense (~5 000 caractères) ≈ 1 340 tokens, 300 pages ≈ 400 000 ; le PDF de 300 pages de S6 (410 unités, 682 chunks d'au plus 508 tokens) ≤ 350 000. Un PDF légitime de 300 pages garde donc plus de 2× de marge ; à 1 000 000, l'indexation (~2 200 chunks à 0,46 s mesurés en S6) dure ~17 min, sous la limite de 3 600 s d'une tâche | S6 / S8 |
+| O17 | Collection Qdrant orpheline après un démarrage de migration refusé : `StartIndexMigration` crée la collection hors transaction, AVANT d'enregistrer l'index ; si une migration rivale (même couple ou autre couple) valide entre ses deux transactions, ou si le commit échoue, la collection `kb_index_<hex>` (identifiant sans tirets) reste, vide, sans index qui la référence | **[Open]** — inoffensive (vide, jamais lue : la recherche et la réconciliation ne parcourent que les collections des index vivants) ; suppression manuelle documentée dans le [guide](../../guides/environnement-local.md#migrer-lindex-de-recherche-knowledge-base-s9). Nettoyage dans le handler écarté : il ne couvrirait pas le crash entre la création de la collection et le commit. Recommandation : un balayage par la réconciliation des collections `kb_index_*` sans ligne `search_indexes`, si le cas se présente hors des tests (vérifié en intégration : collection du perdant présente et vide, `test_s9_concurrency`) | — |

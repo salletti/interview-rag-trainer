@@ -9,7 +9,8 @@ d'exploitation (``python -m runtime.index_migration start <cible>``).
 
 1. Lecture du corpus sous ``FOR UPDATE`` (transaction sans écriture) : refus
    sans effet s'il n'y a pas d'index actif, si une migration vers un autre
-   couple (profil, politique) est en cours (un seul index ``BUILDING``) ou si
+   couple (profil, politique) est en cours (un seul index ``BUILDING``,
+   invariant de l'agrégat qui le refuse de nouveau à l'étape 3) ou si
    le couple est celui de l'index actif ; un index ``BUILDING`` du même couple
    est rendu tel quel (rejeu).
 2. Collection Qdrant du nouvel index, HORS transaction et AVANT l'écriture :
@@ -33,10 +34,10 @@ from uuid import UUID
 
 from knowledge_base.domain.entities.indexation import Indexation
 from knowledge_base.domain.entities.knowledge_corpus import (
-    IndexStatus,
     KnowledgeCorpus,
     SearchIndex,
 )
+from knowledge_base.domain.exceptions.corpus_errors import IndexAlreadyBuildingError
 from knowledge_base.domain.providers.index_migration import (
     IndexableVersion,
     MigrationUnitOfWork,
@@ -87,19 +88,25 @@ class StartIndexMigrationHandler:
     async def _provision(self, index_id: UUID, command: StartIndexMigration) -> UUID:
         async with self._unit_of_work() as uow:
             corpus = await uow.corpus.get_for_update()
-            building = _building_for(corpus, command)
+            building = _replayed(corpus, command)
             if building is not None:
                 # Démarrage concurrent du même couple, terminé entre les deux
                 # transactions : la collection créée ci-dessus reste orpheline
-                # et vide (inoffensif, comme en S4).
+                # et vide (inoffensif, comme en S4 ; knowledge-base.md §16).
                 return building
-            assert corpus is not None  # _building_for l'a vérifié
-            corpus.provision_index(
-                index_id=index_id,
-                profile=command.profile,
-                chunking_policy=command.chunking_policy,
-                now=self._clock(),
-            )
+            assert corpus is not None  # _replayed l'a vérifié
+            try:
+                corpus.provision_index(
+                    index_id=index_id,
+                    profile=command.profile,
+                    chunking_policy=command.chunking_policy,
+                    now=self._clock(),
+                )
+            except IndexAlreadyBuildingError as error:
+                # Migration rivale d'un autre couple validée entre les deux
+                # transactions : la collection créée ci-dessus reste orpheline
+                # et vide, comme ci-dessus.
+                raise _in_progress(corpus.get_index(error.index_id)) from error
             # L'index doit exister avant ses indexations (clé étrangère).
             await uow.corpus.save(corpus)
             versions = await uow.versions.list_indexable_versions()
@@ -143,20 +150,36 @@ async def _backfill(
 def _building_for(
     corpus: KnowledgeCorpus | None, command: StartIndexMigration
 ) -> UUID | None:
-    """L'index ``BUILDING`` du couple demandé s'il existe déjà ; ``None`` si
-    une migration peut démarrer ; un refus sinon."""
+    """Lecture sans effet : comme ``_replayed``, et refus d'emblée d'un autre
+    couple en construction, pour ne créer aucune collection (l'agrégat le
+    refuse de toute façon dans la transaction d'écriture)."""
+    replayed = _replayed(corpus, command)
+    building = None if corpus is None else corpus.building_index()
+    if replayed is None and building is not None:
+        raise _in_progress(building)
+    return replayed
+
+
+def _replayed(
+    corpus: KnowledgeCorpus | None, command: StartIndexMigration
+) -> UUID | None:
+    """L'index ``BUILDING`` du couple demandé s'il existe déjà ; ``None``
+    sinon ; refus s'il n'y a pas d'index actif, ou si le couple est celui de
+    l'index actif alors que rien n'est en construction."""
     active = None if corpus is None else corpus.active_index()
     if corpus is None or active is None:
         raise NoActiveIndexToMigrateError
     wanted = (command.profile, command.chunking_policy)
-    for index in corpus.indexes:
-        if index.status is not IndexStatus.BUILDING:
-            continue
-        if (index.profile, index.chunking_policy) == wanted:
-            return index.index_id
-        raise MigrationInProgressError(
-            index.index_id, index.profile, index.chunking_policy
-        )
+    building = corpus.building_index()
+    if building is not None:
+        same = (building.profile, building.chunking_policy) == wanted
+        return building.index_id if same else None
     if (active.profile, active.chunking_policy) == wanted:
         raise NothingToMigrateError(active.index_id)
     return None
+
+
+def _in_progress(building: SearchIndex) -> MigrationInProgressError:
+    return MigrationInProgressError(
+        building.index_id, building.profile, building.chunking_policy
+    )

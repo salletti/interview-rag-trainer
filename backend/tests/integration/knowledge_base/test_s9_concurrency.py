@@ -20,7 +20,11 @@ Contrat vérifié :
 - une publication en cours (``FOR SHARE``) retarde l'activation, dont la preuve
   de couverture voit alors la version publiée : l'activation est REFUSÉE tant
   que cette version n'est pas ``COMPLETED`` dans le nouvel index (jamais une
-  version publiée absente de l'index actif).
+  version publiée absente de l'index actif) ;
+- deux démarrages concurrents vers des cibles différentes, qui ont tous deux
+  passé la lecture sans effet : un seul réussit, l'autre est refusé par
+  l'agrégat (un seul index ``BUILDING``, revue S9) ; sa collection reste
+  orpheline et vide (knowledge-base.md §16).
 """
 
 from __future__ import annotations
@@ -46,7 +50,11 @@ from knowledge_base.adapters.gateway.persistence.sqlalchemy_unit_of_work import 
     SqlAlchemyUnitOfWork,
 )
 from knowledge_base.domain.entities.knowledge_corpus import CORPUS_ID
-from knowledge_base.domain.exceptions.corpus_errors import IncompleteCoverageError
+from knowledge_base.domain.exceptions.corpus_errors import (
+    IncompleteCoverageError,
+    IndexAlreadyBuildingError,
+)
+from knowledge_base.domain.value_objects.embedding_profile import EmbeddingProfile
 from knowledge_base.use_cases.record_extraction.record_extraction_command import (
     RecordExtraction,
 )
@@ -75,11 +83,14 @@ from tests.integration.knowledge_base.s9_support import (
 from tests.unit.knowledge_base.domain.services.support import COUNTER
 from tests.unit.knowledge_base.use_cases.s9_support import (
     ACTIVATE,
+    NO_DELAY,
     PROFILE_B,
+    PROFILE_C,
     START,
     activate_command,
     contract,
     start_command,
+    start_error,
 )
 
 pytestmark = pytest.mark.integration
@@ -131,6 +142,7 @@ def gated_activate(rig: S9Rig, **gates: Any) -> Any:
             SqlAlchemyUnitOfWork(rig.session_factory), **gates
         ),
         clock=lambda: datetime.now(UTC),
+        drop_delay=NO_DELAY,
     )
 
 
@@ -197,6 +209,82 @@ async def test_the_provisioning_holds_the_corpus_exclusively_from_its_first_read
 
     assert await rig.statuses() == {rig.index_id: "ACTIVE", new: "BUILDING"}
     assert len(await rig.indexations(new)) == 1
+
+
+# --- deux démarrages concurrents -----------------------------------------------------
+
+
+class _CollectionGate:
+    """Moteur vectoriel réel dont la création de collection attend ``release``
+    après avoir signalé ``reached`` : le démarrage a passé sa lecture sans
+    effet (transaction fermée) et n'a pas encore ouvert celle d'écriture."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.reached, self.release = asyncio.Event(), asyncio.Event()
+        self.created: list[UUID] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def ensure_collection(
+        self, index_id: UUID, profile: EmbeddingProfile
+    ) -> None:
+        self.reached.set()
+        async with asyncio.timeout(TIMEOUT):
+            await self.release.wait()
+        await self._inner.ensure_collection(index_id, profile)
+        self.created.append(index_id)
+
+
+async def test_two_concurrent_starts_towards_different_targets_one_succeeds(
+    rig: S9Rig,
+) -> None:
+    await rig.publish(long_sheet("a"))
+    gates = {
+        PROFILE_B: _CollectionGate(rig.vector),
+        PROFILE_C: _CollectionGate(rig.vector),
+    }
+    ids = iter(range(71_001, 71_100))
+
+    def start(profile: EmbeddingProfile) -> asyncio.Task[UUID]:
+        handler = contract(
+            f"{START}.start_index_migration_handler", "StartIndexMigrationHandler"
+        )(
+            unit_of_work=lambda: SqlAlchemyUnitOfWork(rig.session_factory),
+            vector_index=gates[profile],
+            id_factory=lambda: UUID(int=next(ids)),
+            clock=lambda: datetime.now(UTC),
+        )
+        return asyncio.create_task(handler.handle(start_command(profile, POLICY_SAME)))
+
+    first, second = start(PROFILE_B), start(PROFILE_C)
+    try:
+        async with asyncio.timeout(TIMEOUT):
+            # les deux ont lu le corpus sans voir d'index en construction
+            await gates[PROFILE_B].reached.wait()
+            await gates[PROFILE_C].reached.wait()
+        gates[PROFILE_B].release.set()
+        winner = await first
+    finally:
+        for gate in gates.values():
+            gate.release.set()
+
+    with pytest.raises(start_error("MigrationInProgressError")) as refused:
+        await second
+
+    assert isinstance(refused.value.__cause__, IndexAlreadyBuildingError)
+    assert getattr(refused.value, "building_id", None) == winner
+    assert await rig.statuses() == {rig.index_id: "ACTIVE", winner: "BUILDING"}
+    assert len(await rig.indexations(winner)) == 1
+    # collection du perdant : créée avant son refus, orpheline et vide (O17) ;
+    # aucun index ne la référence, le nettoyage du rig ne la verrait pas
+    (orphan,) = gates[PROFILE_C].created
+    try:
+        assert await rig.collection_exists(orphan)
+        assert await rig.points(orphan) == []
+    finally:
+        await rig.vector.delete_collection(orphan)  # suppression manuelle (O17)
 
 
 # --- une extraction en cours pendant le provisionnement ------------------------------

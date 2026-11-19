@@ -64,6 +64,7 @@ from knowledge_base.domain.value_objects.error_catalog import (
 )
 from knowledge_base.domain.value_objects.failure_reason import FailureReason
 from knowledge_base.frameworks.configuration.settings import KnowledgeBaseSettings
+from knowledge_base.use_cases.errors import DocumentTooLargeError
 from knowledge_base.use_cases.indexing_steps import RECHUNK_VERSION
 from knowledge_base.use_cases.rechunk_version.rechunk_version_command import (
     RechunkVersion,
@@ -72,7 +73,6 @@ from knowledge_base.use_cases.rechunk_version.rechunk_version_handler import (
     PreparedRechunk,
     RechunkVersionHandler,
 )
-from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
 
 if TYPE_CHECKING:
     from knowledge_base.adapters.controller.tasks.execution import WorkContext

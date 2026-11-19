@@ -19,6 +19,10 @@ from sqlalchemy import Text, cast, delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from knowledge_base.adapters.gateway.persistence.indexable_versions import (
+    VERSION_DOCUMENT_JOIN,
+    is_indexable_version,
+)
 from knowledge_base.adapters.gateway.persistence.sqlalchemy_failed_work_repository import (  # noqa: E501
     record_of,
     work_item_columns,
@@ -59,10 +63,6 @@ _s = search_indexes.c
 _w = work_items.c
 
 _LIVE_INDEXES: Final = (IndexStatus.ACTIVE.value, IndexStatus.BUILDING.value)
-_INDEXABLE_VERSIONS: Final = (
-    VersionStatus.EXTRACTED.value,
-    VersionStatus.PUBLISHED.value,
-)
 
 
 class SqlAlchemyReconciliationStore:
@@ -198,17 +198,9 @@ class SqlAlchemyReconciliationStore:
         async with self._session_factory() as session:
             versions = (
                 await session.execute(
-                    select(
-                        _v.id,
-                        _v.document_id,
-                        _v.status,
-                        _d.status.label("document_status"),
-                    )
-                    .join(documents, _d.id == _v.document_id)
-                    .where(
-                        _v.status.in_(_INDEXABLE_VERSIONS),
-                        _d.status == DocumentStatus.ACTIVE.value,
-                    )
+                    select(_v.id, _v.document_id, _v.status)
+                    .join(documents, VERSION_DOCUMENT_JOIN)
+                    .where(is_indexable_version())
                     .order_by(_v.id)
                 )
             ).all()
@@ -230,7 +222,6 @@ class SqlAlchemyReconciliationStore:
             IndexableVersionFacts(
                 document_id=row.document_id,
                 version_id=row.id,
-                document_status=DocumentStatus(row.document_status),
                 version_status=VersionStatus(row.status),
                 policy_versions=frozenset(policies.get(row.id, ())),
                 indexed_index_ids=frozenset(indexed.get(row.id, ())),
@@ -249,12 +240,11 @@ class SqlAlchemyReconciliationStore:
                     _i.manifest_digest,
                 )
                 .join(document_versions, _v.id == _i.version_id)
-                .join(documents, _d.id == _v.document_id)
+                .join(documents, VERSION_DOCUMENT_JOIN)
                 .join(search_indexes, _s.index_id == _i.index_id)
                 .where(
                     _i.status == IndexationStatus.COMPLETED.value,
-                    _v.status.in_(_INDEXABLE_VERSIONS),
-                    _d.status == DocumentStatus.ACTIVE.value,
+                    is_indexable_version(),
                     _s.status.in_(_LIVE_INDEXES),
                 )
                 .order_by(_i.version_id, _i.index_id)

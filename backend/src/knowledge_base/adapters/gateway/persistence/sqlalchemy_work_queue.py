@@ -112,14 +112,17 @@ class SqlAlchemyWorkQueue:
         dedup_key: str,
         payload: Mapping[str, str] | None = None,
         correlation_id: UUID | None = None,
+        *,
+        reuse_running: bool = True,
     ) -> UUID:
+        reusable = (PENDING, RUNNING) if reuse_running else (PENDING,)
         members = (
             await self._session.execute(
                 select(_c.id, _c.dedup_key, _c.status).where(_family(dedup_key))
             )
         ).all()
         for member in members:
-            if member.status in (PENDING, RUNNING):
+            if member.status in reusable:
                 live: UUID = member.id
                 return live
         key = dedup_key

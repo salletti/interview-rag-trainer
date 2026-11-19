@@ -197,3 +197,16 @@ Le corps de l'ADR est inchangé. Faits de l'implémentation de S9
   backfill vers e5-small (e5-base de l'extraction + e5-small) ; 6 190 et 6 467
   recherches pendant les deux migrations, 0 erreur ; ancienne collection
   supprimée 301,7 et 301,4 s après l'activation.
+
+### Revue S9 (2026-11-19)
+
+Le corps de l'ADR est inchangé. Point 4 (migration) : l'abandon d'une
+migration, prévu par le diagramme d'états (`BUILDING --> RETIRED`), est
+exposé (`python -m runtime.index_migration abandon <index_id>`,
+`AbandonIndexMigration`) : index retiré, son travail d'indexation annulé
+sous fencing, sa collection supprimée après `KB_INDEX_DROP_DELAY_SECONDS`.
+Point 3 : « un seul index `BUILDING` par corpus » devient un invariant de
+`KnowledgeCorpus`, doublé d'un index unique partiel. Point 5 (barrière) :
+l'activation est aussi refusée quand la dernière synchronisation de
+visibilité d'un document publié est en échec. Détail :
+[knowledge-base.md §3.2, §5.4, §13, précisions revue S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings).

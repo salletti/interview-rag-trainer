@@ -11,8 +11,11 @@ Chaque politique est comptée avec le tokenizer de son profil, à la révision
 une autre révision est un autre tokenizer). Son budget est la longueur
 maximale du profil moins 2 tokens spéciaux et les tokens du préfixe de
 passage, mesurés sur le tokenizer réel (méthode de
-``DEFAULT_CHUNKING_POLICY``, ADR 0009 §3). Les profils et révisions viennent
-du benchmark de S9 (knowledge-base-embedding-benchmark.md).
+``DEFAULT_CHUNKING_POLICY``, ADR 0009 §3). Les profils (Value Objects, avec
+leurs révisions) sont définis dans le domaine
+(``domain/value_objects/embedding_profile``) ; ce module ne porte que le
+catalogue des cibles, choisi d'après le benchmark de S9
+(knowledge-base-embedding-benchmark.md).
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from typing import Final
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.embedding_profile import (
     MULTILINGUAL_E5_BASE,
-    Distance,
+    MULTILINGUAL_E5_SMALL,
     EmbeddingProfile,
 )
 from knowledge_base.frameworks.configuration.chunking import DEFAULT_CHUNKING_POLICY
@@ -48,25 +51,6 @@ class MigrationTarget:
                 f"du profil {self.profile.max_tokens}"
             )
 
-
-MULTILINGUAL_E5_SMALL_REVISION: Final = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
-
-# Même famille que l'index initial (XLM-R, préfixes « query: »/« passage: »,
-# 512 tokens), 384 dimensions. Son tokenizer est compté sous sa propre
-# identité : ``tokenizer.json`` diffère de celui de multilingual-e5-base à sa
-# révision (empreintes relevées le 2026-11-18), même si le vocabulaire
-# SentencePiece est identique ; le même budget peut donc découper autrement.
-MULTILINGUAL_E5_SMALL: Final = EmbeddingProfile(
-    model="intfloat/multilingual-e5-small",
-    revision=MULTILINGUAL_E5_SMALL_REVISION,
-    dimension=384,
-    distance=Distance.COSINE,
-    normalize=True,
-    query_prefix="query: ",
-    passage_prefix="passage: ",
-    max_tokens=512,
-    tokenizer=f"xlmr-{MULTILINGUAL_E5_SMALL_REVISION[:8]}",
-)
 
 CATALOGUE: Final[Mapping[str, MigrationTarget]] = MappingProxyType(
     {

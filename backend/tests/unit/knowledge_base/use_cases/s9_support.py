@@ -43,9 +43,9 @@ Cas d'usage (``use_cases``), un paquet par commande, même forme que S4 :
   ``RechunkVersionHandler(*, unit_of_work, blob_reader, parser, embedders,
   max_document_tokens=None)`` avec ``prepare(command)``, ``apply(transaction,
   prepared)``, ``fail(transaction, command, reason)``.
-- ``CompleteIndexationHandler(..., embedders=<EmbedderProvider>)`` à la place
-  de ``embedder=`` ; ``SearchKnowledgeHandler(..., embedders=<EmbedderProvider>)``
-  à la place de ``embedder=`` et ``token_counter=``.
+- ``CompleteIndexationHandler(..., embedders=<EmbedderProvider>)`` et
+  ``SearchKnowledgeHandler(..., embedders=<EmbedderProvider>)`` : seule forme
+  depuis la revue S9 (``embedder=`` et ``token_counter=`` supprimés).
 
 Items de la work queue (``kind``, clé de dédoublonnage, payload en texte) :
 ``rechunk_version`` (``rechunk_version:<version_id>:<index_id>``,
@@ -70,7 +70,6 @@ from knowledge_base.domain.entities.knowledge_document import (
     DocumentStatus,
     VersionStatus,
 )
-from knowledge_base.domain.providers.indexing_transaction import IndexingTransaction
 from knowledge_base.domain.value_objects.chunking_policy import ChunkingPolicy
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.embedding_profile import EmbeddingProfile
@@ -78,12 +77,8 @@ from knowledge_base.domain.value_objects.indexed_point import (
     IndexedPoint,
     PointSelector,
 )
-from knowledge_base.use_cases.complete_indexation.complete_indexation_command import (
-    CompleteIndexation,
-)
 from knowledge_base.use_cases.complete_indexation.complete_indexation_handler import (
     CompleteIndexationHandler,
-    PreparedIndexation,
 )
 from knowledge_base.use_cases.provision_search_index.provision_search_index_handler import (  # noqa: E501
     ProvisionSearchIndexHandler,
@@ -125,6 +120,7 @@ EMBEDDER_PROVIDER = f"{KB}.domain.providers.embedder_provider"
 INDEX_MIGRATION_PORT = f"{KB}.domain.providers.index_migration"
 START = f"{KB}.use_cases.start_index_migration"
 ACTIVATE = f"{KB}.use_cases.activate_search_index"
+ABANDON = f"{KB}.use_cases.abandon_index_migration"
 DROP = f"{KB}.use_cases.drop_index_collection"
 RECHUNK = f"{KB}.use_cases.rechunk_version"
 
@@ -156,6 +152,13 @@ def start_error(name: str) -> type[Exception]:
 def activate_command(index_id: UUID) -> Any:
     command = contract(
         f"{ACTIVATE}.activate_search_index_command", "ActivateSearchIndex"
+    )
+    return command(index_id=index_id)
+
+
+def abandon_command(index_id: UUID) -> Any:
+    command = contract(
+        f"{ABANDON}.abandon_index_migration_command", "AbandonIndexMigration"
     )
     return command(index_id=index_id)
 
@@ -202,6 +205,10 @@ POLICY_SAME = POLICY_A
 POLICY_SHORT = policy(60, version="chunking-test-2")
 POLICY_C = policy(40, version="chunking-test-3")
 LATER = NOW + timedelta(hours=3)
+# Délai de suppression d'une collection retirée : nul dans les tests, pour que
+# l'item soit disponible tout de suite (la production passe
+# ``KB_INDEX_DROP_DELAY_SECONDS``).
+NO_DELAY = timedelta(0)
 
 NEW_INDEX = UUID(int=8_001)
 THIRD_INDEX = UUID(int=8_002)
@@ -293,8 +300,9 @@ class FakeVersions:
     """``IndexableVersionReader`` : lit les documents de la transaction en
     cours et les lots de chunks commités.
 
-    Documents à synchronisation de visibilité en attente : ceux que le test
-    pose dans ``IndexingState.awaiting_visibility`` (aucun par défaut). Le
+    Documents à synchronisation de visibilité en attente, ou dont la dernière
+    a échoué : ceux que le test pose dans ``IndexingState.awaiting_visibility``
+    et ``IndexingState.failed_visibility`` (aucun par défaut). Le
     harnais n'exécute jamais les items ``sync_visibility`` : les déduire de la
     work queue rendrait toute activation impossible ici ; la garde est
     vérifiée par
@@ -306,6 +314,16 @@ class FakeVersions:
 
     async def documents_awaiting_visibility(self) -> frozenset[UUID]:
         return self._unit.awaiting_visibility()
+
+    async def documents_with_failed_visibility(self) -> frozenset[UUID]:
+        return self._unit.failed_visibility()
+
+    async def indexation_statuses(self, index_id: UUID) -> dict[UUID, Any]:
+        return {
+            version_id: indexation.status
+            for (version_id, in_index), indexation in self._unit.working_indexations()
+            if in_index == index_id
+        }
 
     async def list_indexable_versions(self) -> Sequence[Any]:
         make = contract(INDEX_MIGRATION_PORT, "IndexableVersion")
@@ -344,65 +362,18 @@ class S9UnitOfWork(IndexingUnitOfWork):
     def awaiting_visibility(self) -> frozenset[UUID]:
         return self._indexing_state.awaiting_visibility
 
+    def failed_visibility(self) -> frozenset[UUID]:
+        return self._indexing_state.failed_visibility
+
+    def working_indexations(self) -> list[tuple[tuple[UUID, UUID], Indexation]]:
+        return list(self._working_indexing.indexations.items())
+
     def working_documents(self) -> list[Any]:
         return list(self._working.documents.values())
 
     def policies_of(self, version_id: UUID) -> frozenset[str]:
         return frozenset(
             b.policy_version for b in self._store.batches if b.version_id == version_id
-        )
-
-
-class _ProfileAwareComplete:
-    """``CompleteIndexationHandler`` du rig, une instance par API :
-
-    - index du profil initial (``PROFILE``) : construit comme en S4
-      (``embedder=``), qui fonctionne avant et après S9 ;
-    - tout autre profil : construit avec ``embedders=`` (contrat S9), au premier
-      usage, pour que le message d'échec nomme le contrat manquant plutôt qu'une
-      erreur d'un autre ordre.
-    """
-
-    def __init__(
-        self,
-        indexing: IndexingState,
-        legacy: Callable[[], CompleteIndexationHandler],
-        provider_based: Callable[[], CompleteIndexationHandler],
-    ) -> None:
-        self._indexing = indexing
-        self._legacy = legacy()
-        self._provider_based_factory = provider_based
-        self._provider_based: CompleteIndexationHandler | None = None
-
-    def _for(self, index_id: UUID) -> CompleteIndexationHandler:
-        corpus = self._indexing.corpus
-        assert corpus is not None
-        if corpus.get_index(index_id).profile == PROFILE:
-            return self._legacy
-        if self._provider_based is None:
-            try:
-                self._provider_based = self._provider_based_factory()
-            except TypeError as error:
-                pytest.fail(
-                    "contrat S9 absent : CompleteIndexationHandler(embedders=...) "
-                    f"({error})",
-                    pytrace=False,
-                )
-        return self._provider_based
-
-    async def prepare(self, command: CompleteIndexation) -> PreparedIndexation | None:
-        return await self._for(command.index_id).prepare(command)
-
-    async def apply(
-        self, transaction: IndexingTransaction, prepared: PreparedIndexation
-    ) -> bool:
-        return await self._for(prepared.index_id).apply(transaction, prepared)
-
-    async def cancel_if_obsolete(
-        self, transaction: IndexingTransaction, command: CompleteIndexation
-    ) -> Indexation | None:
-        return await self._for(command.index_id).cancel_if_obsolete(
-            transaction, command
         )
 
 
@@ -442,7 +413,18 @@ class S9Rig(IndexingRig):
         handler = contract(
             f"{ACTIVATE}.activate_search_index_handler", "ActivateSearchIndexHandler"
         )
-        return handler(unit_of_work=self.unit_of_work, clock=lambda: LATER)
+        return handler(
+            unit_of_work=self.unit_of_work, clock=lambda: LATER, drop_delay=NO_DELAY
+        )
+
+    def abandon_handler(self, drop_delay: timedelta = timedelta(0)) -> Any:
+        handler = contract(
+            f"{ABANDON}.abandon_index_migration_handler",
+            "AbandonIndexMigrationHandler",
+        )
+        return handler(
+            unit_of_work=self.unit_of_work, clock=lambda: LATER, drop_delay=drop_delay
+        )
 
     def drop_handler(self) -> Any:
         handler = contract(
@@ -476,6 +458,9 @@ class S9Rig(IndexingRig):
 
     async def activate(self, index_id: UUID) -> None:
         await self.activate_handler().handle(activate_command(index_id))
+
+    async def abandon(self, index_id: UUID) -> None:
+        await self.abandon_handler().handle(abandon_command(index_id))
 
     async def publish_document(
         self, content: bytes, index_id: UUID | None = None
@@ -566,30 +551,6 @@ def make_s9_rig(*, max_tokens: int = 1000) -> S9Rig:
     def factory() -> S9UnitOfWork:
         return S9UnitOfWork(state, store, indexing)
 
-    def build_legacy() -> CompleteIndexationHandler:
-        return CompleteIndexationHandler(
-            unit_of_work=factory,
-            embedder=model_a,
-            vector_index=vector,
-            publisher=publish,
-            clock=lambda: NOW,
-            batch_size=32,
-        )
-
-    def build_complete() -> CompleteIndexationHandler:
-        handler: Any = CompleteIndexationHandler
-        return cast(
-            CompleteIndexationHandler,
-            handler(
-                unit_of_work=factory,
-                vector_index=vector,
-                publisher=publish,
-                clock=lambda: NOW,
-                batch_size=32,
-                embedders=provider,
-            ),
-        )
-
     extract_handler = RecordExtractionHandler(
         unit_of_work=factory,
         blob_reader=blob_reader,
@@ -612,9 +573,13 @@ def make_s9_rig(*, max_tokens: int = 1000) -> S9Rig:
         violations=base.violations,
         extract_handler=extract_handler,
         provision_handler=provision,
-        complete=cast(
-            CompleteIndexationHandler,
-            _ProfileAwareComplete(indexing, build_legacy, build_complete),
+        complete=CompleteIndexationHandler(
+            unit_of_work=factory,
+            vector_index=vector,
+            publisher=publish,
+            clock=lambda: NOW,
+            batch_size=32,
+            embedders=provider,
         ),
         publish=publish,
         sync=SyncDocumentVisibilityHandler(unit_of_work=factory, vector_index=vector),

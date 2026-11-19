@@ -26,7 +26,7 @@ from knowledge_base.domain.value_objects.citation import Citation
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit
 from knowledge_base.domain.value_objects.section_path import SectionPath
-from knowledge_base.use_cases.record_extraction.errors import DocumentTooLargeError
+from knowledge_base.use_cases.errors import DocumentTooLargeError
 
 
 class VersionExtractor:

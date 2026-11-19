@@ -5,17 +5,18 @@ La conception ne prévoit AUCUN endpoint ni commande d'administration pour
 provisionner ou activer un index (``runtime.provision`` n'a que le premier
 index, au démarrage de la stack). Proposition testée ici, à valider :
 
-- ``python -m runtime.index_migration start <nom>``, ``... activate <index_id>``,
-  ``... status`` : commande d'exploitation comme ``runtime.provision`` (pas de
-  route HTTP : une bascule est une opération rare, volontaire, à effet de bord
-  lourd) ;
+- ``python -m runtime.index_migration start <nom>``, ``... activate
+  <index_id>``, ``... abandon <index_id>`` (revue S9) : commande
+  d'exploitation comme ``runtime.provision`` (pas de route HTTP : une bascule
+  est une opération rare, volontaire, à effet de bord lourd) ;
 - surface publique (``runtime`` ne voit QUE la racine ``knowledge_base``, règle
   d'architecture ``runtime_only_sees_public_surface``) :
   ``knowledge_base.start_index_migration(session_factory, qdrant_client,
   target_name) -> UUID``, ``knowledge_base.activate_search_index(
-  session_factory, index_id) -> None`` et ``knowledge_base.
-  migration_target_names() -> tuple[str, ...]`` (les noms du catalogue, pour
-  l'aide de la commande) ;
+  session_factory, index_id) -> None``, ``knowledge_base.
+  abandon_index_migration(session_factory, index_id) -> None`` et
+  ``knowledge_base.migration_target_names() -> tuple[str, ...]`` (les noms du
+  catalogue, pour l'aide de la commande) ;
 - catalogue ``<nom> -> MigrationTarget(profile, chunking_policy)`` dans
   ``frameworks/configuration/embedding_targets.py`` (``CATALOGUE``), rempli par
   le benchmark ; chaque cible respecte son profil.
@@ -44,7 +45,11 @@ INGESTION = "knowledge_base.ingestion"
 
 
 def test_the_public_surface_exposes_the_migration_entry_points() -> None:
-    for name in ("start_index_migration", "activate_search_index"):
+    for name in (
+        "start_index_migration",
+        "activate_search_index",
+        "abandon_index_migration",
+    ):
         assert name in knowledge_base.__all__
         assert inspect.iscoroutinefunction(getattr(knowledge_base, name))
     assert "migration_target_names" in knowledge_base.__all__

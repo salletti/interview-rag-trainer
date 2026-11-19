@@ -31,7 +31,7 @@ review prêt.
 | S6 | PDF et DOCX avec Docling | S3, S5 | **Terminée** | voir journal | Ruff, mypy (316 fichiers), 1 196 unit./archi., 364 intégration, 3/3 mutations, import réel PDF et DOCX jusqu'à PUBLISHED, recherche avec pages |
 | S7 | Versions concurrentes, retrait, purge | S4, S5 | **Terminée** | voir journal | Ruff, mypy (356 fichiers), 1 305 unit./archi., 392 intégration, tests de concurrence S7 verts 13/13, 4 mutations, retrait + purge réels sur la stack de dev |
 | S8 | Réconciliation et gestion des erreurs | S7 | **Terminée** | voir journal | Ruff, mypy (419 fichiers), 1 567 unit./archi., 484 intégration, tests S8 3/3 stables, 7 mutations, écart réel corrigé en un cycle sur la stack de dev, échec rejoué par l'API |
-| S9 | Benchmark embeddings, blue/green | S5, S8 | **Terminée** | voir journal | Ruff, mypy (466 fichiers), 1 708 unit./archi., 527 intégration (stack neuve), 5 mutations, 2 migrations blue/green sur la stack de dev (12 657 recherches, 0 erreur) |
+| S9 | Benchmark embeddings, blue/green | S5, S8 | **Terminée** | voir journal | Ruff, mypy (474 fichiers), 1 735 unit./archi., 546 intégration (stack neuve, après revue), 5 + 4 mutations, 2 migrations blue/green sur la stack de dev (12 657 recherches, 0 erreur) |
 
 Ordre d'exécution retenu (compatible avec le graphe de dépendances) :
 S0 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9.
@@ -219,3 +219,12 @@ Corrections appliquées (2026-11-18) — 1 584 unitaires, 490 intégration (sur 
 - I2 — un item de réconciliation par créneau (288/jour), cycles `FAILED` dans `/failures`, rafale après une longue tâche → pas de nouvel item si un cycle attend ; cycles exclus de `/failures`. **Fait.**
 - I3 — réparation d'une dérive de manifest sur une version publiée : tous les points réécrits invisibles → document absent de la recherche jusqu'à la synchronisation. Décision : ne réécrire que les points en écart (règle « écrits invisibles » de l'ADR 0010 conservée). **Fait.**
 - M1–M9 — test de concurrence adoption O14 / rejeu, transaction par document, `reopen_count` relu sous verrou, statut en enum, codes validés contre le catalogue, renommage, port déplacé, décompte `COMPLETED_NOT_PUBLISHED`, `max-tasks-per-child`. **Fait.**
+
+Revue tech lead du commit S9 (`50b12ba`) : aucun bloquant, 4 importants, 10 mineurs.
+
+- I1 — migration bloquée sans issue : commande `abandon <index_id>` (`AbandonIndexMigration`, travail annulé sous fencing, collection supprimée après délai) ; message de `MigrationInProgressError` corrigé. **Fait.**
+- I2 — « un seul BUILDING » porté par `KnowledgeCorpus.provision_index` + index unique partiel (migration `40038a21e22f`) ; deux `start` concurrents testés sur PostgreSQL réel. **Fait.**
+- I3 — double mode `embedder=`/`embedders=` supprimé. **Fait.**
+- I4 — `sync_visibility` FAILED bloque l'activation ; `enqueue_again(reuse_running=False)` pour la resynchronisation. **Fait.**
+- M1, M2, M4–M8, M10 — **Faits** (M10 non mesuré). M9 → point O17 (§16). M3 sans action (documenté ADR 0013).
+- Signalés hors périmètre : `cancel_indexing` (S7) n'annule pas les `rechunk_version` (sans effet, `prepare` rend `None`) ; items FAILED d'un index abandonné listés dans `/failures` (rejeu refusé `OBSOLETE_WORK` d'après le code, non testé spécifiquement).

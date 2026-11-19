@@ -3,8 +3,8 @@
 CollectionMismatchError terminal » ; ADR 0011 « deux modèles peuvent être
 chargés pendant la transition »).
 
-Contrat : ``CompleteIndexationHandler(..., embedders=<EmbedderProvider>)`` (à la
-place de ``embedder=``) choisit ``embedders.for_profile(index.profile)`` pour
+Contrat : ``CompleteIndexationHandler(..., embedders=<EmbedderProvider>)`` (seule
+forme depuis la revue S9) choisit ``embedders.for_profile(index.profile)`` pour
 chaque indexation ; un profil que le fournisseur ne sait pas charger reste le
 refus terminal existant, ``CollectionMismatchError``, avant tout encodage et
 toute écriture.

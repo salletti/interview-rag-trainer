@@ -1,7 +1,7 @@
 .PHONY: help install lint format format-check typecheck test test-integration \
         test-integration-up test-integration-down ci up down build logs ps \
         migrate migration worker-ping smoke-pdf-image kb-migration-start \
-        kb-migration-activate benchmark-embeddings frontend-install \
+        kb-migration-activate kb-migration-abandon benchmark-embeddings frontend-install \
         frontend-lint frontend-test
 
 BACKEND := cd backend && uv run
@@ -67,6 +67,9 @@ kb-migration-start: ## Démarre une migration d'index : make kb-migration-start 
 
 kb-migration-activate: ## Active l'index migré : make kb-migration-activate index=<index_id>
 	docker compose run --rm --no-deps -T api python -m runtime.index_migration activate $(index)
+
+kb-migration-abandon: ## Abandonne une migration : make kb-migration-abandon index=<index_id>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration abandon $(index)
 
 # Benchmark des embeddings (S9) sur l'hôte : modèles dans backend/.cache/models,
 # rapport JSON dans backend/.cache/benchmark/ ; aucun service requis.
