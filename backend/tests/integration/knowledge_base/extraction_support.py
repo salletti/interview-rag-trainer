@@ -60,6 +60,10 @@ def test_parser() -> DocumentParser:
     )
 
 
+# Fabrique, pas un test : pytest la collecterait sinon (PytestReturnNotNoneWarning).
+test_parser.__test__ = False  # type: ignore[attr-defined]
+
+
 @dataclass(frozen=True)
 class Imported:
     document_id: UUID

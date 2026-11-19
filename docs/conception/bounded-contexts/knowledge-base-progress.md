@@ -9,14 +9,18 @@
 
 ## Statut global
 
-**En cours** — clôture conditionnée à : S0–S9 implémentées, tests requis
-passés, documentation synchronisée, review indépendante réalisée, anomalies
-bloquantes corrigées, PR globale prête (sans merge automatique).
+**Pending Independent Review** (2026-11-19) — S0–S9 implémentées et revues
+par slice, validation globale OK sur les 9 points
+([rapport](knowledge-base-validation.md)), documentation synchronisée,
+PR globale ouverte sans merge. **La review indépendante n'a pas été
+effectuée** : Codex n'est pas exécutable dans l'environnement (aucun binaire
+`codex`, aucune application ; constats du 2026-11-17 et du 2026-11-19). Le
+dossier et le prompt sont prêts :
+[knowledge-base-independent-review.md](knowledge-base-independent-review.md).
+Clôture : review faite, constats bloquants corrigés et retestés.
 
-Review indépendante : Codex **non disponible** dans l'environnement (ni CLI
-`codex`, ni application, constat du 2026-11-17). Si cela ne change pas,
-l'objectif terminera en **Pending Independent Review** avec un dossier de
-review prêt.
+Décisions en attente de l'utilisateur : ADR 0013 (profil définitif, Proposed)
+et barrière de l'ADR 0011 (point 5, Proposed).
 
 ## Jalons
 
@@ -228,3 +232,11 @@ Revue tech lead du commit S9 (`50b12ba`) : aucun bloquant, 4 importants, 10 mine
 - I4 — `sync_visibility` FAILED bloque l'activation ; `enqueue_again(reuse_running=False)` pour la resynchronisation. **Fait.**
 - M1, M2, M4–M8, M10 — **Faits** (M10 non mesuré). M9 → point O17 (§16). M3 sans action (documenté ADR 0013).
 - Signalés hors périmètre : `cancel_indexing` (S7) n'annule pas les `rechunk_version` (sans effet, `prepare` rend `None`) ; items FAILED d'un index abandonné listés dans `/failures` (rejeu refusé `OBSOLETE_WORK` d'après le code, non testé spécifiquement).
+
+Validation globale (commit `91c5b8c`, [rapport](knowledge-base-validation.md)) : 9 points OK, 5 défauts mineurs.
+
+- D1 — fabrique `test_parser` collectée comme test : `__test__ = False`. **Fait** (revalidation finale : 1 735 unitaires/architecture, 545 intégration — le test fantôme en moins —, 31 avertissements).
+- D2 — refus du domaine affichés en trace Python brute par `runtime.index_migration` (les erreurs de migration ne sont ni exportées par la racine ni rattachées à une base commune). Reporté.
+- D3 — scheduler sans healthcheck dans `compose.yaml`. Reporté.
+- D4 — aucune route REST d'état d'un document/version (suivi par psql). À décider par l'utilisateur.
+- D5 — refus terminal attendu (`OCR_REQUIRED`) journalisé en WARNING avec deux traces. Reporté.
