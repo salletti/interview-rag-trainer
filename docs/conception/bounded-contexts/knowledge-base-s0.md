@@ -87,6 +87,15 @@ S0.
 | `correlation_id` | `uuid` | NULL | traçabilité (enveloppe de 004) |
 | `created_at` / `updated_at` | `timestamptz` | NOT NULL | horodatage |
 | `completed_at` | `timestamptz` | NULL | date d'entrée dans un état terminal |
+| `reopen_count` | `integer` | NOT NULL, défaut 0, `>= 0` | *S8 :* réouvertures de l'item `FAILED` (rejeu, réconciliation bornée d'une purge) |
+
+> **Précision d'implémentation (2026-11-17)** — `max_attempts` : la colonne a
+> un défaut serveur de 5, appliqué par `enqueue` (qui accepte aussi une valeur
+> explicite) tant que l'item n'a pas été claimé. Le **claim** fixe ensuite
+> `max_attempts` à la valeur déclarée par le handler du `kind`
+> (`WorkHandler.max_attempts`), dans le même `UPDATE` (`CASE kind …` construit
+> depuis le registre) ; `retry_later` et `recover` lisent la colonne. Un `kind`
+> sans handler garde la valeur de la colonne.
 
 Index :
 
@@ -134,6 +143,18 @@ stateDiagram-v2
 | recover | `status = 'RUNNING' AND lease_expires_at < now()` | `attempts < max` → `PENDING` (+ backoff, `LEASE_EXPIRED`) ; sinon `FAILED` (`LEASE_EXPIRED_MAX_ATTEMPTS`) |
 | cancel | `id = :id AND status IN ('PENDING','RUNNING')` | `CANCELLED`, `fencing_token+1`, `completed_at` |
 | reopen (S8) | `id = :id AND status = 'FAILED'` | `PENDING`, `attempts = 0`, `available_at = now()` ; erreur conservée |
+
+> **Précision d'implémentation S8 (2026-11-18)** — `reopen` efface aussi
+> `dispatched_at` et `completed_at`, laisse le jeton de fencing inchangé
+> (jamais reculé : le claim suivant l'incrémente) et incrémente
+> `reopen_count` (migration `5d2f8c1a7b30`). Il est exécuté par
+> `RetryIngestion` sous verrou de la ligne (`SELECT … FOR UPDATE`), dans la
+> transaction qui remet l'état métier en attente, et par la réconciliation
+> pour une purge `FAILED` (au plus `KB_RECONCILE_MAX_PURGE_REOPENINGS` fois).
+> Un travail à refaire après un item **terminé** ne rouvre pas l'item : il
+> prend la génération suivante de sa clé, `<clé>:<n>`
+> (`WorkQueue.enqueue_again`), et `cancel` annule la clé et ses générations
+> ([knowledge-base.md §6, précisions S8](knowledge-base.md#6-workflow-de-traitement-avec-work_items)).
 
 Une transition dont l'UPDATE touche zéro ligne n'est **jamais** une erreur
 technique : elle signifie « déjà traité, annulé ou périmé ». L'appelant
@@ -238,6 +259,18 @@ class WorkHandler(Protocol):
 - Le handler ne fait aucune écriture métier PostgreSQL en dehors de
   `ctx.finalize` : c'est la condition pour que le fencing protège l'état métier.
 
+> **Précision d'implémentation (2026-11-17)** — cas limites de la
+> finalisation et de l'échec :
+> - un handler qui rend la main sans appeler `ctx.finalize` est un échec
+>   terminal `NOT_FINALIZED` (le hook d'échec est appelé) ;
+> - si `on_terminal_failure` lève une exception, la transaction de `fail` est
+>   annulée en entier (aucune écriture du hook, l'item reste `RUNNING`), puis
+>   l'item passe par `retry_later` dans une transaction propre, avec le code
+>   `TERMINAL_HOOK_FAILED` et le backoff ; à la dernière tentative, il est
+>   terminé `FAILED` (`TERMINAL_HOOK_FAILED`) **sans** hook. L'état métier de
+>   ce dernier cas est le point ouvert O14 de
+>   [knowledge-base.md §16](knowledge-base.md#16-points-ouverts).
+
 ## 6. Conditions exactes d'idempotence
 
 **La redélivrance d'un message ne garantit pas que l'effet d'un handler ne
@@ -288,6 +321,10 @@ ce type n'existe dans Knowledge Base V1.
 | `lease_ttl` | 300 s | `KB_WORK_LEASE_TTL_SECONDS` |
 | Heartbeat | toutes les `lease_ttl / 3` pour un handler long | `ctx.heartbeat()` |
 | Limite Celery dure (`time_limit`) | 3 600 s | `KB_WORK_TIME_LIMIT_SECONDS` |
+
+> **Précision d'implémentation (2026-11-17)** — « déclaré par le handler » :
+> la valeur est appliquée au claim (voir la précision du §2) ; le défaut 5 est
+> celui de la colonne avant le premier claim.
 
 - La fonction de backoff est **pure** (horloge et aléa injectés) et testée
   unitairement.
@@ -347,8 +384,9 @@ longue s'exécute (son message déjà acquitté), le worker peut précharger **u
 message suivant (`concurrency=1 × prefetch_multiplier=1`) qui reste non
 acquitté. S'il attend plus longtemps que le délai du broker, RabbitMQ peut le
 reprendre et le redélivrer. Il s'agit d'une notification en double,
-inoffensive grâce au claim conditionnel. Un test d'intégration de S0 vérifie ce
-comportement avec un délai court (scénario 14).
+inoffensive grâce au claim conditionnel. Un test d'intégration de S0 vérifie
+l'invariant avec un délai court ; la reprise par le broker n'a pas été observée
+(§12.2, 14).
 
 ### 8.2 Dispatch
 
@@ -371,9 +409,11 @@ Tâche périodique `knowledge_base.work.dispatch` :
 
 **Plafond en vol par file** : `en_vol = RUNNING + PENDING dispatchés depuis
 moins de redispatch_after`. On ne dispatche que si `en_vol < max_in_flight`.
-Cela borne la longueur de la file RabbitMQ quand le worker d'ingestion est
-occupé par une tâche longue, et limite les doublons de réveil (toujours
-inoffensifs grâce au claim).
+Cela borne approximativement la longueur de la file RabbitMQ quand le worker
+d'ingestion est occupé par une tâche longue, et limite les doublons de réveil
+(toujours inoffensifs grâce au claim). Le comptage n'est pas verrouillé : deux
+`dispatch` concurrents peuvent dépasser légèrement le plafond, sans danger
+grâce au claim conditionnel.
 
 ### 8.3 Reprise
 
@@ -400,6 +440,12 @@ Tâche périodique `knowledge_base.work.recover` : applique la transition
   d'ingestion : elles ne doivent pas attendre derrière une extraction longue.
 - Fichier d'état de beat éphémère (`/tmp`) : les planifications sont des
   intervalles, rien n'est à conserver.
+- Santé (ajout du 2026-11-19, défaut D3 de la
+  [validation globale](knowledge-base-validation.md)) : beat réécrit son
+  fichier d'état toutes les 180 s (`Scheduler.sync_every` de Celery) ; le
+  healthcheck Compose exige que le plus récent des fichiers
+  `/tmp/celerybeat-schedule*` (le backend dbm `sqlite3` écrit dans `-wal`)
+  ait moins de 300 s. Un beat arrêté ou bloqué devient `unhealthy`.
 - Délai maximal de prise en charge d'un item, sans panne :
   `intervalle de dispatch + attente en file`. Avec perte d'un message :
   `+ redispatch_after`. Après crash d'un worker : `+ lease_ttl + intervalle de
@@ -434,7 +480,9 @@ Garanties qui en résultent :
 
 Délai maximal entre deux notifications d'un item `PENDING` : `redispatch_after`
 (600 s). Un message en attente derrière une tâche longue peut donc être notifié
-deux fois ; le plafond `max_in_flight` borne le nombre de doublons.
+deux fois ; le plafond `max_in_flight` borne approximativement le nombre de
+doublons (des `dispatch` concurrents peuvent le dépasser légèrement, sans
+danger grâce au claim).
 
 ## 9. Ressources asyncio dans un worker Celery prefork
 
@@ -491,6 +539,15 @@ et gère les signaux du §9 ; `alembic/env.py` ajoute le `MetaData` de
 Knowledge Base à `target_metadata` avec `include_schemas=True`. `runtime/app.py`
 n'enregistre rien pour Knowledge Base en S0 (aucune route).
 
+> **Précision d'implémentation (2026-11-17)** — la fabrique
+> `create_celery_app(settings=None, *, work_handlers=())`, l'appel à
+> `register_worker` et les signaux du §9 vivent dans
+> `runtime/worker_factory.py`, sans effet de bord à l'import ;
+> `runtime/worker.py` construit l'application de production et la tâche
+> `runtime.ping`. Raison : sous macOS, les enfants prefork démarrent en
+> *spawn*, et deux applications enregistrant les mêmes tâches dans un processus
+> entrent en conflit (détail : `backend/src/runtime/README.md`).
+
 ## 11. Configuration Docker Compose
 
 Changements à apporter dans S0 (rien n'est modifié par ce document) :
@@ -546,7 +603,48 @@ code de production.
 | 11b | item d'un `kind` non enregistré | jamais dispatché, reste `PENDING`, `attempts = 0` |
 | 12 | migration : `upgrade head`, `downgrade -1`, `upgrade head` | sans erreur ; schéma conforme au §2 |
 | 13 | ressources prefork | une tâche exécutée par un vrai processus enfant réutilise la même boucle et le même moteur sur deux tâches successives (pas d'erreur « attached to a different loop ») |
-| 14 | message préchargé non acquitté au-delà d'un `consumer_timeout` court (RabbitMQ de test configuré pour ce scénario) | notification redélivrée ou redispatchée ; claim conditionnel : un seul effet métier ; comportement observé consigné dans ce document |
+| 14 | message préchargé non acquitté au-delà d'un `consumer_timeout` court (RabbitMQ de test configuré pour ce scénario) | chaque item `SUCCEEDED` avec un seul effet métier (claim conditionnel), quel que soit le chemin de notification ; comportement du broker observé et consigné ci-dessous |
+
+**Scénario 14 — comportement observé (2026-11-17, RabbitMQ 4.4.0, Celery 5.7.0,
+file `classic` durable).** `rabbitmq_test` monte
+`backend/tests/integration/rabbitmq_test/20-consumer-timeout.conf`
+(`consumer_timeout = 5000`, `consumer_timeout_response` laissé à
+`notify_consumer`) ; `make test-integration` exporte
+`KB_TEST_CONSUMER_TIMEOUT_SECONDS=5`, ce qui active le test (≈ 85 s).
+
+- **Worker in-process (pool solo) : le scénario ne se produit pas.** L'acquittement
+  anticipé est programmé par `hub.call_soon` dans le thread qui exécute la
+  tâche : le message de la tâche longue reste non acquitté pendant toute son
+  exécution (constaté côté broker : 1 prêt, 1 non acquitté, prefetch 1) et le
+  message suivant n'est jamais livré. Le test utilise donc un vrai worker
+  prefork (`--concurrency=1 --prefetch-multiplier=1`) en sous-processus.
+- **Worker prefork :** le maître acquitte le message de la tâche longue et
+  précharge le suivant. Constaté pendant 80 s : 0 message prêt, 1 non acquitté,
+  consommateur `active`/`up` ; **aucune** annulation, fermeture de canal ni
+  redélivrance, aucun journal du broker. À la fin de la tâche longue, le
+  message préchargé est exécuté normalement (claim, `SUCCEEDED`, un effet).
+  Selon les exécutions, le redispatch du test (`redispatch_after` = 5 s) publie
+  ou non une seconde notification avant ce claim ; lorsqu'il le fait, la
+  seconde exécution trouve l'item déjà pris et s'arrête (`attempts = 1`, un
+  seul effet).
+- **Sonde AMQP brute (py-amqp, sans Celery), même broker :** un message gardé
+  non acquitté 150 s avec `consumer_timeout = 5000`, puis 200 s avec
+  `consumer_timeout = 60000` (posé à chaud) : seule la livraison initiale est
+  reçue, ni `basic.cancel` (capacité `consumer_cancel_notify` annoncée par le
+  serveur), ni fermeture, ni redélivrance.
+- **Conclusion établie :** dans cette configuration, le délai d'acquittement
+  du broker n'a provoqué aucune reprise observable dans les fenêtres testées ;
+  l'invariant (un seul effet métier par item, chaque item `SUCCEEDED`) tient,
+  et le doublon de notification par redispatch est absorbé par le claim
+  conditionnel. La cause de l'absence de reprise par le broker n'est **pas**
+  établie (sémantique de `notify_consumer` en 4.4 ou application du délai aux
+  files `classic` non vérifiées) : le chemin « redélivrance par le broker »
+  du §8.1 reste non observé. La reprise ne dépend pas de lui (§8.1).
+- La valeur courte ne concerne que les messages livrés et non acquittés ; les
+  autres tests n'en gardent aucun plus de quelques secondes, à l'exception du
+  message en cours d'un worker solo (acquittement différé, ci-dessus) : un test
+  in-process dont la tâche dépasserait 5 s y serait exposé si le broker
+  appliquait le délai.
 
 ### 12.3 Architecture
 

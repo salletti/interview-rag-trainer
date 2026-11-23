@@ -1,0 +1,547 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "1.11.0",
+  "name": "qa_pytest_fr",
+  "origin": {
+    "mimetype": "application/pdf",
+    "binary_hash": 473530863431757383,
+    "filename": "qa_pytest_fr.pdf"
+  },
+  "furniture": {
+    "self_ref": "#/furniture",
+    "children": [],
+    "content_layer": "furniture",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {
+        "$ref": "#/texts/0"
+      },
+      {
+        "$ref": "#/texts/1"
+      },
+      {
+        "$ref": "#/texts/2"
+      },
+      {
+        "$ref": "#/texts/3"
+      },
+      {
+        "$ref": "#/texts/4"
+      },
+      {
+        "$ref": "#/texts/5"
+      },
+      {
+        "$ref": "#/texts/6"
+      },
+      {
+        "$ref": "#/texts/7"
+      },
+      {
+        "$ref": "#/texts/8"
+      },
+      {
+        "$ref": "#/texts/9"
+      },
+      {
+        "$ref": "#/texts/10"
+      },
+      {
+        "$ref": "#/texts/11"
+      },
+      {
+        "$ref": "#/texts/12"
+      },
+      {
+        "$ref": "#/texts/13"
+      },
+      {
+        "$ref": "#/texts/14"
+      },
+      {
+        "$ref": "#/texts/15"
+      }
+    ],
+    "content_layer": "body",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "groups": [],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 757.6858000000001,
+            "r": 333.5300000000001,
+            "b": 737.3358000000001,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            24
+          ]
+        }
+      ],
+      "orig": "Fiche de r\u00e9vision pytest",
+      "text": "Fiche de r\u00e9vision pytest",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/1",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 717.3778,
+            "r": 423.87200000000007,
+            "b": 702.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            47
+          ]
+        }
+      ],
+      "orig": "Question : \u00c0 quoi servent les fixtures pytest ?",
+      "text": "Question : \u00c0 quoi servent les fixtures pytest ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/2",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 690.7878000000001,
+            "r": 522.4549999999999,
+            "b": 650.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            269
+          ]
+        }
+      ],
+      "orig": "Une fixture pr\u00e9pare une ressource n\u00e9cessaire \u00e0 un test et la lib\u00e8re ensuite ; le test la re\u00e7oit en d\u00e9clarant un param\u00e8tre du m\u00eame nom. Les fixtures remplacent les m\u00e9thodes setUp et tearDown, se composent entre elles et peuvent \u00eatre partag\u00e9es par un fichier conftest.py.",
+      "text": "Une fixture pr\u00e9pare une ressource n\u00e9cessaire \u00e0 un test et la lib\u00e8re ensuite ; le test la re\u00e7oit en d\u00e9clarant un param\u00e8tre du m\u00eame nom. Les fixtures remplacent les m\u00e9thodes setUp et tearDown, se composent entre elles et peuvent \u00eatre partag\u00e9es par un fichier conftest.py."
+    },
+    {
+      "self_ref": "#/texts/3",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "code",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 90.0,
+            "t": 636.9478,
+            "r": 252.00000000000009,
+            "b": 594.6273103338633,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            64
+          ]
+        }
+      ],
+      "orig": "@pytest.fixture def client(): with TestClient(app) as c: yield c",
+      "text": "@pytest.fixture def client(): with TestClient(app) as c: yield c",
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "code_language": "unknown"
+    },
+    {
+      "self_ref": "#/texts/4",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 574.3778,
+            "r": 457.6640000000001,
+            "b": 539.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            73
+          ]
+        }
+      ],
+      "orig": "Question : Comment ex\u00e9cuter le m\u00eame test avec plusieurs jeux de donn\u00e9es ?",
+      "text": "Question : Comment ex\u00e9cuter le m\u00eame test avec plusieurs jeux de donn\u00e9es ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/5",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 527.7878,
+            "r": 509.03499999999985,
+            "b": 487.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            202
+          ]
+        }
+      ],
+      "orig": "Le d\u00e9corateur parametrize ex\u00e9cute le test une fois par jeu de valeurs et nomme chaque cas, ce qui rend un \u00e9chec pr\u00e9cis. On l'emploie plut\u00f4t qu'une boucle dans le test, qui s'arr\u00eaterait au premier \u00e9chec.",
+      "text": "Le d\u00e9corateur parametrize ex\u00e9cute le test une fois par jeu de valeurs et nomme chaque cas, ce qui rend un \u00e9chec pr\u00e9cis. On l'emploie plut\u00f4t qu'une boucle dans le test, qui s'arr\u00eaterait au premier \u00e9chec."
+    },
+    {
+      "self_ref": "#/texts/6",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "code",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 90.0,
+            "t": 473.9478,
+            "r": 440.9999999999997,
+            "b": 443.62731033386325,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            123
+          ]
+        }
+      ],
+      "orig": "@pytest.mark.parametrize(\"a, b, attendu\", [(1, 2, 3), (0, 0, 0)]) def test_addition(a, b, attendu): assert a + b == attendu",
+      "text": "@pytest.mark.parametrize(\"a, b, attendu\", [(1, 2, 3), (0, 0, 0)]) def test_addition(a, b, attendu): assert a + b == attendu",
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "code_language": "unknown"
+    },
+    {
+      "self_ref": "#/texts/7",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 423.3778,
+            "r": 518.096,
+            "b": 388.57779999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            61
+          ]
+        }
+      ],
+      "orig": "Question : Quand faut-il utiliser un mock et quand l'\u00e9viter ?",
+      "text": "Question : Quand faut-il utiliser un mock et quand l'\u00e9viter ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/8",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 376.78779999999995,
+            "r": 522.8415950000001,
+            "b": 336.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            266
+          ]
+        }
+      ],
+      "orig": "Un mock remplace une fronti\u00e8re que le test ne contr\u00f4le pas : r\u00e9seau, horloge, syst\u00e8me de fichiers. On l'\u00e9vite pour la logique que l'on veut v\u00e9rifier, sinon le test confirme seulement ce que le mock a \u00e9t\u00e9 configur\u00e9 pour r\u00e9pondre, et il casse \u00e0 chaque refactorisation.",
+      "text": "Un mock remplace une fronti\u00e8re que le test ne contr\u00f4le pas : r\u00e9seau, horloge, syst\u00e8me de fichiers. On l'\u00e9vite pour la logique que l'on veut v\u00e9rifier, sinon le test confirme seulement ce que le mock a \u00e9t\u00e9 configur\u00e9 pour r\u00e9pondre, et il casse \u00e0 chaque refactorisation."
+    },
+    {
+      "self_ref": "#/texts/9",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 316.3778,
+            "r": 490.5120000000001,
+            "b": 281.5777999999999,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            64
+          ]
+        }
+      ],
+      "orig": "Question : Comment v\u00e9rifier qu'une fonction l\u00e8ve une exception ?",
+      "text": "Question : Comment v\u00e9rifier qu'une fonction l\u00e8ve une exception ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/10",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 269.78779999999995,
+            "r": 498.6399999999999,
+            "b": 244.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            158
+          ]
+        }
+      ],
+      "orig": "On utilise le gestionnaire de contexte pytest.raises, qui \u00e9choue si l'exception n'est pas lev\u00e9e, et dont on peut contr\u00f4ler le message avec le param\u00e8tre match.",
+      "text": "On utilise le gestionnaire de contexte pytest.raises, qui \u00e9choue si l'exception n'est pas lev\u00e9e, et dont on peut contr\u00f4ler le message avec le param\u00e8tre match."
+    },
+    {
+      "self_ref": "#/texts/11",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "code",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 90.0,
+            "t": 230.94780000000003,
+            "r": 349.2000000000001,
+            "b": 212.6273103338633,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            66
+          ]
+        }
+      ],
+      "orig": "with pytest.raises(ValueError, match=\"n\u00e9gatif\"): racine_carree(-1)",
+      "text": "with pytest.raises(ValueError, match=\"n\u00e9gatif\"): racine_carree(-1)",
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "code_language": "unknown"
+    },
+    {
+      "self_ref": "#/texts/12",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 192.37779999999998,
+            "r": 485.2320000000001,
+            "b": 157.57780000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            62
+          ]
+        }
+      ],
+      "orig": "Question : Comment s\u00e9parer les tests lents des tests rapides ?",
+      "text": "Question : Comment s\u00e9parer les tests lents des tests rapides ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/13",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 78.0,
+            "t": 145.78779999999995,
+            "r": 518.8029999999999,
+            "b": 105.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            260
+          ]
+        }
+      ],
+      "orig": "On pose un marqueur personnalis\u00e9 sur les tests lents, d\u00e9clar\u00e9 dans la configuration, puis on s\u00e9lectionne ou on exclut ces tests en ligne de commande avec l'option -m. La suite rapide tourne alors \u00e0 chaque modification et la suite lente en int\u00e9gration continue.",
+      "text": "On pose un marqueur personnalis\u00e9 sur les tests lents, d\u00e9clar\u00e9 dans la configuration, puis on s\u00e9lectionne ou on exclut ces tests en ligne de commande avec l'option -m. La suite rapide tourne alors \u00e0 chaque modification et la suite lente en int\u00e9gration continue."
+    },
+    {
+      "self_ref": "#/texts/14",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 2,
+          "bbox": {
+            "l": 78.0,
+            "t": 759.3778,
+            "r": 460.3360000000001,
+            "b": 724.5778,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            64
+          ]
+        }
+      ],
+      "orig": "Question : Qu'est-ce que la couverture de code ne garantit pas ?",
+      "text": "Question : Qu'est-ce que la couverture de code ne garantit pas ?",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/15",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 2,
+          "bbox": {
+            "l": 78.0,
+            "t": 712.7878000000001,
+            "r": 521.828,
+            "b": 672.6128,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            243
+          ]
+        }
+      ],
+      "orig": "La couverture mesure les lignes ex\u00e9cut\u00e9es, pas les comportements v\u00e9rifi\u00e9s. Un test sans assertion fait monter le pourcentage sans rien prot\u00e9ger ; seule une mutation du code qui fait \u00e9chouer un test prouve que ce test a un pouvoir discriminant.",
+      "text": "La couverture mesure les lignes ex\u00e9cut\u00e9es, pas les comportements v\u00e9rifi\u00e9s. Un test sans assertion fait monter le pourcentage sans rien prot\u00e9ger ; seule une mutation du code qui fait \u00e9chouer un test prouve que ce test a un pouvoir discriminant."
+    }
+  ],
+  "pictures": [],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {
+    "1": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 1
+    },
+    "2": {
+      "size": {
+        "width": 595.2756,
+        "height": 841.8898
+      },
+      "page_no": 2
+    }
+  }
+}

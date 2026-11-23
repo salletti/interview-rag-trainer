@@ -1,0 +1,75 @@
+{
+  "title": "Python interview notes",
+  "kind": "QA_SHEET",
+  "language": "en",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "SECTION",
+      "question": null,
+      "section_path": [
+        "Python interview notes"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "These notes collect the questions"
+        ]
+      ]
+    },
+    {
+      "type": "QA",
+      "question": "What is the GIL?",
+      "section_path": [
+        "Python interview notes",
+        "Concurrency"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "The Global Interpreter Lock lets"
+        ]
+      ]
+    },
+    {
+      "type": "QA",
+      "question": "When should you use asyncio instead of threads",
+      "section_path": [
+        "Python interview notes",
+        "Concurrency"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Use asyncio for many concurrent"
+        ],
+        [
+          "CodeBlock",
+          "async def fetch_all(urls): return await"
+        ]
+      ]
+    },
+    {
+      "type": "QA",
+      "question": "How does functools.wraps work?",
+      "section_path": [
+        "Python interview notes",
+        "Decorators"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "It copies the name, docstring"
+        ]
+      ]
+    }
+  ]
+}

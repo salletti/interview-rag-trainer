@@ -88,3 +88,125 @@ initial doit être choisi sans benchmark local : il doit donc rester révisable.
   [0008](0008-custom-pipeline-docling-extraction.md).
 - Conception : [knowledge-base.md §13](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings),
   [feuille de route S9](../conception/bounded-contexts/knowledge-base-roadmap.md#s9--benchmark-des-embeddings-et-migration-bluegreen).
+
+## Suivi (2026-11-18)
+
+Faits de l'implémentation de S4, le corps de l'ADR est inchangé.
+
+- **Profil initial** (`MULTILINGUAL_E5_BASE`,
+  `backend/src/knowledge_base/domain/value_objects/embedding_profile.py`) :
+  `intfloat/multilingual-e5-base`, révision épinglée
+  `d128750597153bb5987e10b1c3493a34e5a4502a` (commit relevé sur le Hub le
+  2026-11-18), 768 dimensions, cosine, vecteurs normalisés, préfixes
+  `query: ` / `passage: `, 512 tokens, tokenizer `xlmr-d1287505` (XLM-R livré
+  avec le modèle à cette révision).
+- **Politique de production** : `kb-chunking-v1` comptée avec ce tokenizer,
+  identité `kb-chunking-v1+xlmr-d1287505`, budget 508 tokens. Sur les fixtures
+  du corpus (12 chunks), le plus long chunk encodé avec préfixe et tokens
+  spéciaux fait 375 tokens : le comptage du `TokenCounter` (sans préfixe ni
+  tokens spéciaux) plus 4 est exact.
+- **Premier index** : créé et activé sur corpus vide par `python -m
+  runtime.provision` (service Compose `kb_provision`), idempotent ; collection
+  Qdrant `kb_index_<index_id>` créée avant la transaction.
+- **Barrière** (point 5) : en place pour `RecordExtraction` (`FOR SHARE`) et
+  `PublishDocumentVersion` (`FOR SHARE`) ; `ActivateSearchIndex` sous
+  `FOR UPDATE` arrive avec S9. Le point reste Proposed jusqu'à S9.
+- **Correction (revue S4, 2026-11-18)** de la formulation précédente, qui
+  écrivait « l'agrégat porte déjà I10 et le contrôle de couverture » :
+  l'agrégat porte I10 (au plus un index `ACTIVE`, l'ancien devient `RETIRED`),
+  mais **pas la preuve de couverture d'I11**. `KnowledgeCorpus.activate_index`
+  reçoit un booléen `coverage_complete` qu'il ne fait que vérifier ; le seul
+  appelant, le provisionnement initial, le passe à `True` en dur
+  (`provision_search_index_handler.py`), ce qui n'est juste que parce que le
+  corpus n'a encore aucun index, donc aucune version publiée (I9). Le calcul
+  réel de la couverture (toutes les versions publiées de documents `ACTIVE`
+  `COMPLETED` dans l'index candidat, sous `FOR UPDATE` du corpus) arrive avec
+  `ActivateSearchIndex` en S9.
+- **Clé étrangère de l'index actif** (revue S4) : `knowledge_corpus
+  (corpus_id, active_index_id)` référence `search_indexes(corpus_id,
+  index_id)`, `DEFERRABLE INITIALLY DEFERRED` (migration `c43c7e850745`) :
+  la base garantit que l'index actif existe et appartient au corpus ; I10
+  reste porté par l'agrégat et l'index unique partiel.
+- **Mesures** (CPU, `SentenceTransformer` en `device="cpu"`, lot de 32 chunks
+  de 152 tokens en moyenne) :
+
+  | | Conteneur Linux arm64 (image `production`, 18 vCPU) | Hôte macOS arm64 |
+  |---|---|---|
+  | Chargement, cache chaud, import de torch compris | 3,65 s | 5,02 s |
+  | RSS après chargement | 904 Mio | 1 023 Mio (pic) |
+  | RSS après un lot de 32 | 1 667 Mio | 1 863 Mio (pic) |
+  | Encodage, médiane de 5 lots | 91 ms/chunk (2,92 s le lot) | 51 ms/chunk (1,62 s) |
+  | Deux encodages du même texte | écart maximal 0 | écart maximal 0 |
+
+  La RAM du worker d'ingestion avoisine donc 1,7 Gio dès la première
+  indexation ; l'API ne charge pas le modèle en S4 (recherche : S5). Le
+  benchmark de S9 comparera ces chiffres à ceux des autres candidats.
+
+S5 (2026-11-18) : l'API charge le modèle du profil initial à la **première
+recherche** (pas au démarrage) ; RSS du processus serveur 146 → 1 267 Mio,
+premier appel 4,3 s, encodage d'une requête 63 ms médians dans le conteneur
+de dev (13 ms sur l'hôte macOS). Garde-fou en attendant S9 : la recherche
+refuse (`SEARCH_PROFILE_MISMATCH`) un index actif dont le profil diffère de
+celui de l'embedder de l'API, au lieu de comparer des vecteurs incompatibles.
+Le chargement « du modèle de l'index actif » (Conséquences) arrive avec la
+migration blue/green.
+
+## S9 — migration blue/green (2026-11-18)
+
+Le corps de l'ADR est inchangé. Faits de l'implémentation de S9
+([knowledge-base.md §13, précisions S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings),
+[README du contexte](../../backend/src/knowledge_base/README.md#s9--benchmark-des-embeddings-et-migration-bluegreen)) :
+
+- **Profil (point 6)** : le profil définitif est proposé par l'**ADR 0013**
+  ([Proposed](0013-definitive-embedding-profile.md)), qui complète et, pour le
+  seul choix du profil, remplace le point 6 une fois accepté ; il propose de
+  **conserver `multilingual-e5-base`** (budget mémoire mesuré ; Qwen3-Embedding-0.6B,
+  meilleur en qualité, en chemin de montée en gamme). Le présent ADR n'est pas
+  modifié. Mesures : [rapport de benchmark](../conception/bounded-contexts/knowledge-base-embedding-benchmark.md).
+- **Migration (point 4)** : `ProvisionSearchIndex` reste la commande de
+  démarrage de la stack (premier index, idempotente) ; le démarrage d'une
+  migration est la commande distincte `StartIndexMigration` (index
+  `BUILDING`, sa collection, backfill des versions publiées et extraites de
+  documents actifs ; un seul index `BUILDING` à la fois). Pilotage par
+  `python -m runtime.index_migration start <cible> | activate <index_id>`,
+  sans route HTTP ; cibles : catalogue `embedding_targets.CATALOGUE`.
+- **Barrière (point 5)** : implémentée et vérifiée sur PostgreSQL réel, sans
+  délai (`test_s9_concurrency`) : `StartIndexMigration` et
+  `ActivateSearchIndex` tiennent `FOR UPDATE` dès leur première lecture ;
+  une extraction en cours retarde le provisionnement, dont le backfill voit sa
+  version ; une publication en cours retarde l'activation, dont la preuve la
+  voit et refuse. La couverture d'I11 est **calculée** dans la transaction
+  de l'activation. S9 ajoute une garde : activation refusée tant qu'une
+  synchronisation de visibilité d'un document publié est en attente (points
+  du candidat encore invisibles). Le statut de ce point reste celui de
+  l'index des ADR (Proposed) jusqu'à sa validation par l'utilisateur.
+- **Rechunking (point 7)** : `rechunk_version` produit, pour un index d'une
+  autre politique, un second lot de la version (re-parsing de l'original,
+  O4), puis son indexation ; une extraction pendant la construction planifie
+  ce rechunking au lieu d'ignorer l'index (S4).
+- **Conséquences** : la recherche choisit le modèle du profil de l'index
+  actif (`EmbedderProvider`, un modèle paresseux par profil du catalogue) ;
+  un profil non chargeable reste `SEARCH_PROFILE_MISMATCH` (503), jamais un
+  autre modèle. Le worker encode chaque index avec le modèle de son profil
+  (un profil non chargeable : `COLLECTION_MISMATCH` pour cet index seul,
+  report S4 M3 levé). L'ancien index passe `RETIRED` ; sa collection est
+  supprimée par `drop_index_collection` après `KB_INDEX_DROP_DELAY_SECONDS`.
+- **Mémoire pendant la transition** (démonstration sur la stack de dev,
+  2026-11-18/19) : processus serveur de l'API 1 277 → 1 666 Mio avec deux
+  modèles après la bascule ; enfant de `worker_ingestion` 1 964 Mio pendant le
+  backfill vers e5-small (e5-base de l'extraction + e5-small) ; 6 190 et 6 467
+  recherches pendant les deux migrations, 0 erreur ; ancienne collection
+  supprimée 301,7 et 301,4 s après l'activation.
+
+### Revue S9 (2026-11-19)
+
+Le corps de l'ADR est inchangé. Point 4 (migration) : l'abandon d'une
+migration, prévu par le diagramme d'états (`BUILDING --> RETIRED`), est
+exposé (`python -m runtime.index_migration abandon <index_id>`,
+`AbandonIndexMigration`) : index retiré, son travail d'indexation annulé
+sous fencing, sa collection supprimée après `KB_INDEX_DROP_DELAY_SECONDS`.
+Point 3 : « un seul index `BUILDING` par corpus » devient un invariant de
+`KnowledgeCorpus`, doublé d'un index unique partiel. Point 5 (barrière) :
+l'activation est aussi refusée quand la dernière synchronisation de
+visibilité d'un document publié est en échec. Détail :
+[knowledge-base.md §3.2, §5.4, §13, précisions revue S9](../conception/bounded-contexts/knowledge-base.md#13-changement-de-modèle-dembeddings).

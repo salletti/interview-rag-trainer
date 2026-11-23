@@ -1,0 +1,305 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "1.11.0",
+  "name": "cours_git_fr",
+  "origin": {
+    "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "binary_hash": 17906130961164835164,
+    "filename": "cours_git_fr.docx"
+  },
+  "furniture": {
+    "self_ref": "#/furniture",
+    "children": [],
+    "content_layer": "furniture",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {
+        "$ref": "#/texts/0"
+      }
+    ],
+    "content_layer": "body",
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "groups": [],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "$ref": "#/body"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/1"
+        },
+        {
+          "$ref": "#/texts/3"
+        },
+        {
+          "$ref": "#/texts/6"
+        },
+        {
+          "$ref": "#/texts/8"
+        },
+        {
+          "$ref": "#/texts/10"
+        },
+        {
+          "$ref": "#/texts/12"
+        }
+      ],
+      "content_layer": "body",
+      "label": "title",
+      "prov": [],
+      "orig": "Cours Git",
+      "text": "Cours Git"
+    },
+    {
+      "self_ref": "#/texts/1",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/2"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "Branches",
+      "text": "Branches",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/2",
+      "parent": {
+        "$ref": "#/texts/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "Une branche est un pointeur mobile vers un commit. Cr\u00e9er une branche ne copie rien : on peut donc en ouvrir une par fonctionnalit\u00e9 sans co\u00fbt, travailler en isolation puis la proposer \u00e0 la fusion.",
+      "text": "Une branche est un pointeur mobile vers un commit. Cr\u00e9er une branche ne copie rien : on peut donc en ouvrir une par fonctionnalit\u00e9 sans co\u00fbt, travailler en isolation puis la proposer \u00e0 la fusion.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/3",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/4"
+        },
+        {
+          "$ref": "#/texts/5"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "Fusion et rebase",
+      "text": "Fusion et rebase",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/4",
+      "parent": {
+        "$ref": "#/texts/3"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "La fusion cr\u00e9e un commit de fusion qui relie deux historiques et conserve la chronologie r\u00e9elle. Le rebase rejoue les commits d'une branche au-dessus d'une autre pour obtenir un historique lin\u00e9aire, mais il r\u00e9\u00e9crit les commits : on ne rebase jamais une branche d\u00e9j\u00e0 partag\u00e9e avec d'autres personnes.",
+      "text": "La fusion cr\u00e9e un commit de fusion qui relie deux historiques et conserve la chronologie r\u00e9elle. Le rebase rejoue les commits d'une branche au-dessus d'une autre pour obtenir un historique lin\u00e9aire, mais il r\u00e9\u00e9crit les commits : on ne rebase jamais une branche d\u00e9j\u00e0 partag\u00e9e avec d'autres personnes.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/5",
+      "parent": {
+        "$ref": "#/texts/3"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "git switch fonctionnalite\ngit rebase main",
+      "text": "git switch fonctionnalite\ngit rebase main",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/6",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/7"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "Annuler une modification",
+      "text": "Annuler une modification",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/7",
+      "parent": {
+        "$ref": "#/texts/6"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "Pour d\u00e9faire un commit d\u00e9j\u00e0 publi\u00e9, on utilise git revert, qui ajoute un commit inverse sans toucher \u00e0 l'historique. Pour abandonner des commits locaux, git reset d\u00e9place la branche ; avec l'option --hard il d\u00e9truit aussi les modifications du r\u00e9pertoire de travail, \u00e0 manier avec prudence.",
+      "text": "Pour d\u00e9faire un commit d\u00e9j\u00e0 publi\u00e9, on utilise git revert, qui ajoute un commit inverse sans toucher \u00e0 l'historique. Pour abandonner des commits locaux, git reset d\u00e9place la branche ; avec l'option --hard il d\u00e9truit aussi les modifications du r\u00e9pertoire de travail, \u00e0 manier avec prudence.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/8",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/9"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "Mettre de c\u00f4t\u00e9 du travail en cours",
+      "text": "Mettre de c\u00f4t\u00e9 du travail en cours",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/9",
+      "parent": {
+        "$ref": "#/texts/8"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "La commande git stash enregistre les modifications non valid\u00e9es dans une pile et r\u00e9tablit un r\u00e9pertoire propre, ce qui permet de changer de branche pour une urgence. On r\u00e9cup\u00e8re ensuite le travail avec git stash pop.",
+      "text": "La commande git stash enregistre les modifications non valid\u00e9es dans une pile et r\u00e9tablit un r\u00e9pertoire propre, ce qui permet de changer de branche pour une urgence. On r\u00e9cup\u00e8re ensuite le travail avec git stash pop.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/10",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/11"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "Retrouver le commit fautif",
+      "text": "Retrouver le commit fautif",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/11",
+      "parent": {
+        "$ref": "#/texts/10"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "git bisect cherche par dichotomie le commit qui a introduit un bogue : on d\u00e9signe un commit sain et un commit d\u00e9fectueux, puis Git propose des commits interm\u00e9diaires \u00e0 tester jusqu'\u00e0 isoler le coupable en un nombre logarithmique d'\u00e9tapes.",
+      "text": "git bisect cherche par dichotomie le commit qui a introduit un bogue : on d\u00e9signe un commit sain et un commit d\u00e9fectueux, puis Git propose des commits interm\u00e9diaires \u00e0 tester jusqu'\u00e0 isoler le coupable en un nombre logarithmique d'\u00e9tapes.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    },
+    {
+      "self_ref": "#/texts/12",
+      "parent": {
+        "$ref": "#/texts/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/13"
+        }
+      ],
+      "content_layer": "body",
+      "label": "section_header",
+      "prov": [],
+      "orig": "R\u00e9cup\u00e9rer un seul commit",
+      "text": "R\u00e9cup\u00e9rer un seul commit",
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/13",
+      "parent": {
+        "$ref": "#/texts/12"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "text",
+      "prov": [],
+      "orig": "git cherry-pick applique sur la branche courante les changements d'un commit choisi d'une autre branche, en cr\u00e9ant un nouveau commit. C'est utile pour reporter un correctif sur une branche de maintenance sans fusionner tout le reste.",
+      "text": "git cherry-pick applique sur la branche courante les changements d'un commit choisi d'une autre branche, en cr\u00e9ant un nouveau commit. C'est utile pour reporter un correctif sur une branche de maintenance sans fusionner tout le reste.",
+      "formatting": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "script": "baseline"
+      }
+    }
+  ],
+  "pictures": [],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {}
+}

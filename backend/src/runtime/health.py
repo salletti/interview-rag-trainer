@@ -4,10 +4,15 @@
   interrogée.
 - ``/health/ready`` : disponibilité des dépendances. PostgreSQL est
   **requis** (sans lui, aucun cas d'usage ne peut persister : 503). Qdrant et
-  RabbitMQ sont sondés et rapportés mais **non bloquants** en Phase 1 : le RAG
-  n'est pas encore implémenté et la publication d'événements passera par une
-  outbox PostgreSQL, donc l'API peut servir en mode dégradé sans eux
-  (docs/decisions/0006-technical-bootstrap.md).
+  RabbitMQ sont sondés et rapportés mais **non bloquants** (``degraded``) :
+  sans Qdrant, l'API sert encore l'import de documents (S2), qui n'écrit que
+  dans PostgreSQL et le volume des originaux ; seule la recherche (S5) échoue,
+  en 500, jamais en faux résultat vide. RabbitMQ n'est pas appelé par l'API :
+  les work items passent par la table ``work_items`` (ADR 0004). Retirer
+  l'API du trafic quand Qdrant manque couperait l'import sans protéger la
+  recherche (docs/decisions/0006-technical-bootstrap.md ; décision de la
+  revue S5). Le modèle d'embeddings n'est jamais sondé : il est chargé à la
+  première recherche.
 
 Les réponses ne contiennent jamais d'hôte, de port, d'identifiant ni de DSN.
 """

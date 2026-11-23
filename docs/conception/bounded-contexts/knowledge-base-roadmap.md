@@ -46,6 +46,8 @@ flowchart LR
 
 ## S0 — Infrastructure de traitement durable
 
+> **Statut : implémentée (2026-11-18)** sur `feature/knowledge-base-v1` — unitaires, architecture et 109 tests d'intégration verts ; scénario 14 : invariant prouvé, reprise par le broker non observée ([S0 §12.2](knowledge-base-s0.md#122-intégration-postgresql-et-rabbitmq-réels-composetestyaml)).
+
 - **Objectif :** tout travail enregistré dans une transaction métier est
   exécuté puis terminé explicitement, malgré pertes de messages, redélivrances
   et crashs.
@@ -59,6 +61,8 @@ flowchart LR
 - **Tests, critères, risques :** voir [knowledge-base-s0.md](knowledge-base-s0.md).
 
 ## S1 — Domaine `KnowledgeDocument` et `DocumentVersion`
+
+> **Statut : implémentée (2026-11-18)** — 96 tests unitaires du domaine, 8 mutations sur 8 détectées, règle d'architecture « domaine pur = bibliothèque standard ».
 
 - **Objectif :** modèle pur du document et de ses versions, avec les
   invariants I1 à I6 de [knowledge-base.md §4](knowledge-base.md#4-invariants).
@@ -83,6 +87,8 @@ flowchart LR
 - **Risques :** sur-modélisation ; anticiper S4 ou S7 dans l'agrégat.
 
 ## S2 — Import Markdown/TXT, stockage original et dédoublonnage
+
+> **Statut : implémentée (2026-11-18)** — import multipart (corps mis en tampon par Starlette, copie vers le volume en flux avec limite appliquée pendant la copie), blob adressé par SHA-256, `Idempotency-Key`, O2 tranché (§16) ; 309 unitaires et 162 tests d'intégration verts.
 
 - **Objectif :** importer un fichier Markdown ou TXT, conserver l'original,
   enregistrer document et version `RECEIVED`, planifier l'extraction.
@@ -110,6 +116,8 @@ flowchart LR
   orphelins de blob entre dépôt et commit.
 
 ## S3 — Docling Markdown, `KnowledgeUnit` et chunking
+
+> **Statut : implémentée (2026-11-18)** — `docling-slim[format-markdown]==2.150.1` (sans torch, +93 Mo), segmentation par `DocumentKind`, `ChunkPlanner` avec fallbacks, politique `kb-chunking-v1` (508 tokens, compteur approximatif majorant), handler `extract_version` câblé ; 5 goldens rejoués avec Docling ; 529 unitaires et 192 tests d'intégration verts.
 
 - **Objectif :** transformer une version `RECEIVED` en unités et chunks
   persistés, avec provenance complète.
@@ -140,6 +148,8 @@ flowchart LR
   dépendances Docling.
 
 ## S4 — Embeddings, Qdrant, index initial et publication
+
+> **Statut : implémentée (2026-11-18)** — profil `intfloat/multilingual-e5-base` épinglé (révision `d1287505`, torch CPU sans CUDA), tokenizer réel (`kb-chunking-v1+xlmr-d1287505`), index initial provisionné par `kb_provision`, indexation vérifiée par manifest, publication sous barrière du corpus, `sync_visibility` ; 759 unitaires et 273 tests d'intégration verts (dont 18 `model` avec le vrai E5) ; import réel jusqu'à `PUBLISHED` sur la stack de dev.
 
 - **Objectif :** indexer les chunks d'une version, vérifier l'index et publier
   la version.
@@ -172,6 +182,8 @@ flowchart LR
 
 ## S5 — Recherche sémantique, provenance et évaluation RAG
 
+> **Statut : implémentée (2026-11-18)** — contrat public `KnowledgeSearch` et `build_knowledge_search`, `POST /api/v1/knowledge-base/search`, contrôle SQL après Qdrant (`visible=true`), complément f = 2 / 1 passe (O12 tranché, `max_passage_tokens` = 1024 Proposed), small-to-big ; jeu de 42 requêtes : Recall@5 0,881, MRR 0,853, intégrité 1,00 non exercée (unités mono-chunk), inter-langues 0,75 ; seuils de non-régression fixés ; 1 115 unitaires et 321 tests d'intégration verts.
+
 - **Objectif :** rechercher des passages traçables et mesurer la qualité de
   récupération.
 - **Périmètre :** query `SearchKnowledge` (§12 de la conception) ; contrat
@@ -197,6 +209,8 @@ flowchart LR
 
 ## S6 — Extraction PDF/DOCX avec Docling
 
+> **Statut : implémentée (2026-11-18)** — Docling PDF (OCR désactivé, vérifications pypdfium2 avant layout : chiffré/corrompu → `INVALID_DOCUMENT`, > 300 pages → `TOO_MANY_PAGES`, sans couche texte → `OCR_REQUIRED`) et DOCX ; mapping Docling commun aux trois formats ; limites 20 Mio / 300 pages confirmées (PDF de 300 pages : 15 min jusqu'à `PUBLISHED`, pic RSS worker 2,6 Gio) ; aucune régression S5 (Recall@5 0,905 avec PDF/DOCX) ; intégrité sur passages tronqués 0,875 au budget 1024 ; 1 196 unitaires et 364 tests d'intégration verts.
+
 - **Objectif :** importer des PDF natifs et des DOCX avec la même qualité
   d'unités que le Markdown.
 - **Périmètre :** pipelines Docling PDF (layout, tableaux) et DOCX, OCR
@@ -210,13 +224,18 @@ flowchart LR
 - **Tests d'intégration :** PDF et DOCX de fixtures équivalents à un Markdown
   existant → unités équivalentes ; PDF scanné → `FAILED` `OCR_REQUIRED` sans
   retry ; PDF chiffré ou corrompu → échec terminal ; PDF de plus de 300 pages
-  refusé ; évaluation S5 étendue aux nouveaux formats.
+  refusé ; évaluation S5 étendue aux nouveaux formats, avec des unités
+  multi-chunks (pour que l'intégrité d'unité soit exercée), des négatifs
+  proches et des requêtes à identifiants de code (revue S5).
 - **Critères d'acceptation :** mesures consignées ; limites de taille et de
-  pages confirmées ou révisées (ADR 0012) ; aucune régression des métriques S5.
+  pages confirmées ou révisées (ADR 0012) ; aucune régression des métriques S5 ;
+  intégrité d'unité mesurée sur au moins une unité tronquée.
 - **Risques :** qualité du layout PDF sur le code ; durée d'extraction et
   lease ; licences des poids de modèles à revérifier au lock.
 
 ## S7 — Versions concurrentes, retrait et purge
+
+> **Statut : implémentée (2026-11-18)** — import de N+1 qui annule l'indexation de N, `DELETE /documents/{id}` (202, tombstone, purge planifiée), `purge_document` (points des index vivants → chunks, unités, `purged_at` sous fencing → blobs non détenus après le commit, ordre de l'ADR 0012 point 6 rétabli par la revue S7), `CleanBlobOrphans` (délai de grâce 24 h Proposed, sans ordonnancement ; suppression conditionnelle, sans course avec un import du même contenu, depuis la revue S7), recherche tolérante aux hits supprimés pendant la requête ; décisions consignées dans [knowledge-base.md §10, précisions S7](knowledge-base.md#10-publication-retrait-et-purge).
 
 - **Objectif :** garantir qu'aucune version obsolète ne devient visible et
   que le retrait est immédiat.
@@ -240,11 +259,35 @@ flowchart LR
 
 ## S8 — Durcissement de la réconciliation et gestion des erreurs
 
+> **Statut : implémentée (2026-11-18)** sur `feature/knowledge-base-v1` — catalogue unique des codes d'erreur, `ReconcileKnowledgeBase` (work item par créneau, Qdrant lu avant PostgreSQL), `RetryIngestion` et `GET /failures`, O10, O14, O15, O16 tranchés ([knowledge-base.md §16](knowledge-base.md#16-points-ouverts)) ; détail dans le [README du contexte](../../../backend/src/knowledge_base/README.md#s8--réconciliation-et-gestion-des-erreurs).
+
 - **Objectif :** aucun état bloqué ni écart durable entre PostgreSQL, Qdrant et
   le stockage.
 - **Périmètre :** `ReconcileKnowledgeBase` (indexations `COMPLETED` non
   publiées, versions sans indexation dans l'index actif, points en trop,
-  échantillonnage des manifests, blobs non référencés) ; `RetryIngestion`
+  échantillonnage des manifests, blobs non référencés ; points d'une version
+  `PUBLISHED` de document `ACTIVE` avec `visible=false` → replanifier
+  `sync_visibility` — fenêtre résiduelle d'une tentative zombie d'`index_version`,
+  [knowledge-base.md §7.3](knowledge-base.md#73-conditions-didempotence-des-effets-externes) ;
+  versions `EXTRACTED` sans aucune indexation, repérées par le code de journal
+  `EXTRACTED_WITHOUT_INDEXATION` de `RecordExtraction` ; **ajouts S7 :**
+  document `WITHDRAWN` qui a encore des points dans un index vivant (tentative
+  zombie d'`index_version` après la purge) → replanifier `purge_document`,
+  **sous une clé distincte** (suffixe de génération,
+  `purge_document:<document_id>:<n>`) ou par réouverture explicite de l'item :
+  la clé `purge_document:<document_id>` est `UNIQUE` sans condition et
+  `enqueue` rend l'item existant même terminé, un nouvel `enqueue` serait un
+  no-op silencieux (comportement figé par
+  `test_rescheduling_a_completed_purge_under_its_key_creates_no_work`, à
+  changer consciemment) ; ordonnancement périodique de `CleanBlobOrphans`
+  (délai `KB_BLOB_ORPHAN_GRACE_SECONDS`) ; temporaires de `tmp/` abandonnés ;
+  fichiers laissés sous `KB_BLOB_ROOT/quarantine/` par un crash pendant la
+  suppression conditionnelle d'un orphelin (à remettre à leur chemin s'ils
+  sont détenus, à supprimer sinon ; la course entre ce nettoyage et un import
+  du même contenu est fermée depuis la revue S7) ; blobs restés après une
+  purge dont la suppression post-commit a échoué (orphelins ordinaires) ; item
+  `purge_document` `FAILED` (aucun hook métier),
+  [knowledge-base.md §10](knowledge-base.md#10-publication-retrait-et-purge)) ; `RetryIngestion`
   (réouverture d'un item `FAILED`) ; catalogue des codes d'erreur ; consultation
   des échecs (endpoint de lecture) ; décision O10 (DLQ).
 - **Dépendances :** S7.
@@ -260,11 +303,15 @@ flowchart LR
 
 ## S9 — Benchmark des embeddings et migration blue/green
 
+> **Statut : implémentée (2026-11-19)** sur `feature/knowledge-base-v1` — unitaires, architecture et intégration verts ; benchmark : [rapport](knowledge-base-embedding-benchmark.md) ; profil définitif : [ADR 0013](../../decisions/0013-definitive-embedding-profile.md) (Proposed) ; migration aller-retour démontrée sur la stack de dev.
+
 - **Objectif :** choisir le profil définitif sur mesures et migrer sans
   interruption.
 - **Périmètre :** benchmark `multilingual-e5-small`, `multilingual-e5-base`,
-  `bge-m3`, éventuellement `Qwen3-Embedding-0.6B`, sur le jeu de S5 (qualité,
-  RAM, CPU, latence de requête, durée d'indexation) ; `ProvisionSearchIndex`,
+  `bge-m3`, éventuellement `Qwen3-Embedding-0.6B`, sur le jeu de S5 étendu en
+  S6 (qualité, RAM, CPU, latence de requête, durée d'indexation), y compris
+  négatifs proches et requêtes à identifiants de code (O6, recherche
+  hybride) ; `ProvisionSearchIndex`,
   backfill, `ActivateSearchIndex` avec barrière (I10, I11) ; retrait de l'ancien
   index ; rechunking si la `ChunkingPolicy` diffère ; décisions O1, O4, O6.
 - **Dépendances :** S5, S8.

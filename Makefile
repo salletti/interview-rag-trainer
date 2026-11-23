@@ -1,6 +1,8 @@
 .PHONY: help install lint format format-check typecheck test test-integration \
         test-integration-up test-integration-down ci up down build logs ps \
-        migrate migration worker-ping frontend-install frontend-lint frontend-test
+        migrate migration worker-ping smoke-pdf-image kb-migration-start \
+        kb-migration-activate kb-migration-abandon benchmark-embeddings frontend-install \
+        frontend-lint frontend-test
 
 BACKEND := cd backend && uv run
 FRONTEND := cd frontend && npm run
@@ -9,7 +11,16 @@ FRONTEND := cd frontend && npm run
 INTEGRATION_ENV := ENVIRONMENT=test POSTGRES_HOST=localhost POSTGRES_PORT=5441 \
 	POSTGRES_USER=irt_test POSTGRES_PASSWORD=irt_test POSTGRES_DB=irt_test \
 	QDRANT_HOST=localhost QDRANT_PORT=6343 \
-	RABBITMQ_HOST=localhost RABBITMQ_PORT=5682 RABBITMQ_USER=irt_test RABBITMQ_PASSWORD=irt_test
+	RABBITMQ_HOST=localhost RABBITMQ_PORT=5682 RABBITMQ_USER=irt_test RABBITMQ_PASSWORD=irt_test \
+	KB_TEST_CONSUMER_TIMEOUT_SECONDS=5 \
+	SENTENCE_TRANSFORMERS_HOME=$(CURDIR)/backend/.cache/models \
+	HF_HOME=$(CURDIR)/backend/.cache/huggingface HF_HUB_DISABLE_XET=1
+# KB_TEST_CONSUMER_TIMEOUT_SECONDS active le scénario 14 de S0 : il doit
+# valoir le consumer_timeout de backend/tests/integration/rabbitmq_test/
+# 20-consumer-timeout.conf (en secondes).
+# SENTENCE_TRANSFORMERS_HOME : cache local (ignoré par git) des poids du
+# modèle des tests `model` (S4), téléchargés une fois au premier lancement.
+# HF_HOME : idem pour les poids de Docling PDF (S6 : layout, TableFormer).
 
 help: ## Liste des cibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'
@@ -34,12 +45,12 @@ test: ## Tests unitaires et d'architecture (sans service externe)
 	$(BACKEND) pytest
 
 test-integration-up:
-	docker compose -f compose.test.yaml up -d --wait
+	docker compose -f compose.test.yaml up -d --wait --build
 
 test-integration-down:
 	docker compose -f compose.test.yaml down -v
 
-test-integration: test-integration-up ## Tests d'intégration contre compose.test.yaml
+test-integration: test-integration-up ## Tests d'intégration contre compose.test.yaml (dont les tests `model`, vrai E5)
 	cd backend && export $(INTEGRATION_ENV); \
 	uv run alembic upgrade head; status=$$?; \
 	if [ $$status -eq 0 ]; then uv run pytest -m integration; status=$$?; fi; \
@@ -47,6 +58,25 @@ test-integration: test-integration-up ## Tests d'intégration contre compose.tes
 	exit $$status
 
 ci: lint typecheck test frontend-lint frontend-test ## Équivalent local de la CI
+
+# Migration blue/green de l'index de recherche (S9) : conteneur éphémère de
+# l'image de l'API, mêmes variables que la stack ; le backfill est exécuté par
+# worker_ingestion. Procédure : docs/guides/environnement-local.md.
+kb-migration-start: ## Démarre une migration d'index : make kb-migration-start target=<cible>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration start $(target)
+
+kb-migration-activate: ## Active l'index migré : make kb-migration-activate index=<index_id>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration activate $(index)
+
+kb-migration-abandon: ## Abandonne une migration : make kb-migration-abandon index=<index_id>
+	docker compose run --rm --no-deps -T api python -m runtime.index_migration abandon $(index)
+
+# Benchmark des embeddings (S9) sur l'hôte : modèles dans backend/.cache/models,
+# rapport JSON dans backend/.cache/benchmark/ ; aucun service requis.
+benchmark-embeddings: ## Benchmark des profils d'embeddings (S9, long : plusieurs modèles)
+	cd backend && SENTENCE_TRANSFORMERS_HOME=$(CURDIR)/backend/.cache/models \
+	HF_HOME=$(CURDIR)/backend/.cache/huggingface HF_HUB_DISABLE_XET=1 \
+	uv run python scripts/benchmark_embeddings.py $(models)
 
 # --- Frontend ----------------------------------------------------------------
 frontend-lint: ## ESLint, Prettier (check) et tsc
@@ -81,3 +111,12 @@ migration: ## Crée une migration vide : make migration m="slug"
 
 worker-ping: ## Vérifie l'aller-retour broker → worker → result backend
 	docker compose exec api python -c "from runtime.worker import ping; print(ping.delay().get(timeout=10))"
+
+# Conteneur éphémère de l'image de worker_ingestion (volumes du service, dont
+# models_cache), sans toucher au worker en cours ; script et fixture montés
+# depuis l'hôte pour exécuter leur version courante.
+smoke-pdf-image: ## Parseur PDF dans l'image de dev : titres et code reconnus (polices, S6)
+	docker compose run --rm --no-deps -T \
+		-v ./backend/scripts:/app/scripts:ro \
+		-v ./backend/tests/fixtures/knowledge_base/office:/app/smoke:ro \
+		worker_ingestion python scripts/smoke_pdf_parser.py /app/smoke/cours_git_fr.pdf

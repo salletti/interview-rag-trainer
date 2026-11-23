@@ -1,0 +1,65 @@
+{
+  "title": "Fiche de révision Python",
+  "kind": "REVISION_SHEET",
+  "language": "fr",
+  "media_type": "text/markdown",
+  "policy": {
+    "version": "golden-1",
+    "max_tokens": 120
+  },
+  "units": [
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "GIL"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Le Global Interpreter Lock est"
+        ]
+      ]
+    },
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "Décorateur"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Un décorateur est une fonction"
+        ],
+        [
+          "Heading",
+          "Exemple"
+        ],
+        [
+          "CodeBlock",
+          "def chronometre(fonction): def enveloppe(*args, **kwargs):"
+        ]
+      ]
+    },
+    {
+      "type": "DEFINITION",
+      "question": null,
+      "section_path": [
+        "Fiche de révision Python",
+        "Générateur"
+      ],
+      "chunks": 1,
+      "blocks": [
+        [
+          "Paragraph",
+          "Un générateur est une fonction"
+        ]
+      ]
+    }
+  ]
+}

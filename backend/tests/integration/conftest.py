@@ -8,6 +8,7 @@ jamais passer « par défaut » sans service réel.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 
 import pytest
@@ -18,6 +19,32 @@ from runtime.app import create_app
 from runtime.settings import Settings
 
 pytestmark = pytest.mark.integration
+
+# Ports de la stack de développement (compose.yaml) : les fixtures
+# d'intégration vident des tables, elles ne doivent jamais les viser.
+_DEV_PORTS = {"POSTGRES_PORT": "5440"}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_non_test_environment() -> None:
+    """Arrête la session si l'environnement n'est pas celui de ``compose.test.yaml``.
+
+    Sans ``make test-integration``, les réglages par défaut visent la base de
+    développement, que les fixtures de nettoyage videraient (incident S6 du
+    2026-11-18). Ce garde-fou s'exécute avant toute fixture de fonction.
+    """
+    if os.environ.get("ENVIRONMENT") != "test":
+        pytest.exit(
+            "tests d'intégration refusés : ENVIRONMENT != 'test' "
+            "(lancer `make test-integration`)",
+            returncode=2,
+        )
+    for name, dev_value in _DEV_PORTS.items():
+        if os.environ.get(name, dev_value) == dev_value:
+            pytest.exit(
+                f"tests d'intégration refusés : {name} vise la stack de développement",
+                returncode=2,
+            )
 
 
 @pytest.fixture
