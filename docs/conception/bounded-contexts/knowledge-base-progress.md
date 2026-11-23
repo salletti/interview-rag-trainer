@@ -15,8 +15,9 @@ review indépendante **effectuée par Codex** sur `28e29fc`
 ([rapport](knowledge-base-independent-review-report.md) : 1 bloquant,
 3 importants), les quatre constats corrigés avec tests rouges d'abord et
 mutations tuées, puis revalidés : 1 780 unitaires/architecture,
-549 intégration. PR #3 ouverte, **non mergée**. Les corrections post-review
-n'ont pas été relues par Codex.
+549 intégration. PR #3 mergée dans `main`
+(`431b336`). Seconde passe Codex sur `0d8d063` : quatre constats corrigés,
+aucun nouveau défaut, bloquant levé ([rapport](knowledge-base-independent-review-report.md#seconde-passe-commit-0d8d063)).
 
 Décisions en attente de l'utilisateur : ADR 0013 (profil définitif, Proposed)
 et barrière de l'ADR 0011 (point 5, Proposed).

@@ -119,3 +119,47 @@ moment de la review.
 | Budget de passage | 5 004 tokens rendus pour un budget de 1 024 | Question et corps respectent le budget |
 | Upload chunked | Corps entier consommé avant le 413 | Lecture interrompue au plafond global |
 | Décompression DOCX | Partie binaire chargée hors du comptage XML | Volume décompressé total borné |
+
+## Seconde passe (commit `0d8d063`)
+
+Seconde review effectuée par Codex, lancée par l'utilisateur, sur les
+corrections de `0d8d063`. Elle a été transmise le 2026-11-23 et son contenu
+est reproduit sans modification de fond.
+
+**Les quatre constats sont corrigés.** Aucun nouveau défaut n'a été identifié
+dans les corrections examinées, et le bloquant est levé.
+
+### Vérifications relancées indépendamment
+
+- Ruff et mypy : aucune erreur.
+- 1 780 tests unitaires et d'architecture passent.
+- 549 tests d'intégration passent, dont la publication forcée entre deux
+  passes sur PostgreSQL et Qdrant réels.
+- Les tests de régression échouent bien quand chacun des anciens
+  comportements est réintroduit en mémoire, sans modifier les fichiers.
+- Avec le tokenizer E5 réel, la question longue testée produit un passage de
+  762 tokens, sous le plafond de 1 024.
+
+Aucun fichier source n'a été modifié et la stack de développement n'a pas été
+utilisée. La stack de test a été supprimée après l'exécution.
+
+### Non vérifié
+
+La validation porte sur les correctifs de `0d8d063`. Trois points restent non
+vérifiés :
+
+- la mémoire de Docling à l'approche de 100 Mio décompressés ;
+- le coût des archives qui comportent un très grand nombre d'entrées ;
+- l'effet mémoire du recyclage des workers.
+
+Le champ `question` reste intégral ; seul `text` est borné. Les décisions
+encore Proposed restent à arbitrer.
+
+### Problème / Avant / Après
+
+| Problème | Avant — faits établis | Après — vérifié |
+|---|---|---|
+| Versions mélangées | N et N+1 renvoyées ensemble | Revalidation commune ; test concurrent réel réussi |
+| Passage trop long | 5 403 tokens pour un budget de 1 024 | Budget respecté ; vérification avec E5 réel |
+| Upload chunked | 200 455 octets lus avant le refus | Lecture interrompue au plafond, à un message ASGI près |
+| Décompression DOCX | Partie binaire hors du comptage XML | Toutes les entrées comptées ; dépassement refusé avant Docling |
