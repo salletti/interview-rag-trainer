@@ -347,6 +347,48 @@ ci-dessus restent ceux du commit `91c5b8c`.
   ligne WARNING avec son code et son message, sans trace ; une erreur
   inattendue et l'erreur d'un hook d'échec sont des ERROR tracés.
 
+## Corrections post-review
+
+Review indépendante (Codex) du commit `28e29fc`, 2026-11-23 : un constat
+bloquant et trois importants
+([rapport](knowledge-base-independent-review-report.md)). Les quatre ont été
+reproduits par un test rouge avant correction, puis corrigés sur la même
+branche. Précisions datées : [conception](knowledge-base.md) §8, §12, §15 et
+O16 ; [README du contexte](../../../backend/src/knowledge_base/README.md) ;
+suivi de l'[ADR 0012](../../decisions/0012-original-document-storage-and-purge.md).
+
+| # | Constat | Reproduit | Correction | Tests |
+|---|---|---|---|---|
+| 1 | Bloquant : deux versions d'un document dans une réponse | Oui : versions 3 et 4 rendues ensemble (doubles) ; N et N+1 ensemble sur PostgreSQL et Qdrant réels | Chaque lecture SQL relit les unités déjà retenues avec les nouveaux candidats ; lecture en `REPEATABLE READ` (un instantané) ; une relecture qui écarte une unité est un rejet remplacé par la passe suivante, sinon `complete=false` | `test_search_knowledge_snapshot` (3), `test_search_version_snapshot` (intégration, barrière entre les passes) |
+| 2 | Question longue hors budget | Oui : 5 403 tokens rendus pour un budget de 1 024 (question de 5 001 tokens) | Question réservée avant la fenêtre (moitié du budget au plus, tronquée aux mots, Proposed) ; texte final compté et tronqué au budget s'il dépasse | `test_passage_assembler` (5 nouveaux, 3 ajustés) |
+| 3 | Upload chunked lu en entier avant le 413 | Oui : 200 455 octets lus pour une limite de 1 000 | `receive` ASGI enveloppé dans la classe de route : lecture interrompue au plafond global | `test_document_routes_http` (3 nouveaux : arrêt de lecture compté) |
+| 4 | Partie DOCX reliée hors comptage | Oui : partie binaire reliée de 100 Mio + 1 acceptée par la limite de production ; python-docx la charge | Somme des `file_size` de toute l'archive, `MAX_DOCX_UNCOMPRESSED_BYTES` = 100 Mio (Proposed) | `test_office_parser_failures` (7 nouveaux, 2 réécrits) ; fixtures DOCX acceptées |
+
+Pourquoi le test S7 de non-mélange ne voyait pas le constat 1 : ses
+recherches tournent librement autour de la publication, sans barrière entre
+deux passes d'une même recherche, et, tant que N est publiée, rien n'est
+rejeté, donc aucun complément n'a lieu. Il reste vert avec la correction, et
+il reste vert aussi avec la mutation qui la retire : il ne protège pas ce cas.
+
+Mutations, une par constat (correction retirée, puis restaurée) :
+
+| # | Mutation | Tuée par |
+|---|---|---|
+| 1 | Relecture des seuls nouveaux candidats (code d'avant) | 3 tests unitaires ; `make test-integration` : `1 failed, 548 passed` (`test_search_version_snapshot`, version N en plus de N+1) |
+| 2 | Question non réservée, pas de contrôle final | 4 tests unitaires |
+| 3 | `receive` non enveloppé | 2 tests unitaires |
+| 4 | Somme limitée à `word/*.xml` | 4 tests unitaires |
+
+Validation après correction : `uv run ruff check . && uv run ruff format
+--check . && uv run mypy && uv run pytest -q` → 1 780 tests passent ;
+`make test-integration` → 549 tests passent (548 + 1 nouveau), 31
+avertissements.
+
+Non mesurés : la règle de la moitié du budget pour la question (aucune
+question du jeu de référence n'en approche) ; la RSS de Docling sur un DOCX
+proche de 100 Mio décompressés ; le coût du répertoire central d'une archive
+à très nombreuses entrées.
+
 ## Non exécuté
 
 - **Frontend** (`make frontend-lint frontend-test`) : hors du périmètre demandé (backend Knowledge Base).

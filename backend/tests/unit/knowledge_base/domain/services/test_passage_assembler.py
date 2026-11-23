@@ -25,6 +25,7 @@ from knowledge_base.domain.services.passage_assembler import (
 )
 from knowledge_base.domain.value_objects.chunk_hit import ChunkHit
 from knowledge_base.domain.value_objects.document_chunk import DocumentChunk
+from knowledge_base.domain.value_objects.document_kind import DocumentKind
 from knowledge_base.domain.value_objects.knowledge_unit import KnowledgeUnit, UnitType
 from knowledge_base.domain.value_objects.published_unit import (
     PublishedUnit,
@@ -34,8 +35,11 @@ from knowledge_base.domain.value_objects.structured_document import render_block
 from tests.unit.knowledge_base.domain.services.support import (
     COUNTER,
     base_citation,
+    doc,
+    h,
     make_unit,
     p,
+    pipeline,
     plan,
     words,
 )
@@ -120,13 +124,17 @@ def test_the_window_grows_towards_another_matched_chunk() -> None:
     assert passage.matched_chunk_ids == (chunks[3].chunk_id, chunks[1].chunk_id)
 
 
-def test_a_single_chunk_larger_than_the_budget_is_returned_alone() -> None:
+def test_a_single_chunk_larger_than_the_budget_is_returned_alone_cut_to_it() -> None:
+    # Review indépendante, constat 2 : le texte rendu ne dépasse jamais le
+    # budget ; le chunk trop grand est retenu seul puis tronqué aux mots.
     unit, chunks = long_qa_unit()
 
-    passage = assemble(unit, [hit(chunks[4], 0.9)], max_tokens=10)
+    passage = assemble(unit, [hit(chunks[4], 0.9)], max_tokens=20)
 
     assert passage.truncated is True
-    assert words(30, prefix="p4-") in passage.text
+    assert COUNTER.count(passage.text) <= 20
+    assert passage.text.endswith(f" {TRUNCATION_MARK}")
+    assert "p4-0 " in passage.text
     assert "p3-" not in passage.text
     assert "p5-" not in passage.text
     assert passage.matched_chunk_ids == (chunks[4].chunk_id,)
@@ -231,15 +239,16 @@ LONG_QUESTION = " ".join(f"q{i}" for i in range(30)) + " ?"
 
 def long_question_unit() -> tuple[PublishedUnit, tuple[DocumentChunk, ...]]:
     """En-tête de 35 mots pour un budget de chunk de 45 : le ``ChunkPlanner``
-    le tronque à 22 mots (la moitié du budget), suivi de `` …``."""
+    le tronque à 22 mots (la moitié du budget), suivi de `` …`` ; six chunks
+    de 37 tokens (90 de blocs, 123 avec la ligne de question de 33)."""
     unit = make_unit(
-        *(p(words(15, prefix=f"p{n}-")) for n in range(4)),
+        *(p(words(15, prefix=f"p{n}-")) for n in range(6)),
         unit_type=UnitType.QA,
         question=LONG_QUESTION,
         path=("Tests",),
     )
     chunks = plan(unit, max_tokens=45)
-    assert len(chunks) == 4
+    assert len(chunks) == 6
     assert all(TRUNCATION_MARK in c.contextual_text for c in chunks)
     return published(unit, chunks), chunks
 
@@ -247,7 +256,8 @@ def long_question_unit() -> tuple[PublishedUnit, tuple[DocumentChunk, ...]]:
 def test_a_truncated_contextual_header_is_not_repeated_in_the_window() -> None:
     unit, chunks = long_question_unit()
 
-    passage = assemble(unit, [hit(chunks[1], 0.9), hit(chunks[2], 0.5)], max_tokens=80)
+    # 110 : la ligne de question (33 tokens) puis deux chunks de 37.
+    passage = assemble(unit, [hit(chunks[1], 0.9), hit(chunks[2], 0.5)], max_tokens=110)
 
     assert passage.truncated is True
     assert "p1-0 " in passage.text
@@ -262,7 +272,8 @@ def test_a_truncated_contextual_header_is_not_repeated_in_the_window() -> None:
 def test_a_truncated_header_leaves_exactly_the_chunk_contents() -> None:
     unit, chunks = long_question_unit()
 
-    passage = assemble(unit, [hit(chunks[3], 0.9)], max_tokens=40)
+    # 70 : la ligne de question (33 tokens, moins de la moitié) puis un chunk.
+    passage = assemble(unit, [hit(chunks[3], 0.9)], max_tokens=70)
 
     assert passage.text == (f"Question : {LONG_QUESTION}\n\n{words(15, prefix='p3-')}")
 
@@ -286,3 +297,80 @@ def test_the_contextual_header_is_stripped_whole_or_truncated(
     contextual_text: str, content: str
 ) -> None:
     assert strip_contextual_header(contextual_text, HEADER) == content
+
+
+# --- budget : une question longue (review indépendante, constat 2) -------------
+#
+# Segmentation, chunking et assemblage réels, budget de chunk de production
+# (508) et budget de passage proposé (1 024) : le ``ChunkPlanner`` a tronqué la
+# question dans l'en-tête de chaque chunk, la fenêtre doit aussi la borner.
+
+HUGE_QUESTION = words(5_000, prefix="q") + " ?"
+
+
+def huge_question_unit(
+    question: str = HUGE_QUESTION,
+) -> tuple[PublishedUnit, tuple[DocumentChunk, ...]]:
+    """Fiche Q/R : une question puis six paragraphes de 200 mots."""
+    document = doc(
+        h(1, "Fiche"),
+        h(2, question),
+        *(p(words(200, prefix=f"p{n}-")) for n in range(6)),
+    )
+    units, chunks = pipeline(document, DocumentKind.QA_SHEET, max_tokens=508)
+    (unit,) = units
+    assert unit.question_text == question
+    return published(unit, chunks), chunks
+
+
+def test_a_question_longer_than_the_budget_leaves_the_passage_within_it() -> None:
+    unit, chunks = huge_question_unit()
+    assert COUNTER.count(HUGE_QUESTION) == 5_001
+
+    passage = assemble(unit, [hit(chunks[1], 0.9)], max_tokens=1_024)
+
+    assert passage.truncated is True
+    assert COUNTER.count(passage.text) <= 1_024
+    assert passage.text.startswith("Question : q0 q1 ")
+    assert words(200, prefix="p1-") in passage.text  # le chunk trouvé reste
+    assert passage.matched_chunk_ids == (chunks[1].chunk_id,)
+
+
+def test_a_question_over_half_the_budget_is_cut_at_words_with_a_mark() -> None:
+    unit, chunks = huge_question_unit()
+
+    passage = assemble(unit, [hit(chunks[1], 0.9)], max_tokens=1_024)
+
+    question_line, _, _ = passage.text.partition("\n\n")
+    assert question_line.endswith(f" {TRUNCATION_MARK}")
+    assert COUNTER.count(question_line) <= 1_024 // 2
+    assert "q4999" not in passage.text
+
+
+def test_the_truncation_of_a_long_question_is_deterministic() -> None:
+    unit, chunks = huge_question_unit()
+    hits = [hit(chunks[3], 0.9)]
+
+    assert assemble(unit, hits, max_tokens=1_024) == assemble(
+        unit, hits, max_tokens=1_024
+    )
+
+
+def test_a_question_within_half_the_budget_is_kept_whole_in_the_window() -> None:
+    question = words(300, prefix="q") + " ?"
+    unit, chunks = huge_question_unit(question)
+
+    passage = assemble(unit, [hit(chunks[1], 0.9)], max_tokens=1_024)
+
+    assert passage.truncated is True
+    assert passage.text.startswith(f"Question : {question}\n\n")
+    assert COUNTER.count(passage.text) <= 1_024
+
+
+@pytest.mark.parametrize("budget", [600, 1_024, 2_048])
+def test_the_window_and_its_question_never_exceed_the_budget(budget: int) -> None:
+    unit, chunks = huge_question_unit(words(400, prefix="q") + " ?")
+
+    for matched in chunks:
+        passage = assemble(unit, [hit(matched, 0.9)], max_tokens=budget)
+        assert COUNTER.count(passage.text) <= budget, matched.ordinal_in_unit

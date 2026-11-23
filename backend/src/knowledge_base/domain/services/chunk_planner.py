@@ -165,23 +165,7 @@ class ChunkPlanner:
         limit = self._policy.max_tokens // 2
         if self._counter.count(header) <= limit:
             return header
-        return self._truncate(header, limit)
-
-    def _truncate(self, header: str, limit: int) -> str:
-        def truncated(prefix: str) -> str:
-            return f"{prefix.rstrip()} {TRUNCATION_MARK}"
-
-        def fits(prefix: str) -> bool:
-            return self._counter.count(truncated(prefix)) <= limit
-
-        word_ends = [match.end() for match in re.finditer(r"\S+", header)]
-        words = _longest_fitting(
-            lambda count: fits(header[: word_ends[count - 1]]), len(word_ends)
-        )
-        if words:
-            return truncated(header[: word_ends[words - 1]])
-        length = _longest_fitting(lambda n: fits(header[:n]), len(header))
-        return truncated(header[:length]) if length else TRUNCATION_MARK
+        return truncate_at_words(header, limit, self._counter)
 
     # --- découpe d'un bloc trop grand ---------------------------------------------
 
@@ -239,6 +223,29 @@ class ChunkPlanner:
                 page_end=pages.end,
             ),
         )
+
+
+def truncate_at_words(text: str, limit: int, token_counter: TokenCounter) -> str:
+    """Plus long préfixe de ``text`` coupé à une fin de mot, suivi de `` …``,
+    qui tient dans ``limit`` tokens ; à défaut, coupé à un caractère ; à défaut
+    encore, ``…`` seul. Déterministe : même texte, même compteur, même
+    résultat. Utilisé pour l'en-tête d'un chunk et pour le passage rendu par
+    ``passage_assembler``."""
+
+    def truncated(prefix: str) -> str:
+        return f"{prefix.rstrip()} {TRUNCATION_MARK}"
+
+    def fits(prefix: str) -> bool:
+        return token_counter.count(truncated(prefix)) <= limit
+
+    word_ends = [match.end() for match in re.finditer(r"\S+", text)]
+    words = _longest_fitting(
+        lambda count: fits(text[: word_ends[count - 1]]), len(word_ends)
+    )
+    if words:
+        return truncated(text[: word_ends[words - 1]])
+    length = _longest_fitting(lambda n: fits(text[:n]), len(text))
+    return truncated(text[:length]) if length else TRUNCATION_MARK
 
 
 def contextual_header(

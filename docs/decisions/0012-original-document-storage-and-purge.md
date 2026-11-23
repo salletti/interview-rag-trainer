@@ -179,6 +179,15 @@ borne de volume de texte commune à tous les formats (tokens extraits ou
 chunks) reste ouverte pour S8** (O16). Cette section ne modifie pas la
 décision ci-dessus.
 
+**Review indépendante — garde-fou DOCX et corps sans `Content-Length`**
+(2026-11-23, suivi sans changement de décision ; détail dans la
+[conception](../conception/bounded-contexts/knowledge-base.md#16-points-ouverts),
+O16 et §15) : le garde-fou ci-dessus somme désormais **toutes** les entrées de
+l'archive (`MAX_DOCX_UNCOMPRESSED_BYTES`, 100 Mio, Proposed), python-docx
+chargeant aussi les parties binaires reliées ; `MAX_DOCX_XML_BYTES`
+disparaît. La limite d'octets de l'import borne aussi un corps HTTP sans
+`Content-Length` : lecture interrompue au plafond (limite + 64 Kio).
+
 **Revue S6 — mémoire sur conversions successives** (2026-11-18, M8) : un
 processus de l'image de `worker_ingestion` (conteneur éphémère `docker compose
 run`, stack de dev, code de la revue S6) garde **un** `DoclingPdfParser`,

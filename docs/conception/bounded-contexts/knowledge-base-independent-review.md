@@ -1,12 +1,11 @@
 # Knowledge Base — dossier de review indépendante (Codex)
 
-> **Statut : Pending Independent Review.** La review indépendante demandée
-> pour clôturer l'objectif S0–S9 **n'a pas été effectuée** : Codex n'est pas
-> exécutable dans l'environnement de développement (aucun binaire `codex` dans
-> le `PATH`, aucune application installée ; constats du 2026-11-17 et du
-> 2026-11-19). Ce dossier contient tout ce qu'il faut pour la lancer.
-> Les revues par slice faites par un agent tech lead (S2 à S9, consignées dans
-> [le suivi](knowledge-base-progress.md)) **ne remplacent pas** cette review.
+> **Statut : review effectuée** (2026-11-23, Codex, commit `28e29fc`) :
+> [rapport](knowledge-base-independent-review-report.md), constats corrigés
+> (voir [le suivi](knowledge-base-progress.md)). Historique : Codex n'était
+> pas exécutable dans l'environnement de développement (constats du
+> 2026-11-17 et du 2026-11-19) ; la review a été lancée par l'utilisateur
+> avec le prompt de la section 6.
 
 ## 1. Objet
 

@@ -12,6 +12,16 @@
    ``complement_passes`` passes de ``manquantes x f`` unités, excluant les
    unités écartées ET déjà retenues. Arrêt anticipé si une passe rend moins
    d'unités que demandé (plus rien à trouver).
+
+   Chaque lecture SQL porte sur les unités déjà retenues ET les nouvelles : les
+   unités rendues sont donc toutes validées par la dernière lecture, un seul
+   instantané où, sous I4, un document n'a qu'une version publiée. Valider
+   chaque passe sur ses seuls nouveaux candidats laissait une publication
+   commitée entre deux passes rendre une unité de N et une de N+1 (review
+   indépendante, constat 1). Une unité retenue que la relecture écarte devient
+   un rejet comme un autre : la passe suivante la remplace s'il en reste, sinon
+   ``complete`` est faux. Le nombre de passes reste borné, et celui des
+   lectures SQL inchangé (une par passe).
 6. Passages reconstruits (small-to-big, ``passage_assembler``), classés par
    meilleur score de leurs chunks, au plus ``limit``. Le tokenizer du profil
    de l'index actif compte la question dans le budget : celui du modèle que
@@ -117,8 +127,10 @@ class SearchKnowledgeHandler:
                 excluded_unit_ids=frozenset(rejected | retained.keys()),
             )
             found = _by_unit(hits)
-            published = await self._published.read_published(list(found))
-            for unit_id, unit_hits in found.items():
+            candidates = {i: r.hits for i, r in retained.items()} | found
+            published = await self._published.read_published(list(candidates))
+            retained = {}
+            for unit_id, unit_hits in candidates.items():
                 unit = published.get(unit_id)
                 if unit is None:
                     rejected.add(unit_id)

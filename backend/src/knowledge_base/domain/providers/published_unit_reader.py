@@ -20,5 +20,9 @@ class PublishedUnitReader(Protocol):
         self, unit_ids: Sequence[UUID]
     ) -> Mapping[UUID, PublishedUnit]:
         """Unités visibles parmi ``unit_ids``, avec leurs chunks et leur
-        citation ; une unité qui ne l'est pas (ou plus) est absente."""
+        citation ; une unité qui ne l'est pas (ou plus) est absente.
+
+        Une seule lecture cohérente (un instantané) pour toutes les unités
+        demandées : deux unités de versions différentes d'un même document ne
+        peuvent pas y être visibles ensemble (I4)."""
         ...

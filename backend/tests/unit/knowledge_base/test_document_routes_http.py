@@ -12,12 +12,15 @@ contrôle au fil du flux (blob store).
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Request, Response
+from starlette.types import Message
 
 from knowledge_base.adapters.controller.rest.documents_router import (
     MULTIPART_ALLOWANCE_BYTES,
@@ -202,3 +205,115 @@ async def test_without_a_truthful_length_the_streaming_limit_still_refuses(
     assert response.json()["code"] == "PAYLOAD_TOO_LARGE"
     assert harness.blobs.put_calls == 1
     assert harness.state.documents == {}
+
+
+# --- corps diffusé sans Content-Length (review indépendante, constat 3) ---------
+#
+# Requête ASGI brute : le corps arrive par morceaux (``Transfer-Encoding:
+# chunked`` côté HTTP), sans ``Content-Length``. Le test compte les octets que
+# l'application tire de ``receive`` : la lecture doit s'arrêter peu après le
+# plafond global (limite + marge du multipart), avant l'analyse du multipart.
+
+PIECE_BYTES = 4 * 1024
+
+
+class ChunkedUpload:
+    """``receive`` ASGI qui livre ``content`` par morceaux de ``PIECE_BYTES``
+    et compte les octets livrés."""
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+        self.delivered = 0
+
+    async def __call__(self) -> Message:
+        piece = self._content[self.delivered : self.delivered + PIECE_BYTES]
+        self.delivered += len(piece)
+        more = self.delivered < len(self._content)
+        return {"type": "http.request", "body": piece, "more_body": more}
+
+
+async def send_chunked(
+    app: FastAPI, path: str, content: bytes, content_type: str
+) -> tuple[int, dict[str, object], ChunkedUpload]:
+    receive = ChunkedUpload(content)
+    messages: list[Message] = []
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", content_type.encode()),
+            (b"transfer-encoding", b"chunked"),
+        ],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+    }
+    await app(scope, receive, send)
+    start = next(m for m in messages if m["type"] == "http.response.start")
+    body = b"".join(
+        cast(bytes, m.get("body", b""))
+        for m in messages
+        if m["type"] == "http.response.body"
+    )
+    return cast(int, start["status"]), json.loads(body), receive
+
+
+@pytest.fixture
+def app(harness: Harness) -> FastAPI:
+    application = FastAPI()
+    add_document_routes(
+        application.router,
+        import_document_handler=lambda: harness.import_document,
+        import_version_handler=lambda: harness.import_version,
+        withdraw_document_handler=lambda: harness.withdraw_document,
+        max_upload_bytes=lambda: MAX_UPLOAD_BYTES,
+    )
+    return application
+
+
+@pytest.mark.parametrize(
+    "path",
+    [f"{PREFIX}/documents", f"{PREFIX}/documents/{uuid4()}/versions"],
+    ids=["document", "version"],
+)
+async def test_a_chunked_body_over_the_ceiling_stops_being_read_at_the_ceiling(
+    app: FastAPI, harness: Harness, path: str
+) -> None:
+    content, content_type = multipart(b"x" * 200_000)
+    ceiling = MAX_UPLOAD_BYTES + MULTIPART_ALLOWANCE_BYTES
+
+    status, body, receive = await send_chunked(app, path, content, content_type)
+
+    assert status == 413
+    assert body["code"] == "PAYLOAD_TOO_LARGE"
+    assert body["max_bytes"] == MAX_UPLOAD_BYTES
+    # Lecture interrompue au premier morceau qui franchit le plafond.
+    assert receive.delivered <= ceiling + PIECE_BYTES
+    assert receive.delivered < len(content)
+    assert harness.blobs.put_calls == 0
+    assert harness.state.documents == {}
+
+
+async def test_a_chunked_body_under_the_ceiling_is_read_whole(
+    app: FastAPI, harness: Harness
+) -> None:
+    content, content_type = multipart(b"# Cours\n")
+
+    status, _, receive = await send_chunked(
+        app, f"{PREFIX}/documents", content, content_type
+    )
+
+    assert status == 202
+    assert receive.delivered == len(content)
+    assert len(harness.state.documents) == 1

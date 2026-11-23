@@ -7,11 +7,19 @@ stocké la partie multipart dans un fichier temporaire (en mémoire jusqu'à
 1 Mio, sur disque au-delà) ; il n'est jamais lu en entier en mémoire et la
 limite de taille s'applique pendant la copie vers le volume des blobs.
 
-Avant cela, un import dont le ``Content-Length`` déclare plus que la limite
-(marge du multipart comprise) est refusé sans que son corps soit lu (revue
-S2, M-1) : FastAPI lit le formulaire avant toute dépendance, le contrôle est
-donc porté par la classe de route. Un en-tête absent ou mensonger laisse le
-contrôle au fil du flux, qui reste la seule borne exacte.
+Avant cela, la classe de route borne le corps HTTP au plafond global (limite
+plus marge du multipart) : FastAPI lit le formulaire avant toute dépendance.
+
+- Un ``Content-Length`` au-delà du plafond est refusé sans que le corps soit
+  lu (revue S2, M-1).
+- Sans ``Content-Length`` (``Transfer-Encoding: chunked``) ou avec un en-tête
+  mensonger, les octets reçus sont comptés AVANT l'analyse du multipart et la
+  lecture s'arrête au premier message qui franchit le plafond (review
+  indépendante, constat 3 : le formulaire entier était lu et stocké avant le
+  refus).
+
+Les deux donnent 413 ``PAYLOAD_TOO_LARGE``. Le plafond tolère l'enveloppe du
+multipart : la borne exacte du fichier reste celle du flux.
 
 Pas de ``from __future__ import annotations`` ici : FastAPI doit résoudre les
 annotations des routes, qui référencent des dépendances définies localement.
@@ -34,6 +42,8 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from starlette.exceptions import HTTPException
+from starlette.types import Message, Receive
 
 from knowledge_base.adapters.controller.rest.errors import (
     IMPORT_REFUSALS,
@@ -214,25 +224,65 @@ def add_document_routes(
 
 
 def _declared_length_limited_route(max_upload_bytes: MaxUploadBytes) -> type[APIRoute]:
-    """Classe de route qui refuse en 413 ``PAYLOAD_TOO_LARGE``, avant toute
-    lecture du corps, un ``Content-Length`` au-delà de la limite et de la
-    marge du multipart."""
+    """Classe de route qui refuse en 413 ``PAYLOAD_TOO_LARGE`` un corps
+    au-delà de la limite et de la marge du multipart : d'après son
+    ``Content-Length``, avant toute lecture ; sinon dès que les octets reçus
+    franchissent ce plafond, avant la fin de l'analyse du multipart."""
 
     class DeclaredLengthLimitedRoute(APIRoute):
         def get_route_handler(self) -> RouteHandler:
             handle = super().get_route_handler()
 
-            async def refuse_declared_excess(request: Request) -> Response:
+            async def refuse_excess(request: Request) -> Response:
                 limit = max_upload_bytes()
                 declared = _declared_length(request)
                 ceiling = limit + MULTIPART_ALLOWANCE_BYTES
                 if declared is not None and declared > ceiling:
                     return refusal_response(BlobTooLargeError(limit))
-                return await handle(request)
+                receive = _CeilingReceive(request.receive, ceiling)
+                try:
+                    return await handle(Request(request.scope, receive))
+                except HTTPException:
+                    # FastAPI traduit toute erreur de lecture du formulaire en
+                    # 400 « error parsing the body » (``HTTPException`` de
+                    # Starlette) : seul le dépassement constaté par
+                    # ``receive`` en fait un 413.
+                    if receive.exceeded:
+                        return refusal_response(BlobTooLargeError(limit))
+                    raise
 
-            return refuse_declared_excess
+            return refuse_excess
 
     return DeclaredLengthLimitedRoute
+
+
+class BodyCeilingExceededError(Exception):
+    def __init__(self, received: int, ceiling: int) -> None:
+        super().__init__(
+            f"corps de requête interrompu : {received} octets reçus, plafond "
+            f"de {ceiling} octets"
+        )
+
+
+class _CeilingReceive:
+    """``receive`` ASGI qui compte les octets du corps et lève
+    ``BodyCeilingExceededError`` au premier message qui franchit ``ceiling`` :
+    le message n'est pas transmis, la lecture s'arrête là."""
+
+    def __init__(self, receive: Receive, ceiling: int) -> None:
+        self._receive = receive
+        self._ceiling = ceiling
+        self._received = 0
+        self.exceeded = False
+
+    async def __call__(self) -> Message:
+        message = await self._receive()
+        if message["type"] == "http.request":
+            self._received += len(message.get("body", b""))
+            if self._received > self._ceiling:
+                self.exceeded = True
+                raise BodyCeilingExceededError(self._received, self._ceiling)
+        return message
 
 
 def _declared_length(request: Request) -> int | None:

@@ -17,9 +17,11 @@ doivent rester rapides. Ils s'appuient sur les extras Docling ``format-pdf``
 - Plus de ``max_pages`` pages : ``TOO_MANY_PAGES`` (le message donne le nombre
   de pages du document et la limite). La limite ne s'applique qu'au PDF : un
   DOCX n'a pas de pagination avant sa mise en page.
-- DOCX dont les parties ``word/*.xml`` déclarent plus de ``max_xml_bytes``
-  décompressés (``MAX_DOCX_XML_BYTES``, 100 Mio ; revue S6, I2 / O16) :
-  ``DOCUMENT_TOO_COMPLEX`` avant Docling, message avec taille et limite.
+- DOCX dont l'archive entière déclare plus de ``max_uncompressed_bytes``
+  décompressés (``MAX_DOCX_UNCOMPRESSED_BYTES``, 100 Mio ; revue S6, I2 /
+  O16 ; étendu de ``word/*.xml`` à toutes les parties par la review
+  indépendante, constat 4) : ``DOCUMENT_TOO_COMPLEX`` avant Docling, message
+  avec taille et limite.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from knowledge_base.adapters.gateway.parsing.docling_conversion import (
     DoclingConversion,
 )
 from knowledge_base.adapters.gateway.parsing.docling_docx_parser import (
-    MAX_DOCX_XML_BYTES,
+    MAX_DOCX_UNCOMPRESSED_BYTES,
     DoclingDocxParser,
 )
 from knowledge_base.adapters.gateway.parsing.docling_pdf_parser import (
@@ -146,17 +148,17 @@ def word_archive(parts: dict[str, int]) -> bytes:
     return buffer.getvalue()
 
 
-def test_the_default_docx_xml_limit_is_100_mib() -> None:
-    assert MAX_DOCX_XML_BYTES == 100 * 1024 * 1024
+def test_the_default_docx_uncompressed_limit_is_100_mib() -> None:
+    assert MAX_DOCX_UNCOMPRESSED_BYTES == 100 * 1024 * 1024
 
 
-def test_a_docx_declaring_more_word_xml_than_the_limit_is_too_complex(
+def test_a_docx_declaring_more_than_the_limit_is_too_complex(
     conversions: list[str],
 ) -> None:
     content = word_archive({"word/document.xml": 600, "word/styles.xml": 500})
 
     with pytest.raises(DocumentParseError) as raised:
-        DoclingDocxParser(max_xml_bytes=1000).parse(content, DOCX, "gros.docx")
+        DoclingDocxParser(max_uncompressed_bytes=1000).parse(content, DOCX, "gros.docx")
 
     assert raised.value.code == DOCUMENT_TOO_COMPLEX
     assert "gros.docx" in raised.value.message
@@ -165,26 +167,35 @@ def test_a_docx_declaring_more_word_xml_than_the_limit_is_too_complex(
     assert conversions == []
 
 
-def test_a_docx_at_the_limit_or_with_large_parts_outside_word_is_converted(
-    conversions: list[str],
-) -> None:
-    parser = DoclingDocxParser(max_xml_bytes=1000)
+def test_a_docx_at_the_limit_is_converted(conversions: list[str]) -> None:
+    parser = DoclingDocxParser(max_uncompressed_bytes=1000)
 
-    parser.parse(word_archive({"word/document.xml": 1000}), DOCX, "limite.docx")
     parser.parse(
-        word_archive(
-            {
-                "word/document.xml": 10,
-                "word/media/image1.png": 5000,
-                "customXml/item1.xml": 5000,
-                "word/_rels/document.xml.rels": 5000,
-            }
-        ),
+        word_archive({"word/document.xml": 600, "word/media/image1.png": 400}),
         DOCX,
-        "images.docx",
+        "limite.docx",
     )
 
-    assert conversions == ["limite.docx", "images.docx"]
+    assert conversions == ["limite.docx"]
+
+
+@pytest.mark.parametrize(
+    "part",
+    ["word/media/image1.png", "customXml/item1.xml", "word/_rels/document.xml.rels"],
+)
+def test_every_part_of_the_archive_counts_not_only_the_word_xml(
+    part: str, conversions: list[str]
+) -> None:
+    content = word_archive({"word/document.xml": 10, part: 5000})
+
+    with pytest.raises(DocumentParseError) as raised:
+        DoclingDocxParser(max_uncompressed_bytes=1000).parse(
+            content, DOCX, "parties.docx"
+        )
+
+    assert raised.value.code == DOCUMENT_TOO_COMPLEX
+    assert "5010 octets" in raised.value.message
+    assert conversions == []
 
 
 def test_a_docx_over_the_default_limit_is_refused_before_docling(
@@ -223,3 +234,91 @@ def test_an_unreadable_zip_is_invalid_before_docling(
     assert raised.value.code == INVALID_DOCUMENT
     assert "faux.docx" in raised.value.message
     assert conversions == []
+
+
+# --- parties reliées hors XML Word (review indépendante, constat 4) -------------
+#
+# python-docx, que Docling utilise, charge toute partie atteinte par les
+# relations OPC, binaires comprises : borner le seul XML de ``word/`` laissait
+# une partie reliée très compressible passer avant Docling.
+
+PACKAGE_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package"
+)
+_MIB = 1024 * 1024
+
+
+def with_related_binary_part(base: bytes, size: int) -> bytes:
+    """``base`` (un vrai DOCX) enrichi de ``word/embeddings/data.bin``, ``size``
+    octets nuls compressés, relié au document principal par une relation
+    OPC (et déclaré dans ``[Content_Types].xml``)."""
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(base)) as source,
+        zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as target,
+    ):
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "word/_rels/document.xml.rels":
+                data = data.replace(
+                    b"</Relationships>",
+                    f'<Relationship Id="rIdBin" Type="{PACKAGE_RELATIONSHIP}" '
+                    'Target="embeddings/data.bin"/></Relationships>'.encode(),
+                )
+            elif info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"</Types>",
+                    b'<Default Extension="bin" ContentType="application/'
+                    b'vnd.openxmlformats-officedocument.oleObject"/></Types>',
+                )
+            target.writestr(info.filename, data)
+        with target.open("word/embeddings/data.bin", "w") as part:
+            remaining = size
+            while remaining:
+                piece = min(remaining, _MIB)
+                part.write(b"\0" * piece)
+                remaining -= piece
+    return buffer.getvalue()
+
+
+def test_the_related_binary_part_is_really_loaded_by_python_docx() -> None:
+    """Le scénario est réaliste : le chargeur de python-docx lit la partie."""
+    from docx.opc.pkgreader import PackageReader
+
+    content = with_related_binary_part(office_bytes("cours_git_fr.docx"), 4096)
+
+    # python-docx n'est pas typé : son chargeur est appelé tel quel.
+    reader = PackageReader.from_file(io.BytesIO(content))  # type: ignore[no-untyped-call]
+
+    loaded = {str(name): len(blob) for name, _, _, blob in reader.iter_sparts()}
+    assert loaded["/word/embeddings/data.bin"] == 4096
+
+
+def test_a_related_binary_part_over_the_default_limit_is_refused_before_docling(
+    conversions: list[str],
+) -> None:
+    """XML Word de quelques centaines de Kio, partie binaire reliée de
+    100 Mio + 1 octet : l'archive tient en ~100 Kio."""
+    content = with_related_binary_part(
+        office_bytes("cours_git_fr.docx"), 100 * _MIB + 1
+    )
+    assert len(content) < _MIB
+
+    with pytest.raises(DocumentParseError) as raised:
+        DoclingDocxParser().parse(content, DOCX, "binaire.docx")
+
+    assert raised.value.code == DOCUMENT_TOO_COMPLEX
+    assert "binaire.docx" in raised.value.message
+    assert "100.0 Mio" in raised.value.message
+    assert conversions == []
+
+
+@pytest.mark.parametrize(
+    "name", ["cours_git_fr.docx", "qa_pytest_fr.docx", "tableau.docx"]
+)
+def test_the_docx_fixtures_stay_within_the_default_limit(
+    name: str, conversions: list[str]
+) -> None:
+    DoclingDocxParser().parse(office_bytes(name), DOCX, name)
+
+    assert conversions == [name]

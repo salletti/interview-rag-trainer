@@ -9,6 +9,12 @@ Deux requêtes dans une session courte, quel que soit le nombre d'unités :
 2. les chunks de ces seules unités, dans l'ordre de lecture (index unique
    ``(unit_id, ordinal_in_unit)``).
 
+Les deux requêtes lisent un même instantané (transaction ``REPEATABLE
+READ``) : la visibilité de toutes les unités demandées est tranchée par une
+seule lecture cohérente, que le cas d'usage exige (review indépendante,
+constat 1), et une purge commitée entre les deux requêtes ne peut pas retirer
+les chunks d'une unité jugée visible.
+
 La citation est celle de l'unité : titre courant du document, numéro et nom
 de fichier de la version, chemin de sections et pages de l'unité.
 
@@ -56,6 +62,9 @@ class SqlAlchemyPublishedUnitReader:
         if not unit_ids:
             return {}
         async with self._session_factory() as session:
+            await session.connection(
+                execution_options={"isolation_level": "REPEATABLE READ"}
+            )
             units = (
                 await session.execute(
                     select(

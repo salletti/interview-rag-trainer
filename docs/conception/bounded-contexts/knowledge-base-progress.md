@@ -9,15 +9,14 @@
 
 ## Statut global
 
-**Pending Independent Review** (2026-11-19) — S0–S9 implémentées et revues
-par slice, validation globale OK sur les 9 points
-([rapport](knowledge-base-validation.md)), documentation synchronisée,
-PR globale ouverte sans merge. **La review indépendante n'a pas été
-effectuée** : Codex n'est pas exécutable dans l'environnement (aucun binaire
-`codex`, aucune application ; constats du 2026-11-17 et du 2026-11-19). Le
-dossier et le prompt sont prêts :
-[knowledge-base-independent-review.md](knowledge-base-independent-review.md).
-Clôture : review faite, constats bloquants corrigés et retestés.
+**Terminé** (2026-11-23) — S0–S9 implémentées et revues par slice,
+validation globale OK sur les 9 points ([rapport](knowledge-base-validation.md)),
+review indépendante **effectuée par Codex** sur `28e29fc`
+([rapport](knowledge-base-independent-review-report.md) : 1 bloquant,
+3 importants), les quatre constats corrigés avec tests rouges d'abord et
+mutations tuées, puis revalidés : 1 780 unitaires/architecture,
+549 intégration. PR #3 ouverte, **non mergée**. Les corrections post-review
+n'ont pas été relues par Codex.
 
 Décisions en attente de l'utilisateur : ADR 0013 (profil définitif, Proposed)
 et barrière de l'ADR 0011 (point 5, Proposed).
@@ -241,3 +240,10 @@ Validation globale (commit `91c5b8c`, [rapport](knowledge-base-validation.md)) :
 - D4 — aucune route REST d'état d'un document/version (suivi par psql). À décider par l'utilisateur.
 - D5 — `TerminalWorkError` journalisée en une ligne WARNING avec son code, sans trace ; erreurs inattendues et hook en échec en ERROR avec trace. **Fait.** (`NOT_FINALIZED`/`UNKNOWN_KIND` suivent aussi ce chemin.)
 - M-1 (S2) — refus anticipé 413 `PAYLOAD_TOO_LARGE` avant lecture du corps quand `Content-Length` > `KB_MAX_UPLOAD_BYTES` + 64 Kio (enveloppe multipart) ; contrôle en flux conservé. **Fait.** Revalidation : 1 759 unitaires/architecture, 548 intégration.
+
+Review indépendante Codex (commit `28e29fc`, [rapport](knowledge-base-independent-review-report.md)) : 1 bloquant, 3 importants.
+
+- 1 (bloquant) — deux versions d'un document dans une réponse : chaque lecture SQL revalide toutes les unités retenues, dans un instantané `REPEATABLE READ` ; test avec barrière unitaire et sur PostgreSQL/Qdrant réels. **Fait.**
+- 2 — question longue hors budget du passage : question réservée (≤ moitié du budget, Proposed), texte final compté et borné. **Fait.** Le champ `question` du contrat reste entier (à décider).
+- 3 — upload chunked lu en entier : `receive` compté avant l'analyse multipart, 413 au plafond. **Fait.**
+- 4 — garde-fou DOCX : taille décompressée de toute l'archive bornée à 100 Mio (`MAX_DOCX_UNCOMPRESSED_BYTES`, Proposed). **Fait.** Nombre d'entrées non borné, RSS proche de 100 Mio non mesurée.
